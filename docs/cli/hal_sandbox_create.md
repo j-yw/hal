@@ -4,7 +4,7 @@ Provision a new sandbox
 
 ### Synopsis
 
-Provision a new sandbox using the configured provider (Daytona, Hetzner, DigitalOcean, or AWS Lightsail).
+Provision a new sandbox using the configured provider (Hetzner, DigitalOcean, or AWS Lightsail).
 
 The sandbox name defaults to the current git branch (with slashes replaced by hyphens).
 Use --name to override the default name.

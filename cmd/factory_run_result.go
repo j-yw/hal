@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 // FactoryRunResponse is the machine-readable JSON output for hal factory run --json.
@@ -16,11 +17,18 @@ type FactoryRunResponse struct {
 	Version         string                        `json:"version"`
 	RunID           string                        `json:"runId"`
 	Status          string                        `json:"status"`
+	ExecutorMode    string                        `json:"executorMode"`
+	BaseBranch      string                        `json:"baseBranch"`
 	NextAction      *FactoryRunNextAction         `json:"nextAction"`
 	Artifacts       []FactoryRunArtifactReference `json:"artifacts"`
 	Telemetry       *factory.RunTelemetry         `json:"telemetry,omitempty"`
 	EventSummary    FactoryRunEventSummary        `json:"eventSummary"`
 	Failure         *FactoryRunFailure            `json:"failure"`
+}
+
+type factoryRunResponseWithSecurityReadinessGate struct {
+	FactoryRunResponse
+	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
 }
 
 // FactoryRunNextAction suggests what to do after a local factory run.
@@ -69,13 +77,53 @@ func renderFactoryRunJSON(out io.Writer, resp FactoryRunResponse) error {
 	return nil
 }
 
+func renderFactoryRunJSONWithSecurityReadinessGate(out io.Writer, resp FactoryRunResponse, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
+	gate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(gate)
+	if gate == nil {
+		return renderFactoryRunJSON(out, resp)
+	}
+	resp = normalizeFactoryRunResponse(resp)
+	data, err := json.MarshalIndent(factoryRunResponseWithSecurityReadinessGate{
+		FactoryRunResponse:    resp,
+		SecurityReadinessGate: gate,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal factory run result: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
+}
+
 func renderFactoryRunSummary(out io.Writer, resp FactoryRunResponse) error {
+	return renderFactoryRunSummaryWithSecurityReadinessGate(out, resp, nil)
+}
+
+func renderFactoryRunSummaryWithSecurityReadinessGate(out io.Writer, resp FactoryRunResponse, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
 	resp = normalizeFactoryRunResponse(resp)
 	if _, err := fmt.Fprintf(out, "Run ID: %s\n", resp.RunID); err != nil {
 		return fmt.Errorf("write factory run summary: %w", err)
 	}
 	if _, err := fmt.Fprintf(out, "Status: %s\n", resp.Status); err != nil {
 		return fmt.Errorf("write factory run summary: %w", err)
+	}
+	executorMode := strings.TrimSpace(resp.ExecutorMode)
+	if executorMode == "" {
+		executorMode = "(unknown)"
+	}
+	if _, err := fmt.Fprintf(out, "Executor: %s\n", executorMode); err != nil {
+		return fmt.Errorf("write factory run summary: %w", err)
+	}
+	baseBranch := strings.TrimSpace(resp.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = "(unresolved)"
+	}
+	if _, err := fmt.Fprintf(out, "Base: %s\n", baseBranch); err != nil {
+		return fmt.Errorf("write factory run summary: %w", err)
+	}
+	if readiness := factorySecurityReadinessGateHuman(gate); readiness != "" {
+		if _, err := fmt.Fprintf(out, "%s\n", readiness); err != nil {
+			return fmt.Errorf("write factory run summary: %w", err)
+		}
 	}
 
 	if resp.Failure != nil {
@@ -111,12 +159,18 @@ func newFactoryRunResponse(record factory.RunRecord, events []factory.EventRecor
 		Version:         Version,
 		RunID:           record.RunID,
 		Status:          record.Status,
+		ExecutorMode:    strings.TrimSpace(record.ExecutorMode),
+		BaseBranch:      strings.TrimSpace(record.BaseBranch),
 		NextAction:      newFactoryRunNextAction(record),
 		Artifacts:       newFactoryRunArtifactReferences(record.Artifacts),
 		Telemetry:       factory.DeriveRunTelemetry(record, events),
 		EventSummary:    newFactoryRunEventSummary(events),
 		Failure:         newFactoryRunFailure(record),
 	}
+}
+
+func factorySecurityReadinessGateHuman(gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) string {
+	return sandboxRuntimeSecurityReadinessGateHuman(gate)
 }
 
 func newFactoryRunArtifactReferences(artifacts []factory.ArtifactReference) []FactoryRunArtifactReference {
@@ -139,6 +193,14 @@ func newFactoryRunArtifactReferences(artifacts []factory.ArtifactReference) []Fa
 }
 
 func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
+	if factoryRunHasRecoverableSandboxBundle(record) {
+		return &FactoryRunNextAction{
+			ID:          "recover_factory_run",
+			Command:     "hal factory recover " + strings.TrimSpace(record.RunID),
+			Description: "Apply the stored sandbox recovery bundle locally.",
+		}
+	}
+
 	command := factoryRunInspectCommand(record.RunID)
 	if command == "" {
 		return nil
@@ -156,6 +218,17 @@ func newFactoryRunNextAction(record factory.RunRecord) *FactoryRunNextAction {
 	}
 }
 
+func factoryRunHasRecoverableSandboxBundle(record factory.RunRecord) bool {
+	if record.Status != factory.RunStatusFailed || record.ExecutorMode != factory.ExecutorModeSandbox {
+		return false
+	}
+	if strings.TrimSpace(record.RunID) == "" {
+		return false
+	}
+	_, ok := factoryRunRecoveryBundleArtifact(record)
+	return ok
+}
+
 func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 	if record.Failure == nil {
 		return nil
@@ -165,7 +238,9 @@ func newFactoryRunFailure(record factory.RunRecord) *FactoryRunFailure {
 		Classification: classification,
 		ErrorMessage:   sanitizeFactoryRunResultText(record.Failure.Message),
 	}
-	if suggested := sanitizeFactoryRunResultText(record.Failure.SuggestedCommand); suggested != "" {
+	if nextAction := newFactoryRunNextAction(record); nextAction != nil && nextAction.ID == "recover_factory_run" {
+		failure.SuggestedCommand = sanitizeFactoryRunResultText(nextAction.Command)
+	} else if suggested := sanitizeFactoryRunResultText(record.Failure.SuggestedCommand); suggested != "" {
 		failure.SuggestedCommand = suggested
 	} else if nextAction := newFactoryRunNextAction(record); nextAction != nil {
 		failure.SuggestedCommand = sanitizeFactoryRunResultText(nextAction.Command)

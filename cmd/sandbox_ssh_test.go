@@ -125,7 +125,7 @@ func setupSSHTest(t *testing.T, instances ...*sandbox.SandboxState) {
 func TestRunSandboxSSH_InteractiveMode(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "my-sandbox",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    sandbox.StatusRunning,
@@ -338,7 +338,7 @@ func TestRunSandboxSSH_ExecOutputIsRedacted(t *testing.T) {
 func TestRunSandboxSSH_AutoResolveSingle(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "only-one",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    sandbox.StatusRunning,
@@ -383,7 +383,7 @@ func TestRunSandboxSSH_AutoResolveMultiple(t *testing.T) {
 	setupSSHTest(t,
 		&sandbox.SandboxState{
 			Name:      "api-backend",
-			Provider:  "daytona",
+			Provider:  "hetzner",
 			IP:        "10.0.0.1",
 			CreatedAt: time.Now(),
 			Status:    sandbox.StatusRunning,
@@ -491,7 +491,7 @@ func TestRunSandboxSSH_ProviderResolveError(t *testing.T) {
 func TestRunSandboxSSH_ExecWithAutoResolve(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "only-one",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    sandbox.StatusRunning,
@@ -549,7 +549,7 @@ func TestRunSandboxSSH_ConnectInfoUsesPreferredIP(t *testing.T) {
 func TestRunSandboxSSH_AutoMigratesLegacyState(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "my-sandbox",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    sandbox.StatusRunning,
@@ -583,7 +583,7 @@ func TestRunSandboxSSH_AutoMigratesLegacyState(t *testing.T) {
 func TestSandboxSSHCommand_UsesCommandOutputWriter(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "writer-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    sandbox.StatusRunning,
@@ -709,7 +709,7 @@ func TestParseSSHArgs(t *testing.T) {
 func TestResolveSSHTarget_ByName(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "my-sandbox",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    sandbox.StatusRunning,
@@ -730,7 +730,7 @@ func TestResolveSSHTarget_ByName(t *testing.T) {
 func TestResolveSSHTarget_ByNameRejectsStoppedStatus(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "stopped-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    sandbox.StatusStopped,
@@ -754,7 +754,7 @@ func TestResolveSSHTarget_ByNameRejectsStoppedStatus(t *testing.T) {
 func TestResolveSSHTarget_ByNameAcceptsLegacyBlankStatusAsRunning(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "legacy-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    "",
@@ -772,7 +772,7 @@ func TestResolveSSHTarget_ByNameAcceptsLegacyBlankStatusAsRunning(t *testing.T) 
 func TestResolveSSHTarget_AutoResolveSingle(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "only-one",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    sandbox.StatusRunning,
@@ -793,7 +793,7 @@ func TestResolveSSHTarget_AutoResolveSingle(t *testing.T) {
 func TestResolveSSHTarget_AutoResolveSingleLegacyBlankStatusAsRunning(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "legacy-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    "",
@@ -827,7 +827,7 @@ func TestResolveSSHTarget_AutoResolveMultiple(t *testing.T) {
 	setupSSHTest(t,
 		&sandbox.SandboxState{
 			Name:      "alpha",
-			Provider:  "daytona",
+			Provider:  "hetzner",
 			IP:        "10.0.0.1",
 			CreatedAt: time.Now(),
 			Status:    sandbox.StatusRunning,
@@ -856,7 +856,7 @@ func TestResolveSSHTarget_AutoResolveMultiple(t *testing.T) {
 func TestResolveSSHTarget_AutoResolveIgnoresStopped(t *testing.T) {
 	setupSSHTest(t, &sandbox.SandboxState{
 		Name:      "stopped-only",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		IP:        "10.0.0.1",
 		CreatedAt: time.Now(),
 		Status:    sandbox.StatusStopped,

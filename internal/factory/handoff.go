@@ -84,6 +84,18 @@ func NewHandoffSummary(store Store, record RunRecord) HandoffSummary {
 		return summary
 	}
 
+	if postRun := DerivePostRunState(record); postRun != nil && postRun.Publish != nil && strings.TrimSpace(postRun.Publish.Status) == RunStatusSucceeded {
+		if summary.PullRequestURL == "" {
+			summary.PullRequestURL = handoffSafeURL(postRun.Publish.PullRequestURL)
+		}
+		if summary.PullRequestURL != "" {
+			summary.NextAction = handoffNextAction(summary, handoffInspectActionID, NextActionTypeInspect, "gh pr view "+summary.PullRequestURL+" --web", "Inspect the published pull request.")
+			return summary
+		}
+		summary.NextAction = handoffNextAction(summary, handoffInspectActionID, NextActionTypeInspect, summary.InspectCommand, "Inspect the durable run record and published branch.")
+		return summary
+	}
+
 	summary.HandoffRequired = true
 	if record.ExecutorMode == ExecutorModeSandbox {
 		if summary.SandboxName != "" && handoffSandboxIsRunning(record) {
@@ -531,6 +543,9 @@ func handoffArtifactLooksLikeAutoState(artifact ArtifactReference) bool {
 func handoffSafeURL(rawURL string) string {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
+		return ""
+	}
+	if strings.ContainsAny(rawURL, " \t\r\n") {
 		return ""
 	}
 	parsed, err := url.Parse(rawURL)

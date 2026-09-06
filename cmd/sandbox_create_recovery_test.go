@@ -43,15 +43,15 @@ func TestReplaceExistingSandbox_CommitsInterruptedDeleteRetry(t *testing.T) {
 		sandboxCreateStageInstanceRemoval = originalStage
 	})
 
-	provider := &mockProvider{deleteErr: errors.New("API error: sandbox not found")}
+	provider := &mockProvider{deleteErr: errors.New("doctl compute droplet get failed: droplet not found")}
 	out := new(bytes.Buffer)
 
 	err := replaceExistingSandbox(&sandbox.SandboxState{
 		ID:          "ws-123",
 		Name:        "frontend",
-		Provider:    "daytona",
+		Provider:    "digitalocean",
 		WorkspaceID: "ws-123",
-	}, provider, "daytona", "", "", out)
+	}, provider, "digitalocean", "", "", out)
 	if err != nil {
 		t.Fatalf("replaceExistingSandbox() unexpected error: %v", err)
 	}

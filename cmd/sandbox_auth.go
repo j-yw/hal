@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/spf13/cobra"
 )
 
@@ -40,10 +41,11 @@ var sandboxAuthSyncCmd = &cobra.Command{
 	Args:  maxArgsValidation(1),
 	Long: `Sync local Codex and pi subscription-login auth files into a running sandbox.
 
-By default this copies selected files from ~/.codex and ~/.pi into the remote
-exec user's home using tar over the existing sandbox SSH transport. The command
-does not copy GitHub CLI credentials, caches, logs, sessions, or entire auth
-directories.
+By default this copies selected files from ~/.codex and ~/.pi into the sandbox
+exec user's home using a private tar stream. Worker-backed sandboxes use their
+registered sandboxd runtime driver; provider-backed sandboxes retain the SSH
+transport. The command does not copy GitHub CLI credentials, caches, logs,
+sessions, or entire auth directories.
 
 Use --include-claude to also copy known Claude Code auth/settings files when
 they exist locally.`,
@@ -84,6 +86,7 @@ type sandboxAuthSyncDeps struct {
 	homeDir         func() (string, error)
 	resolveTarget   func(string) (*sandbox.SandboxState, string, error)
 	resolveProvider func(string) (sandbox.Provider, error)
+	resolveRuntime  func(*sandbox.SandboxState) (sandboxruntime.Driver, error)
 	runRemote       func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []byte, io.Writer) error
 }
 
@@ -112,7 +115,12 @@ func normalizeSandboxAuthSyncDeps(deps sandboxAuthSyncDeps) sandboxAuthSyncDeps 
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = func(providerName string) (sandbox.Provider, error) {
-			return resolveProviderWithFallback(".", providerName)
+			return resolveStoredProviderWithFallback(".", providerName)
+		}
+	}
+	if deps.resolveRuntime == nil {
+		deps.resolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return resolveFactoryStoredSandboxRuntime(".", target)
 		}
 	}
 	if deps.runRemote == nil {
@@ -140,9 +148,12 @@ func runSandboxAuthSyncWithDeps(ctx context.Context, name string, opts sandboxAu
 	if hint != "" && out != nil {
 		fmt.Fprintln(out, hint)
 	}
-	provider, err := deps.resolveProvider(target.Provider)
-	if err != nil {
-		return sandboxAuthSyncResult{}, fmt.Errorf("resolving provider for %q: %w", target.Name, err)
+	var provider sandbox.Provider
+	if !factorySandboxUsesWorkerRuntime(target) {
+		provider, err = deps.resolveProvider(target.Provider)
+		if err != nil {
+			return sandboxAuthSyncResult{}, fmt.Errorf("resolving provider for %q: %w", target.Name, err)
+		}
 	}
 	return runSandboxAuthSyncToTarget(ctx, target, provider, opts, out, deps)
 }
@@ -158,7 +169,7 @@ func runSandboxAuthSyncToTarget(ctx context.Context, target *sandbox.SandboxStat
 	if target == nil {
 		return sandboxAuthSyncResult{}, fmt.Errorf("sandbox target is required")
 	}
-	if provider == nil {
+	if provider == nil && !factorySandboxUsesWorkerRuntime(target) {
 		return sandboxAuthSyncResult{}, fmt.Errorf("sandbox provider is required")
 	}
 
@@ -190,7 +201,15 @@ func runSandboxAuthSyncToTarget(ctx context.Context, target *sandbox.SandboxStat
 	if out != nil {
 		fmt.Fprintf(out, "Syncing sandbox auth to %s (%s)...\n", target.Name, formatSandboxAuthProfiles(result.Profiles))
 	}
-	if err := deps.runRemote(ctx, provider, sandbox.ConnectInfoFromState(target), archive, out); err != nil {
+	if factorySandboxUsesWorkerRuntime(target) {
+		driver, err := deps.resolveRuntime(target)
+		if err != nil {
+			return sandboxAuthSyncResult{}, fmt.Errorf("resolve sandbox runtime for auth sync: %w", err)
+		}
+		if err := runSandboxAuthRuntimeInstall(ctx, driver, sandboxRuntimeTargetFromState(target), archive, out); err != nil {
+			return sandboxAuthSyncResult{}, fmt.Errorf("install sandbox auth profile: %w", err)
+		}
+	} else if err := deps.runRemote(ctx, provider, sandbox.ConnectInfoFromState(target), archive, out); err != nil {
 		return sandboxAuthSyncResult{}, fmt.Errorf("install sandbox auth profile: %w", err)
 	}
 	if out != nil {
@@ -379,6 +398,29 @@ func runSandboxAuthRemoteInstall(ctx context.Context, provider sandbox.Provider,
 	}
 	cmd.Stdin = bytes.NewReader(archive)
 	return sandbox.RunCmdContext(ctx, cmd, out)
+}
+
+func runSandboxAuthRuntimeInstall(ctx context.Context, driver sandboxruntime.Driver, target sandboxruntime.Target, archive []byte, out io.Writer) error {
+	if driver == nil {
+		return fmt.Errorf("sandbox runtime driver is required")
+	}
+	if out == nil {
+		out = io.Discard
+	}
+	result, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target: target,
+		Args:   []string{"sh", "-lc", sandboxAuthRemoteInstallScript()},
+		Stdin:  bytes.NewReader(archive),
+		Stdout: out,
+		Stderr: out,
+	})
+	if err != nil {
+		return err
+	}
+	if result != nil && result.ExitCode != 0 {
+		return fmt.Errorf("sandbox runtime auth install exited with status %d", result.ExitCode)
+	}
+	return nil
 }
 
 func sandboxAuthRemoteInstallScript() string {

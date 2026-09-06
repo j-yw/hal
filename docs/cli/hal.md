@@ -91,6 +91,7 @@ Quick start:
 * [hal review](hal_review.md)	 - Run an iterative review loop against a base branch
 * [hal run](hal_run.md)	 - Run the Hal loop
 * [hal sandbox](hal_sandbox.md)	 - Manage sandbox environments
+* [hal sandboxd](hal_sandboxd.md)	 - Start the local sandbox worker daemon
 * [hal standards](hal_standards.md)	 - Manage project standards
 * [hal status](hal_status.md)	 - Show current workflow state
 * [hal validate](hal_validate.md)	 - Validate a PRD using AI

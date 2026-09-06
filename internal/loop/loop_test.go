@@ -81,6 +81,34 @@ func TestContainsIgnoreCase(t *testing.T) {
 	}
 }
 
+func TestNew_PreservesExplicitZeroRetries(t *testing.T) {
+	engine.RegisterEngine("loop-test-zero-retries", func(*engine.EngineConfig) engine.Engine {
+		return &fakeEngine{}
+	})
+	halDir := setupTestHalDir(t, []engine.UserStory{{
+		ID:                 "US-001",
+		Title:              "One shot",
+		Description:        "Run once",
+		AcceptanceCriteria: []string{"Typecheck passes"},
+		Priority:           1,
+		Passes:             false,
+	}})
+
+	var logBuf bytes.Buffer
+	runner, err := New(Config{
+		Dir:        halDir,
+		Engine:     "loop-test-zero-retries",
+		Logger:     &logBuf,
+		MaxRetries: 0,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if runner.config.MaxRetries != 0 {
+		t.Fatalf("MaxRetries = %d, want 0", runner.config.MaxRetries)
+	}
+}
+
 func TestLoadPrompt_InjectsStandards(t *testing.T) {
 	halDir := t.TempDir()
 
@@ -325,6 +353,121 @@ func setupTestHalDir(t *testing.T, stories []engine.UserStory) string {
 	}
 
 	return halDir
+}
+
+func TestRun_AllStoriesCompleteDoesNotExecuteEngine(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dry_run_%t", dryRun), func(t *testing.T) {
+			halDir := setupTestHalDir(t, []engine.UserStory{{
+				ID:     "US-001",
+				Title:  "Already complete",
+				Passes: true,
+			}})
+			fe := &fakeEngine{results: []engine.Result{{
+				Success: false,
+				Error:   fmt.Errorf("engine must not execute for a complete PRD"),
+			}}}
+			var logBuf bytes.Buffer
+			runner := &Runner{
+				config: Config{
+					Dir:           halDir,
+					PRDFile:       template.PRDFile,
+					ProgressFile:  template.ProgressFile,
+					MaxIterations: 1,
+					Logger:        &logBuf,
+					MaxRetries:    0,
+					DryRun:        dryRun,
+				},
+				engine:  fe,
+				display: engine.NewDisplay(&logBuf),
+			}
+
+			result := runner.Run(context.Background())
+
+			if fe.calls != 0 {
+				t.Fatalf("engine calls = %d, want 0", fe.calls)
+			}
+			if !result.Success || !result.Complete || result.Error != nil {
+				t.Fatalf("result = %#v, want successful complete result", result)
+			}
+			if result.Iterations != 0 {
+				t.Fatalf("iterations = %d, want 0", result.Iterations)
+			}
+			if result.CompletedStories != 1 || result.TotalStories != 1 {
+				t.Fatalf("story progress = %d/%d, want 1/1", result.CompletedStories, result.TotalStories)
+			}
+		})
+	}
+}
+
+func TestRun_ReconcilesLastStoryAfterTransientPRDReadFailure(t *testing.T) {
+	stories := []engine.UserStory{
+		{ID: "US-001", Title: "First story", Priority: 1},
+		{ID: "US-002", Title: "Second story", Priority: 2},
+	}
+	wantLast := stories[len(stories)-1]
+	halDir := setupTestHalDir(t, stories)
+	prdPath := filepath.Join(halDir, template.PRDFile)
+
+	calls := 0
+	fe := &fakeEngineWithHook{
+		fakeEngine: &fakeEngine{results: []engine.Result{
+			{Success: true, Complete: false},
+			{Success: true, Complete: true},
+		}},
+		hook: func(string) {
+			calls++
+			if calls == 1 {
+				if err := os.WriteFile(prdPath, []byte("{"), 0644); err != nil {
+					t.Fatalf("write transient malformed PRD: %v", err)
+				}
+				return
+			}
+
+			completedStories := append([]engine.UserStory(nil), stories...)
+			for i := range completedStories {
+				completedStories[i].Passes = true
+			}
+			completed := engine.PRD{
+				Project:     "test",
+				BranchName:  "main",
+				UserStories: completedStories,
+			}
+			data, err := json.Marshal(completed)
+			if err != nil {
+				t.Fatalf("marshal completed PRD: %v", err)
+			}
+			if err := os.WriteFile(prdPath, data, 0644); err != nil {
+				t.Fatalf("write completed PRD: %v", err)
+			}
+		},
+	}
+
+	var logBuf bytes.Buffer
+	runner := &Runner{
+		config: Config{
+			Dir:           halDir,
+			PRDFile:       template.PRDFile,
+			ProgressFile:  template.ProgressFile,
+			MaxIterations: 2,
+			Logger:        &logBuf,
+			MaxRetries:    0,
+		},
+		engine:  fe,
+		display: engine.NewDisplay(&logBuf),
+	}
+
+	result := runner.Run(context.Background())
+
+	if !result.Success || !result.Complete || result.Error != nil {
+		t.Fatalf("result = %#v, want successful complete result", result)
+	}
+	if result.Iterations != 2 {
+		t.Fatalf("iterations = %d, want 2", result.Iterations)
+	}
+	if result.LastStoryID != wantLast.ID || result.LastStoryTitle != wantLast.Title {
+		t.Fatalf("last story = %q (%q), want %s (%s)", result.LastStoryID, result.LastStoryTitle, wantLast.ID, wantLast.Title)
+	}
 }
 
 func TestFalseComplete_StopsAfterMaxFalseCompletes(t *testing.T) {

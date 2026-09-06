@@ -39,7 +39,9 @@ pending local factory work in the same global store.
 * [hal factory list](hal_factory_list.md)	 - List stored factory runs
 * [hal factory logs](hal_factory_logs.md)	 - Inspect stored factory run logs
 * [hal factory open](hal_factory_open.md)	 - Open handoff guidance for a factory run
+* [hal factory publish](hal_factory_publish.md)	 - Publish a stored factory run
 * [hal factory queue](hal_factory_queue.md)	 - Manage queued factory work
+* [hal factory recover](hal_factory_recover.md)	 - Apply a stored sandbox recovery bundle locally
 * [hal factory run](hal_factory_run.md)	 - Run a factory executor
 * [hal factory status](hal_factory_status.md)	 - Inspect a stored factory run
 * [hal factory trigger](hal_factory_trigger.md)	 - Create queued factory runs from trigger payloads

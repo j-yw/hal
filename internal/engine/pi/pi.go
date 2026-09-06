@@ -147,13 +147,20 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 			Success:  false,
 			Output:   output,
 			Duration: duration,
-			Error:    fmt.Errorf("execution failed: %w (stderr: %s)", err, stderr.String()),
+			Error:    piProcessError("execution", err, stderr.String()),
 		}
 	}
 
-	// Parse success and completion from parser state
-	success := !parser.HasFailure()
+	// Process exit alone is not a successful Pi run boundary. Require a
+	// completed terminal assistant outcome from agent_end.
+	success := parser.HasTerminalOutcome() && !parser.HasFailure()
 	complete := strings.Contains(output, "<promise>COMPLETE</promise>")
+	var resultErr error
+	if parser.TerminalError() != "" {
+		resultErr = fmt.Errorf("execution failed: %s", parser.TerminalError())
+	} else if !parser.HasTerminalOutcome() {
+		resultErr = fmt.Errorf("execution failed: %s", incompletePiTerminalError)
+	}
 
 	return engine.Result{
 		Success:  success,
@@ -161,23 +168,27 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 		Output:   output,
 		Duration: duration,
 		Tokens:   parser.TotalTokens(),
-		Error:    nil,
+		Error:    resultErr,
 	}
 }
 
 func (e *Engine) parseResultStatus(output string) (hasResult bool, success bool) {
 	parser := NewParser()
-	success = true
 
 	for _, line := range strings.Split(output, "\n") {
-		event := parser.ParseLine([]byte(line))
-		if event != nil && event.Type == engine.EventResult {
-			hasResult = true
-			success = event.Data.Success
-		}
+		parser.ParseLine([]byte(line))
 	}
 
-	return hasResult, success
+	hasResult = parser.HasTerminalOutcome()
+	return hasResult, hasResult && !parser.HasFailure()
+}
+
+func (e *Engine) parseTerminalError(output string) string {
+	parser := NewParser()
+	for _, line := range strings.Split(output, "\n") {
+		parser.ParseLine([]byte(line))
+	}
+	return parser.TerminalError()
 }
 
 // Prompt executes a single prompt and returns the text response.
@@ -206,7 +217,7 @@ func (e *Engine) Prompt(ctx context.Context, prompt string) (string, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("prompt timed out after %s", timeout)
 		}
-		return "", fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr.String())
+		return "", piProcessError("prompt", err, stderr.String())
 	}
 
 	return stdout.String(), nil
@@ -259,10 +270,24 @@ func (e *Engine) StreamPrompt(ctx context.Context, prompt string, display *engin
 		); recovered {
 			return text, recoverErr
 		}
-		return "", fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr.String())
+		return "", piProcessError("prompt", err, stderr.String())
+	}
+
+	if parser.TerminalError() != "" {
+		return "", fmt.Errorf("prompt failed: %s", parser.TerminalError())
+	}
+	if !parser.HasTerminalOutcome() {
+		return "", fmt.Errorf("prompt failed: %s", incompletePiTerminalError)
 	}
 
 	return collector.Text(), nil
+}
+
+func piProcessError(operation string, err error, stderr string) error {
+	if strings.TrimSpace(stderr) != "" {
+		return fmt.Errorf("%s failed: %s", operation, sanitizePiTerminalError("error", stderr))
+	}
+	return fmt.Errorf("%s failed: %w", operation, err)
 }
 
 func (e *Engine) recoverExecuteResult(
@@ -278,6 +303,16 @@ func (e *Engine) recoverExecuteResult(
 			Output:   output,
 			Duration: duration,
 			Error:    fmt.Errorf("execution canceled: %w", ctxErr),
+		}, true
+	}
+
+	if terminalError := e.parseTerminalError(output); terminalError != "" {
+		return engine.Result{
+			Success:  false,
+			Output:   output,
+			Duration: duration,
+			Tokens:   tokens,
+			Error:    fmt.Errorf("execution failed: %s", terminalError),
 		}, true
 	}
 
@@ -317,12 +352,16 @@ func (e *Engine) recoverStreamPrompt(
 		return "", fmt.Errorf("prompt canceled: %w", ctxErr), true
 	}
 
+	if terminalError := e.parseTerminalError(output); terminalError != "" {
+		return "", fmt.Errorf("prompt failed: %s", terminalError), true
+	}
+
 	if hasResult, success := e.parseResultStatus(output); hasResult && success {
 		if strings.TrimSpace(text) != "" {
 			return text, nil, true
 		}
 		return "", engine.NewOutputFallbackRequiredError(
-			fmt.Errorf("prompt failed: %w (stderr: %s)", err, stderr),
+			piProcessError("prompt", err, stderr),
 		), true
 	}
 

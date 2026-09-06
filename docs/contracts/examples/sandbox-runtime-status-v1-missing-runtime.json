@@ -1,0 +1,55 @@
+{
+  "contractType": "sandbox-runtime-status",
+  "contractVersion": "sandbox-runtime-status-v1",
+  "host": {
+    "id": "worker-a",
+    "name": "builder",
+    "kind": "worker",
+    "endpoint": {
+      "type": "unix_socket",
+      "summary": "local Unix socket",
+      "scheme": "unix"
+    }
+  },
+  "runtime": {
+    "id": "microvm",
+    "hostKind": null,
+    "isolationLevel": null
+  },
+  "selectedTemplate": {
+    "state": "absent",
+    "present": false
+  },
+  "source": {
+    "mode": "cached",
+    "requestedLive": false,
+    "cacheUpdated": false,
+    "refreshedAt": null,
+    "summary": "cached durable runtime metadata"
+  },
+  "supportedOperations": [],
+  "capacity": {
+    "summary": "max 2 sandboxes",
+    "cpuCores": null,
+    "memoryMb": null,
+    "diskGb": null,
+    "maxConcurrentSandboxes": 2,
+    "activeSandboxes": null
+  },
+  "readiness": {
+    "status": "unavailable",
+    "checkedAt": null,
+    "summary": "runtime is not registered for this host"
+  },
+  "security": {
+    "requested": {},
+    "enforced": {}
+  },
+  "diagnostics": [],
+  "errors": [
+    {
+      "code": "runtime_not_found",
+      "message": "runtime is not registered for this host"
+    }
+  ]
+}

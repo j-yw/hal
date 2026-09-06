@@ -23,9 +23,32 @@ tmp="$(mktemp /tmp/hal-bootstrap.XXXXXX)"
 trap 'rm -f "$tmp"' EXIT
 bin_dir="$HOME/.local/bin"
 mkdir -p "$bin_dir"
-go build -o "$tmp" .
-install -m 0755 "$tmp" "$bin_dir/hal"
-"$bin_dir/hal" version`
+install_existing_hal() {
+  if ! command -v hal >/dev/null 2>&1; then
+    return 1
+  fi
+  existing_hal="$(command -v hal)"
+  if [ "$existing_hal" != "$bin_dir/hal" ]; then
+    cp "$existing_hal" "$tmp"
+    install -m 0755 "$tmp" "$bin_dir/hal"
+  fi
+  "$bin_dir/hal" version
+  return 0
+}
+if command -v go >/dev/null 2>&1; then
+  module_path="$(go list -m 2>/dev/null || true)"
+  if [ "$module_path" = "github.com/jywlabs/hal" ] || [ "$module_path" = "github.com/ReScienceLab/hal" ]; then
+    go build -o "$tmp" .
+    install -m 0755 "$tmp" "$bin_dir/hal"
+    "$bin_dir/hal" version
+    exit 0
+  fi
+fi
+if install_existing_hal; then
+  exit 0
+fi
+echo "hal bootstrap failed: workspace is not a Hal source checkout and no existing hal binary was found" >&2
+exit 127`
 )
 
 // BootstrapHalDeps holds injectable dependencies for refreshing Hal-managed

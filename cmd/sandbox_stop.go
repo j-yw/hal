@@ -14,6 +14,7 @@ import (
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -62,6 +63,13 @@ var sandboxStopListInstances = sandbox.ListActiveInstances
 // sandboxStopLoadInstance is injectable for testing and resolves only active
 // registry entries so explicit names do not revive staged delete backups.
 var sandboxStopLoadInstance = sandbox.LoadActiveInstance
+
+var sandboxStopResolveProvider = func(providerName string) (sandbox.Provider, error) {
+	return resolveStoredProviderWithFallback(".", providerName)
+}
+var sandboxStopResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+	return resolveFactoryStoredSandboxRuntime(".", target)
+}
 
 // sandboxStopNow is injectable for deterministic tests.
 var sandboxStopNow = func() time.Time { return time.Now() }
@@ -308,23 +316,12 @@ func joinNames(names []string) string {
 // stopOneTarget stops a single sandbox, updates the registry, and reports the result.
 // If provider is nil, resolves from global config.
 func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
-	p := provider
-	if p == nil {
-		var err error
-		p, err = resolveProviderWithFallback(".", target.Provider)
-		if err != nil {
-			return fmt.Errorf("resolving provider for %q: %w", target.Name, err)
-		}
-	}
-
 	fmt.Fprintf(out, "Stopping sandbox %q...\n", target.Name)
 
 	ctx := context.Background()
-	info := sandbox.ConnectInfoFromState(target)
-	if err := p.Stop(ctx, info, out); err != nil {
+	if err := stopSandboxTargetResource(ctx, target, out, provider); err != nil {
 		return fmt.Errorf("sandbox stop failed for %q: %w", target.Name, err)
 	}
-	applyResolvedWorkspaceID(target, info)
 
 	if err := persistStoppedState(target); err != nil {
 		return fmt.Errorf("persisting stopped state for %q: %w", target.Name, err)
@@ -334,6 +331,10 @@ func stopOneTarget(target *sandbox.SandboxState, out io.Writer, provider sandbox
 	}
 
 	fmt.Fprintf(out, "%s Stopped %s\n", display.StyleSuccess.Render("[OK]"), target.Name)
+	if sandboxTargetUsesWorkerHost(target) {
+		fmt.Fprintf(out, "  Cleanup: hal sandbox delete %s\n", target.Name)
+		return nil
+	}
 	fmt.Fprintf(out, "  Billing: resources may still incur provider charges\n")
 	return nil
 }
@@ -352,29 +353,14 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 	for _, target := range targets {
 		target := target // capture for goroutine
 		g.Go(func() error {
-			p := provider
-			if p == nil {
-				var err error
-				p, err = resolveProviderWithFallback(".", target.Provider)
-				if err != nil {
-					mu.Lock()
-					fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
-					results = append(results, stopResult{Name: target.Name, Success: false, Err: err})
-					mu.Unlock()
-					return nil
-				}
-			}
-
 			ctx := context.Background()
-			info := sandbox.ConnectInfoFromState(target)
-			err := p.Stop(ctx, info, io.Discard)
+			err := stopSandboxTargetResource(ctx, target, io.Discard, provider)
 
 			mu.Lock()
 			if err != nil {
 				fmt.Fprintf(out, "%s Failed %s: %v\n", display.StyleError.Render("[!!]"), target.Name, err)
 				results = append(results, stopResult{Name: target.Name, Success: false, Err: err})
 			} else {
-				applyResolvedWorkspaceID(target, info)
 				if regErr := persistStoppedState(target); regErr != nil {
 					fmt.Fprintf(out, "%s Failed %s: persisting stopped state: %v\n", display.StyleError.Render("[!!]"), target.Name, regErr)
 					results = append(results, stopResult{Name: target.Name, Success: false, Err: regErr})
@@ -406,6 +392,42 @@ func stopMultipleTargets(targets []*sandbox.SandboxState, out io.Writer, provide
 		return fmt.Errorf("%d/%d sandbox stops failed", failed, len(targets))
 	}
 
+	return nil
+}
+
+func stopSandboxTargetResource(ctx context.Context, target *sandbox.SandboxState, out io.Writer, provider sandbox.Provider) error {
+	if sandboxTargetUsesWorkerHost(target) {
+		driver, err := sandboxStopResolveRuntime(target)
+		if err != nil {
+			return fmt.Errorf("resolving runtime for %q: %w", target.Name, err)
+		}
+		if driver == nil {
+			return fmt.Errorf("resolving runtime for %q: sandbox runtime driver is required", target.Name)
+		}
+		stopped, err := driver.Stop(ctx, sandboxruntime.LifecycleRequest{
+			Target: sandboxRuntimeTargetFromState(target),
+			Stdout: out,
+			Stderr: out,
+		})
+		if err != nil {
+			return err
+		}
+		return applySandboxRuntimeLifecycleTarget(target, stopped)
+	}
+
+	p := provider
+	if p == nil {
+		var err error
+		p, err = sandboxStopResolveProvider(target.Provider)
+		if err != nil {
+			return fmt.Errorf("resolving provider for %q: %w", target.Name, err)
+		}
+	}
+	info := sandbox.ConnectInfoFromState(target)
+	if err := p.Stop(ctx, info, out); err != nil {
+		return err
+	}
+	applyResolvedWorkspaceID(target, info)
 	return nil
 }
 

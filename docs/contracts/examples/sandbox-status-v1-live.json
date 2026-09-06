@@ -1,0 +1,32 @@
+{
+  "contractVersion": "sandbox-status-v1",
+  "source": "live",
+  "sandbox": {
+    "id": "sandbox-alpha",
+    "name": "alpha",
+    "provider": "worker",
+    "status": "running",
+    "createdAt": "2026-07-25T02:00:00Z",
+    "hostId": "worker-alpha",
+    "runtimeDriver": "rootless_podman",
+    "runtimeId": "runtime-alpha",
+    "isolationLevel": "container"
+  },
+  "execution": {
+    "runId": "run-alpha",
+    "purpose": "run",
+    "status": "running",
+    "startedAt": "2026-07-25T02:01:00Z",
+    "active": true,
+    "job": {
+      "id": "job-alpha",
+      "state": "running",
+      "submittedAt": "2026-07-25T02:02:00Z",
+      "startedAt": "2026-07-25T02:02:01Z",
+      "heartbeatAt": "2026-07-25T02:03:00Z",
+      "logCursor": 4
+    },
+    "finalizationState": "pending"
+  },
+  "recommendedAction": "follow_logs"
+}

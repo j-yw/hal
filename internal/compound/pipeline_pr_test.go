@@ -407,6 +407,40 @@ func TestRunPRStep_WaitNoChecks_StopsAtCI(t *testing.T) {
 	}
 }
 
+func TestRunPRStep_WaitNoChecksSkipIfUnavailableAdvancesToReport(t *testing.T) {
+	stubCIWaitNoChecks(t)
+
+	pipeline, out := newPRStepTestPipeline(t)
+	pipeline.pushAndCreatePR = pushStub("https://example.com/pr/1")
+	pipeline.currentBranch = branchStub("compound/ci-flow")
+
+	state := &PipelineState{
+		Step:       StepCI,
+		BranchName: "compound/ci-flow",
+		BaseBranch: "main",
+	}
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{CIPolicy: CIPolicySkipIfUnavailable})
+	if err != nil {
+		t.Fatalf("runPRStep returned error: %v", err)
+	}
+	if state.Step != StepReport {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepReport)
+	}
+	if state.CI == nil {
+		t.Fatal("state.CI is nil")
+	}
+	if state.CI.Status != "unavailable" || state.CI.Reason != ci.WaitTerminalReasonNoChecksDetected {
+		t.Fatalf("state.CI = %+v, want unavailable/%s", state.CI, ci.WaitTerminalReasonNoChecksDetected)
+	}
+	if state.CI.Policy != CIPolicySkipIfUnavailable {
+		t.Fatalf("state.CI.Policy = %q, want %q", state.CI.Policy, CIPolicySkipIfUnavailable)
+	}
+	if !strings.Contains(out.String(), "No CI checks discovered; continuing because CI policy is skip-if-unavailable") {
+		t.Fatalf("output = %q, want no-checks warning message", out.String())
+	}
+}
+
 func TestRunPRStep_FailingThenFixedToPassing(t *testing.T) {
 	stubCIWaitFailThenPass(t)
 	stubCIFixSuccess(t)

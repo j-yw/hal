@@ -197,7 +197,14 @@ func GitAddAllInDir(ctx context.Context, dir string) error {
 
 // GitCommitInDir creates a commit in the given repository.
 func GitCommitInDir(ctx context.Context, dir, message string) error {
-	cmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
+	args := []string{"commit", "-m", message}
+	if !gitCommitIdentityConfigured(ctx, dir) {
+		args = append([]string{
+			"-c", "user.name=Hal Factory",
+			"-c", "user.email=hal-factory@localhost",
+		}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
 	}
@@ -209,6 +216,20 @@ func GitCommitInDir(ctx context.Context, dir, message string) error {
 		return err
 	}
 	return nil
+}
+
+func gitCommitIdentityConfigured(ctx context.Context, dir string) bool {
+	for _, key := range []string{"user.name", "user.email"} {
+		cmd := exec.CommandContext(ctx, "git", "config", "--get", key)
+		if strings.TrimSpace(dir) != "" {
+			cmd.Dir = dir
+		}
+		out, err := cmd.Output()
+		if err != nil || strings.TrimSpace(string(out)) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func parsePorcelainPath(line string) string {

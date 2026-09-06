@@ -52,7 +52,7 @@ make install
   - Claude Code CLI.
   - pi CLI.
 
-For sandbox workflows, run `hal sandbox setup` and provide the provider credentials and environment values requested for Daytona, Hetzner, DigitalOcean, or AWS Lightsail.
+For sandbox workflows, run `hal sandbox setup` and provide the provider credentials and environment values requested for Hetzner, DigitalOcean, or AWS Lightsail. Local and registered hosts can use the Podman worker runtime without provisioning a cloud instance.
 
 ## First Run
 
@@ -372,6 +372,7 @@ Use JSON contracts when another tool or agent needs stable output.
 
 Primary contracts:
 
+- [`run-v1`](docs/contracts/run-v1.md): `hal run --json`
 - [`auto-v2`](docs/contracts/auto-v2.md): `hal auto --json`
 - [`status-v1`](docs/contracts/status-v1.md): `hal status --json`
 - [`doctor-v1`](docs/contracts/doctor-v1.md): `hal doctor --json`
@@ -428,6 +429,14 @@ go test -tags=integration ./internal/engine/codex/...
 ## Releases
 
 Release tags use `vX.Y.Z`. Pushing a `v*` tag triggers the release workflow and GoReleaser. The Homebrew cask is published through `j-yw/homebrew-tap`.
+
+For release/package verification on this branch, build the distributable Hal CLI surface with:
+
+```bash
+make build
+```
+
+This produces `./hal` with version metadata. The default build/package check is local Go compilation; it does not build sandbox images and must not require root, KVM, Firecracker, Docker/Podman, sandboxd, cloud or registry credentials, proxy listeners, firewall mutation, or real API secrets.
 
 ## License
 

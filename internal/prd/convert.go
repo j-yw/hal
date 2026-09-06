@@ -59,6 +59,7 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 	if err != nil {
 		return fmt.Errorf("failed to read markdown PRD: %w", err)
 	}
+	explicitStoryIDs := explicitMarkdownStoryIDs(string(mdContent))
 
 	beforeOutput, err := readOutputSnapshot(outPath)
 	if err != nil {
@@ -134,6 +135,15 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 		}
 	}
 
+	if !opts.Granular {
+		if err := validateExplicitStoryStructure(prdJSON, explicitStoryIDs); err != nil {
+			if rollbackErr := restoreOutputSnapshot(outPath, beforeOutput); rollbackErr != nil {
+				return fmt.Errorf("%w (and failed to restore previous output: %v)", err, rollbackErr)
+			}
+			return err
+		}
+	}
+
 	if err := enforceBranchMismatchGuardWithRollback(outPath, beforeOutput, prdJSON, opts); err != nil {
 		return err
 	}
@@ -153,14 +163,23 @@ func ConvertWithEngine(ctx context.Context, eng engine.Engine, mdPath, outPath s
 }
 
 func buildConversionPrompt(skill, mdContent, resolvedBranchName string, granular bool) string {
-	storyRule := "Each story must be completable in ONE iteration (split large stories)"
+	explicitStoryIDs := explicitMarkdownStoryIDs(mdContent)
+	storyRule := "Create developer-sized stories that are each completable in ONE iteration; split only unstructured requirements when needed"
 	idRule := "IDs are sequential (US-001, US-002, etc.)"
-	modeRule := "Standard mode: produce developer-sized user stories."
+	modeRule := "Standard mode: preserve explicit source story boundaries; otherwise produce developer-sized user stories."
+	structureRule := "The source has no explicit user-story headings, so derive a coherent set of developer-sized stories from its requirements."
 	exampleID := "US-001"
+	if len(explicitStoryIDs) > 0 {
+		structureRule = fmt.Sprintf(
+			"Source story boundary invariant: the markdown contains exactly %d explicit user stories with IDs %s. Return exactly those %d stories with the same IDs in the same order. Do not split, merge, add, remove, or reorder them, and do not turn supporting functional requirements or verification criteria into additional stories.",
+			len(explicitStoryIDs), strings.Join(explicitStoryIDs, ", "), len(explicitStoryIDs),
+		)
+	}
 	if granular {
 		storyRule = "Decompose into 8-15 atomic tasks, each completable in ONE agent iteration"
 		idRule = "IDs are sequential (T-001, T-002, etc.)"
 		modeRule = "Granular mode: produce 8-15 dependency-ordered atomic tasks for autonomous execution."
+		structureRule = "Granular mode may intentionally decompose source stories into a new 8-15 task structure."
 		exampleID = "T-001"
 	}
 
@@ -192,6 +211,7 @@ Convert the markdown PRD to JSON format following the skill rules:
 8. All stories have passes: false and empty notes
 9. %s
 10. %s
+11. %s
 
 IMPORTANT: Do NOT use any tools (no Read, Write, Bash, etc.). Do NOT write any files.
 File saving is handled by the caller. Return ONLY the JSON object (no markdown, no explanation). The format must be:
@@ -210,7 +230,82 @@ File saving is handled by the caller. Return ONLY the JSON object (no markdown, 
       "notes": ""
     }
   ]
-}`, skill, mdContent, storyRule, template.BrowserVerificationCriterion, idRule, modeRule, branchRule, branchExample, exampleID)
+}`, skill, mdContent, storyRule, template.BrowserVerificationCriterion, idRule, modeRule, branchRule, structureRule, branchExample, exampleID)
+}
+
+var explicitMarkdownStoryHeadingPattern = regexp.MustCompile(`(?i)^(?:user[[:space:]]+story[[:space:]]+)?(US-[0-9]+)(?:[[:space:]]*[:.)-]|[[:space:]]|$)`)
+
+// explicitMarkdownStoryIDs returns user-story IDs from markdown headings while
+// ignoring examples inside fenced code blocks. Standard conversion uses this
+// source structure as a one-to-one boundary invariant.
+func explicitMarkdownStoryIDs(mdContent string) []string {
+	var ids []string
+	fenceDelimiter := ""
+
+	for _, line := range strings.Split(mdContent, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if delimiter := markdownFenceDelimiter(trimmed); delimiter != "" {
+			if fenceDelimiter == "" {
+				fenceDelimiter = delimiter
+			} else if fenceDelimiter == delimiter {
+				fenceDelimiter = ""
+			}
+			continue
+		}
+		if fenceDelimiter != "" {
+			continue
+		}
+
+		headingLevel := 0
+		for headingLevel < len(trimmed) && trimmed[headingLevel] == '#' {
+			headingLevel++
+		}
+		if headingLevel < 2 || headingLevel > 6 || headingLevel >= len(trimmed) || !unicode.IsSpace(rune(trimmed[headingLevel])) {
+			continue
+		}
+
+		heading := strings.TrimSpace(trimmed[headingLevel:])
+		match := explicitMarkdownStoryHeadingPattern.FindStringSubmatch(heading)
+		if len(match) != 2 {
+			continue
+		}
+		ids = append(ids, strings.ToUpper(match[1]))
+	}
+
+	return ids
+}
+
+func validateExplicitStoryStructure(prdJSON string, expectedIDs []string) error {
+	if len(expectedIDs) == 0 {
+		return nil
+	}
+
+	var converted engine.PRD
+	if err := json.Unmarshal([]byte(prdJSON), &converted); err != nil {
+		return fmt.Errorf("failed to verify converted story structure: %w", err)
+	}
+
+	actualIDs := make([]string, len(converted.UserStories))
+	for i := range converted.UserStories {
+		actualIDs[i] = converted.UserStories[i].ID
+	}
+
+	if len(actualIDs) != len(expectedIDs) {
+		return fmt.Errorf(
+			"standard conversion changed explicit story structure: source defines %d stories but output contains %d; preserve source story boundaries or use --granular for intentional decomposition",
+			len(expectedIDs), len(actualIDs),
+		)
+	}
+	for i := range expectedIDs {
+		if actualIDs[i] != expectedIDs[i] {
+			return fmt.Errorf(
+				"standard conversion changed explicit story structure at position %d: expected ID %s but output contains %s; preserve source story IDs and order or use --granular for intentional decomposition",
+				i+1, expectedIDs[i], actualIDs[i],
+			)
+		}
+	}
+
+	return nil
 }
 
 var (

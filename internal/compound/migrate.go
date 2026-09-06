@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -142,7 +143,7 @@ func MigrateAutoProgress(dir string, display DisplayWriter) error {
 		return fmt.Errorf("failed to read auto-progress.txt: %w", err)
 	}
 
-	autoContent := string(autoProgressData)
+	autoContent := status.SanitizePublicString(string(autoProgressData))
 	// Skip if auto-progress.txt is empty or just the default template
 	if autoContent == "" || autoContent == template.DefaultProgress {
 		// Remove empty/default legacy file
@@ -160,7 +161,7 @@ func MigrateAutoProgress(dir string, display DisplayWriter) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to read progress.txt: %w", err)
 	}
-	progressContent := string(progressData)
+	progressContent := status.SanitizePublicString(string(progressData))
 
 	// Determine if progress.txt has meaningful content
 	progressIsEmpty := progressContent == "" || progressContent == template.DefaultProgress

@@ -1,0 +1,550 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"strings"
+	"time"
+
+	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtarget"
+)
+
+const sandboxCommandLeaseTTL = 30 * time.Minute
+
+type sandboxCommandScheduledTargetRequest struct {
+	Purpose                string
+	SandboxName            string
+	SandboxHostID          string
+	SandboxRuntime         string
+	ProjectDir             string
+	Repository             string
+	Branch                 string
+	RunID                  string
+	Workspace              *sandbox.SandboxWorkspace
+	RequireWorkerRootless  bool
+	TemplateRuntimeDriver  string
+	TemplateIsolationLevel string
+	TemplateRuntimeImage   string
+	TemplateLock           *sandbox.SandboxTemplateLockMetadata
+}
+
+type sandboxCommandScheduledTargetDeps struct {
+	listHosts    func() ([]*sandbox.SandboxHost, error)
+	listLeases   func() ([]*sandbox.SandboxLease, error)
+	now          func() time.Time
+	acquireLease func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
+}
+
+func resolveSandboxCommandExecutionTarget(
+	ctx context.Context,
+	targetReq sandboxCommandTargetRequest,
+	targetDeps sandboxCommandTargetDeps,
+	scheduledReq sandboxCommandScheduledTargetRequest,
+	scheduledDeps sandboxCommandScheduledTargetDeps,
+) (*sandbox.SandboxState, error) {
+	name := strings.TrimSpace(targetReq.SandboxName)
+	if name != "" {
+		if targetDeps.loadSandbox == nil {
+			return nil, fmt.Errorf("load %s %q: sandbox loader is required", sandboxCommandLoadContext(targetReq), name)
+		}
+		target, err := targetDeps.loadSandbox(name)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("load %s %q: %w", sandboxCommandLoadContext(targetReq), name, err)
+		}
+		targetDeps.loadSandbox = func(requestedName string) (*sandbox.SandboxState, error) {
+			if strings.TrimSpace(requestedName) != name || target == nil {
+				return nil, fs.ErrNotExist
+			}
+			return target, nil
+		}
+		if err == nil {
+			return resolveSandboxCommandTarget(ctx, targetReq, targetDeps)
+		}
+	}
+
+	useScheduler, targetDeps, scheduledReq, scheduledDeps := classifySandboxCommandExecutionRoute(
+		targetReq,
+		targetDeps,
+		scheduledReq,
+		scheduledDeps,
+	)
+	if useScheduler {
+		return resolveSandboxCommandScheduledTarget(scheduledReq, scheduledDeps)
+	}
+	return resolveSandboxCommandTarget(ctx, targetReq, targetDeps)
+}
+
+func classifySandboxCommandExecutionRoute(
+	targetReq sandboxCommandTargetRequest,
+	targetDeps sandboxCommandTargetDeps,
+	scheduledReq sandboxCommandScheduledTargetRequest,
+	scheduledDeps sandboxCommandScheduledTargetDeps,
+) (bool, sandboxCommandTargetDeps, sandboxCommandScheduledTargetRequest, sandboxCommandScheduledTargetDeps) {
+	scheduledReq.TemplateRuntimeDriver = strings.TrimSpace(targetReq.TemplateRuntimeDriver)
+	scheduledReq.TemplateIsolationLevel = strings.TrimSpace(targetReq.TemplateIsolationLevel)
+	scheduledReq.TemplateRuntimeImage = strings.TrimSpace(targetReq.TemplateRuntimeImage)
+	scheduledReq.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(targetReq.TemplateLock)
+	runtimeDriver := strings.TrimSpace(targetReq.SandboxRuntime)
+	hostID := strings.TrimSpace(targetReq.SandboxHostID)
+	// Only worker-backed rootless targets may be synthesized by the scheduler.
+	// Every other constraint remains on the selector/provisioning contract.
+	if runtimeDriver != "" && runtimeDriver != sandboxruntime.DriverRootlessPodman {
+		return false, targetDeps, scheduledReq, scheduledDeps
+	}
+	if runtimeDriver == "" && hostID == "" {
+		return false, targetDeps, scheduledReq, scheduledDeps
+	}
+
+	hosts, listErr := listSandboxCommandTargetHosts(targetDeps, scheduledDeps)
+	pinnedHostLister := func() ([]*sandbox.SandboxHost, error) {
+		return hosts, listErr
+	}
+	targetDeps.listHosts = pinnedHostLister
+	scheduledDeps.listHosts = pinnedHostLister
+	if listErr != nil {
+		return false, targetDeps, scheduledReq, scheduledDeps
+	}
+
+	if hostID != "" {
+		if !sandboxCommandRootlessWorkerHost(hosts, hostID) {
+			return false, targetDeps, scheduledReq, scheduledDeps
+		}
+		scheduledReq.SandboxRuntime = sandboxruntime.DriverRootlessPodman
+		scheduledReq.RequireWorkerRootless = true
+		return true, targetDeps, scheduledReq, scheduledDeps
+	}
+
+	workerHosts := sandboxCommandRootlessWorkerHosts(hosts)
+	if len(workerHosts) == 0 {
+		return false, targetDeps, scheduledReq, scheduledDeps
+	}
+	scheduledDeps.listHosts = func() ([]*sandbox.SandboxHost, error) {
+		return workerHosts, nil
+	}
+	scheduledReq.SandboxRuntime = sandboxruntime.DriverRootlessPodman
+	scheduledReq.RequireWorkerRootless = true
+	return true, targetDeps, scheduledReq, scheduledDeps
+}
+
+func listSandboxCommandTargetHosts(targetDeps sandboxCommandTargetDeps, scheduledDeps sandboxCommandScheduledTargetDeps) ([]*sandbox.SandboxHost, error) {
+	listHosts := targetDeps.listHosts
+	if listHosts == nil {
+		listHosts = scheduledDeps.listHosts
+	}
+	if listHosts == nil {
+		return nil, fmt.Errorf("host lister is required")
+	}
+	return listHosts()
+}
+
+func sandboxCommandRootlessWorkerHosts(hosts []*sandbox.SandboxHost) []*sandbox.SandboxHost {
+	workerHosts := make([]*sandbox.SandboxHost, 0, len(hosts))
+	for _, host := range hosts {
+		if host == nil ||
+			strings.TrimSpace(host.Kind) != sandbox.SandboxHostKindWorker ||
+			!sandboxRuntimeHostSupportsRuntime(host, sandboxruntime.DriverRootlessPodman) {
+			continue
+		}
+		workerHosts = append(workerHosts, host)
+	}
+	return workerHosts
+}
+
+func sandboxCommandRootlessWorkerHost(hosts []*sandbox.SandboxHost, hostID string) bool {
+	var match *sandbox.SandboxHost
+	for _, host := range hosts {
+		if host == nil || strings.TrimSpace(host.ID) != hostID {
+			continue
+		}
+		if match != nil {
+			return false
+		}
+		match = host
+	}
+	return match != nil &&
+		strings.TrimSpace(match.Kind) == sandbox.SandboxHostKindWorker &&
+		sandboxRuntimeHostSupportsRuntime(match, sandboxruntime.DriverRootlessPodman)
+}
+
+func resolveSandboxCommandScheduledTarget(req sandboxCommandScheduledTargetRequest, deps sandboxCommandScheduledTargetDeps) (*sandbox.SandboxState, error) {
+	result := sandboxtarget.Schedule(sandboxtarget.SchedulerRequest{
+		Purpose:       sandboxtarget.Purpose(req.Purpose),
+		SandboxName:   req.SandboxName,
+		HostID:        req.SandboxHostID,
+		RuntimeDriver: req.SandboxRuntime,
+		Intent:        sandboxtarget.SchedulerIntentExplicitTarget,
+		Project: sandboxtarget.ProjectContext{
+			Dir:        req.ProjectDir,
+			Repository: req.Repository,
+			Branch:     req.Branch,
+		},
+		Workspace: sandboxCommandSchedulerWorkspace(req.Workspace),
+	}, sandboxtarget.CachedState{
+		ListHosts:  deps.listHosts,
+		ListLeases: deps.listLeases,
+		Now:        deps.now,
+	})
+	if result.Rejected() {
+		return nil, sandboxCommandSchedulerFailureError(result.Rejection)
+	}
+	if !result.Selected() || result.Selection == nil {
+		return nil, fmt.Errorf("sandbox target scheduling returned no target")
+	}
+
+	target := sandboxCommandStateFromSchedulerResult(req, result)
+	if err := applySandboxCommandScheduledTemplateConstruction(target, req); err != nil {
+		return nil, err
+	}
+	if err := validateSandboxCommandWorkerRuntime(sandboxtarget.Result{
+		Host:    target.Host,
+		Runtime: sandboxRuntimeStateForTargetSelection(target.Runtime),
+	}); err != nil {
+		return nil, err
+	}
+	if req.RequireWorkerRootless {
+		if err := validateSandboxCommandScheduledWorkerRootlessTarget(target); err != nil {
+			return nil, err
+		}
+	}
+
+	if result.RequiresLease() {
+		lease, err := acquireSandboxCommandLease(req, target, result.Lease, deps)
+		if err != nil {
+			return nil, err
+		}
+		target.Lease = sandboxLeaseRefFromLease(lease, target)
+	}
+
+	return target, nil
+}
+
+func applySandboxCommandScheduledTemplateConstruction(
+	target *sandbox.SandboxState,
+	req sandboxCommandScheduledTargetRequest,
+) error {
+	driver := strings.TrimSpace(req.TemplateRuntimeDriver)
+	isolation := strings.TrimSpace(req.TemplateIsolationLevel)
+	image := strings.TrimSpace(req.TemplateRuntimeImage)
+	lock := sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock)
+	if driver == "" && isolation == "" && image == "" && lock == nil {
+		return nil
+	}
+	if target == nil || target.Runtime == nil || lock == nil {
+		return errors.New("selection_rejected")
+	}
+	if driver == "" || strings.TrimSpace(target.Runtime.Driver) != driver ||
+		isolation == "" || strings.TrimSpace(target.Runtime.IsolationLevel) != isolation {
+		return errors.New("selection_rejected")
+	}
+	cachedImage := strings.TrimSpace(target.Runtime.Image)
+	if image != "" && cachedImage != "" && cachedImage != image {
+		return errors.New("selection_rejected")
+	}
+	target.Runtime.Driver = driver
+	target.Runtime.IsolationLevel = isolation
+	target.Runtime.Image = image
+	target.Runtime.TemplateLock = lock
+	return nil
+}
+
+func validateSandboxCommandScheduledWorkerRootlessTarget(target *sandbox.SandboxState) error {
+	hostID := ""
+	if target != nil && target.Host != nil {
+		hostID = strings.TrimSpace(target.Host.ID)
+	}
+	if target == nil || target.Host == nil || strings.TrimSpace(target.Host.Kind) != sandbox.SandboxHostKindWorker {
+		return sandboxCommandTargetFailureError(&sandboxtarget.Failure{
+			Reason:        sandboxtarget.FailureReasonRuntimeUnsupported,
+			Message:       fmt.Sprintf("runtime_unsupported: host %q is not a worker-backed %s target", hostID, sandboxruntime.DriverRootlessPodman),
+			HostID:        hostID,
+			RuntimeDriver: sandboxruntime.DriverRootlessPodman,
+		})
+	}
+	if target.Runtime == nil || strings.TrimSpace(target.Runtime.Driver) != sandboxruntime.DriverRootlessPodman {
+		return sandboxCommandTargetFailureError(&sandboxtarget.Failure{
+			Reason:        sandboxtarget.FailureReasonRuntimeUnsupported,
+			Message:       fmt.Sprintf("runtime_unsupported: worker host %q does not provide runtime %q", hostID, sandboxruntime.DriverRootlessPodman),
+			HostID:        hostID,
+			RuntimeDriver: sandboxruntime.DriverRootlessPodman,
+		})
+	}
+	return nil
+}
+
+func sandboxCommandSchedulerWorkspace(workspace *sandbox.SandboxWorkspace) sandboxtarget.WorkspaceContext {
+	if workspace == nil {
+		return sandboxtarget.WorkspaceContext{}
+	}
+	return sandboxtarget.WorkspaceContext{
+		Mode:        strings.TrimSpace(workspace.Mode),
+		InputSource: strings.TrimSpace(workspace.InputSource),
+		Repository:  strings.TrimSpace(workspace.Repo),
+		Branch:      strings.TrimSpace(workspace.Branch),
+		SyncRef:     strings.TrimSpace(workspace.SyncRef),
+	}
+}
+
+func sandboxCommandSchedulerFailureError(rejection *sandboxtarget.SchedulerRejection) error {
+	if rejection == nil {
+		return nil
+	}
+	return sandboxCommandTargetFailureError(&sandboxtarget.Failure{
+		Reason:         rejection.Reason,
+		Message:        rejection.Message,
+		SandboxName:    rejection.SandboxName,
+		HostID:         rejection.HostID,
+		RuntimeDriver:  rejection.RuntimeDriver,
+		IsolationLevel: rejection.IsolationLevel,
+	})
+}
+
+func sandboxCommandStateFromSchedulerResult(req sandboxCommandScheduledTargetRequest, result sandboxtarget.SchedulerResult) *sandbox.SandboxState {
+	if result.Selection.Sandbox != nil {
+		target := cloneSandboxCommandState(result.Selection.Sandbox)
+		applyScheduledTargetMetadata(target, result.Selection)
+		return target
+	}
+
+	name := strings.TrimSpace(req.SandboxName)
+	if name == "" {
+		name = strings.TrimSpace(result.Selection.Identity.SandboxName)
+	}
+	if name == "" {
+		name = sandbox.SandboxNameFromBranch(req.Branch)
+	}
+
+	target := &sandbox.SandboxState{
+		Name:      name,
+		Provider:  "local",
+		Status:    sandbox.StatusStopped,
+		Workspace: cloneSandboxWorkspace(req.Workspace),
+	}
+	applyScheduledTargetMetadata(target, result.Selection)
+	return target
+}
+
+func applyScheduledTargetMetadata(target *sandbox.SandboxState, selection *sandboxtarget.SchedulerSelection) {
+	if target == nil || selection == nil {
+		return
+	}
+	if selection.Host != nil {
+		target.Host = cloneSandboxHost(selection.Host)
+		target.Security = cloneSandboxSecurity(selection.Host.Security)
+	}
+	if selection.Runtime != nil {
+		target.Runtime = sandboxRuntimeStateFromSchedulerRuntime(selection.Runtime)
+	}
+	if target.Runtime != nil &&
+		strings.TrimSpace(target.Runtime.WorkerID) == "" &&
+		target.Host != nil &&
+		strings.TrimSpace(target.Host.Kind) == sandbox.SandboxHostKindWorker {
+		target.Runtime.WorkerID = strings.TrimSpace(target.Host.ID)
+	}
+}
+
+func sandboxRuntimeStateFromSchedulerRuntime(runtime *sandboxruntime.RuntimeState) *sandbox.SandboxRuntimeState {
+	if runtime == nil {
+		return nil
+	}
+	return &sandbox.SandboxRuntimeState{
+		Driver:         strings.TrimSpace(runtime.Driver),
+		IsolationLevel: strings.TrimSpace(runtime.IsolationLevel),
+		RuntimeID:      strings.TrimSpace(runtime.RuntimeID),
+		Image:          strings.TrimSpace(runtime.Image),
+		WorkerID:       strings.TrimSpace(runtime.WorkerID),
+	}
+}
+
+func sandboxRuntimeStateForTargetSelection(runtime *sandbox.SandboxRuntimeState) *sandboxruntime.RuntimeState {
+	if runtime == nil {
+		return nil
+	}
+	return &sandboxruntime.RuntimeState{
+		Driver:         strings.TrimSpace(runtime.Driver),
+		IsolationLevel: strings.TrimSpace(runtime.IsolationLevel),
+		RuntimeID:      strings.TrimSpace(runtime.RuntimeID),
+		Image:          strings.TrimSpace(runtime.Image),
+		WorkerID:       strings.TrimSpace(runtime.WorkerID),
+	}
+}
+
+func acquireSandboxCommandLease(req sandboxCommandScheduledTargetRequest, target *sandbox.SandboxState, leaseReq sandboxtarget.SchedulerLeaseRequirement, deps sandboxCommandScheduledTargetDeps) (*sandbox.SandboxLease, error) {
+	if deps.acquireLease == nil {
+		return nil, fmt.Errorf("sandbox lease acquisition is required")
+	}
+	ttl := leaseReq.TTL
+	if ttl <= 0 {
+		ttl = sandboxCommandLeaseTTL
+	}
+	lease, err := deps.acquireLease(sandbox.SandboxLeaseAcquireRequest{
+		ID:          strings.TrimSpace(req.RunID),
+		SandboxID:   strings.TrimSpace(target.ID),
+		SandboxName: strings.TrimSpace(target.Name),
+		ResourceKey: strings.TrimSpace(leaseReq.ResourceKey),
+		Holder:      sandboxCommandLeaseHolder(req),
+		Purpose:     string(leaseReq.Purpose),
+		RunID:       strings.TrimSpace(req.RunID),
+	}, ttl)
+	if err != nil {
+		var conflict *sandbox.SandboxLeaseConflictError
+		if errors.As(err, &conflict) {
+			return nil, sandboxCommandLeaseCapacityBlockedError(req, target)
+		}
+		return nil, sandboxCommandSchedulerOperationError{
+			message: "acquire sandbox lease failed",
+			cause:   err,
+		}
+	}
+	return lease, nil
+}
+
+func sandboxCommandLeaseCapacityBlockedError(req sandboxCommandScheduledTargetRequest, target *sandbox.SandboxState) error {
+	hostID := strings.TrimSpace(req.SandboxHostID)
+	if hostID == "" && target != nil && target.Host != nil {
+		hostID = strings.TrimSpace(target.Host.ID)
+	}
+	message := "no cached sandbox hosts have available capacity"
+	if hostID != "" {
+		message = fmt.Sprintf("host %q has no available cached capacity", hostID)
+	}
+	return sandboxCommandTargetFailureError(&sandboxtarget.Failure{
+		Reason:        sandboxtarget.FailureReasonCapacityBlocked,
+		Message:       message,
+		SandboxName:   strings.TrimSpace(req.SandboxName),
+		HostID:        hostID,
+		RuntimeDriver: strings.TrimSpace(req.SandboxRuntime),
+	})
+}
+
+func sandboxCommandLeaseHolder(req sandboxCommandScheduledTargetRequest) string {
+	purpose := strings.TrimSpace(req.Purpose)
+	runID := strings.TrimSpace(req.RunID)
+	if purpose == "" {
+		purpose = "sandbox"
+	}
+	if runID == "" {
+		runID = "unknown"
+	}
+	return purpose + ":" + runID
+}
+
+func cloneSandboxCommandState(target *sandbox.SandboxState) *sandbox.SandboxState {
+	if target == nil {
+		return nil
+	}
+	clone := *target
+	clone.Host = cloneSandboxHost(target.Host)
+	clone.Runtime = cloneSandboxRuntime(target.Runtime)
+	clone.Workspace = cloneSandboxWorkspace(target.Workspace)
+	clone.Security = cloneSandboxSecurity(target.Security)
+	if target.Lease != nil {
+		lease := *target.Lease
+		clone.Lease = &lease
+	}
+	return &clone
+}
+
+func sandboxCommandDefaultLeaseLister(now func() time.Time, customStore bool) func() ([]*sandbox.SandboxLease, error) {
+	if customStore {
+		return func() ([]*sandbox.SandboxLease, error) {
+			return nil, nil
+		}
+	}
+	store := sandbox.NewSandboxLeaseStore(now)
+	return func() ([]*sandbox.SandboxLease, error) {
+		if _, err := store.ExpireLeases(); err != nil {
+			return nil, err
+		}
+		return store.List()
+	}
+}
+
+func sandboxCommandDefaultLeaseAcquirer(now func() time.Time, customStore bool) func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error) {
+	if customStore {
+		return func(req sandbox.SandboxLeaseAcquireRequest, ttl time.Duration) (*sandbox.SandboxLease, error) {
+			current := now()
+			return &sandbox.SandboxLease{
+				ID:          strings.TrimSpace(req.ID),
+				SandboxID:   strings.TrimSpace(req.SandboxID),
+				SandboxName: strings.TrimSpace(req.SandboxName),
+				ResourceKey: strings.TrimSpace(req.ResourceKey),
+				Holder:      strings.TrimSpace(req.Holder),
+				Purpose:     strings.TrimSpace(req.Purpose),
+				RunID:       strings.TrimSpace(req.RunID),
+				AcquiredAt:  current,
+				ExpiresAt:   current.Add(ttl),
+				HeartbeatAt: current,
+				Status:      sandbox.SandboxLeaseStatusActive,
+			}, nil
+		}
+	}
+	store := sandbox.NewSandboxLeaseStore(now)
+	return store.Acquire
+}
+
+func sandboxCommandDefaultLeaseReleaser(now func() time.Time, customStore bool) func(string) (*sandbox.SandboxLease, error) {
+	if customStore {
+		return func(id string) (*sandbox.SandboxLease, error) {
+			return &sandbox.SandboxLease{
+				ID:     strings.TrimSpace(id),
+				Status: sandbox.SandboxLeaseStatusReleased,
+			}, nil
+		}
+	}
+	store := sandbox.NewSandboxLeaseStore(now)
+	return store.Release
+}
+
+type sandboxCommandLeaseReleaseTracker struct {
+	releaseLease func(string) (*sandbox.SandboxLease, error)
+	leaseID      string
+	released     bool
+}
+
+func (t *sandboxCommandLeaseReleaseTracker) observe(target *sandbox.SandboxState) {
+	if t == nil || strings.TrimSpace(t.leaseID) != "" || target == nil || target.Lease == nil {
+		return
+	}
+	t.leaseID = strings.TrimSpace(target.Lease.ID)
+}
+
+func (t *sandboxCommandLeaseReleaseTracker) release() error {
+	if t == nil || t.released {
+		return nil
+	}
+	leaseID := strings.TrimSpace(t.leaseID)
+	if leaseID == "" {
+		return nil
+	}
+	t.released = true
+	if t.releaseLease == nil {
+		return fmt.Errorf("sandbox lease release is required")
+	}
+	if _, err := t.releaseLease(leaseID); err != nil {
+		return sandboxCommandSchedulerOperationError{
+			message: "release sandbox lease failed",
+			cause:   err,
+		}
+	}
+	return nil
+}
+
+type sandboxCommandSchedulerOperationError struct {
+	message string
+	cause   error
+}
+
+func (e sandboxCommandSchedulerOperationError) Error() string {
+	if strings.TrimSpace(e.message) == "" {
+		return "sandbox scheduler operation failed"
+	}
+	return e.message
+}
+
+func (e sandboxCommandSchedulerOperationError) Unwrap() error {
+	return e.cause
+}

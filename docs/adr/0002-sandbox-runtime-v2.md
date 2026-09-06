@@ -1,0 +1,134 @@
+# ADR 0002: Sandbox Runtime v2
+
+## Status
+
+Proposed
+
+## Context
+
+Sandbox Runtime v2 needs an agreed architecture boundary before any runtime
+or CLI implementation begins. Phase 0 is limited to documenting that boundary
+in this ADR so later phases can be reviewed against a stable decision record.
+
+Phase 0 makes no runtime behavior changes. It also makes no production code
+changes; the only intended product change in Phase 0 is this file:
+`docs/adr/0002-sandbox-runtime-v2.md`.
+
+Existing sandbox users should continue to rely on the current SSH-machine
+provider behavior while Sandbox Runtime v2 is designed. The compatibility path
+for this ADR is preserving those providers until a later implementation phase
+introduces and verifies a replacement runtime.
+
+## Decision
+
+The target runtime for Sandbox Runtime v2 is self-hosted microVM workers. This
+ADR records that destination so future phases can align implementation work to
+one runtime architecture.
+
+The MVP is architecture and extraction first: establish ownership boundaries,
+extract shared sandbox orchestration, and preserve existing behavior before any
+new runtime is enabled. Phase 0 does not deliver Podman support, `sandboxd`, or
+microVM implementation work.
+
+Package ownership is split by durability and orchestration responsibility.
+`internal/sandbox` owns durable sandbox state and shared sandbox types.
+`internal/sandboxexec` owns shared sandbox command orchestration used by future
+execution paths. Phase 0 records these boundaries only; it does not add,
+remove, or modify Go packages.
+
+Normal Hal workflows remain local by default while Sandbox Runtime v2 is
+designed and extracted. `hal run` remains local by default, and `hal auto`
+remains local by default. Phase 0 does not introduce new default remote
+execution behavior or new default sandbox execution behavior for either
+workflow.
+
+New sandbox command flags are delayed until after factory extraction. Phase 0
+adds no new CLI flags for `hal run` or `hal auto`; sandbox flag design and
+implementation for both commands belongs in a later phase after shared factory
+and sandbox orchestration boundaries have been extracted.
+
+Future Sandbox Runtime v2 contract changes must be additive unless a new v2
+contract is introduced. Phase 0 contract work is limited to documenting this
+compatibility rule in the ADR; it does not modify contract files, add a new
+runtime contract, or change any existing machine-readable contract surface.
+
+## Consequences
+
+Choosing self-hosted microVM workers makes Sandbox Runtime v2 a separate
+execution boundary rather than another legacy sandbox provider. Later phases
+must preserve existing behavior while extracting the shared state, type, and
+command-orchestration seams needed to support that boundary.
+
+Keeping current SSH-machine providers as the compatibility path reduces
+migration risk for existing factory and sandbox workflows. Keeping `hal run`
+and `hal auto` local by default avoids implicit remote execution changes while
+the new runtime is designed and extracted.
+
+Deferring sandbox CLI flags and requiring additive contract changes keeps
+automation stable until factory extraction and any v2 contract work are
+explicitly scoped. This ADR therefore creates reviewable implementation
+constraints, but it does not itself authorize runtime, CLI, contract, executor,
+Podman, `sandboxd`, microVM, or network-proxy changes.
+
+## Verification Guidance
+
+Phase 0 verification should match the documentation-only scope of this ADR.
+Workers should not add brittle prose-only tests unless this repository already
+has an established documentation-test pattern for the affected content.
+
+`git diff --check` is a documentation-appropriate verification command for
+Phase 0 ADR edits. Any existing test command a worker chooses to run, such as
+the repository's standard Go test suite, must exit 0 and be reported in the
+progress record for the story.
+
+Final Phase 0 verification should also confirm the intended product diff is
+limited to this ADR and includes no runtime, CLI, contract, or production code
+changes.
+
+## Phased Rollout Boundaries
+
+Phase 0 is limited to this ADR and documentation-appropriate verification of
+the documentation diff. It records the architecture boundary for Sandbox
+Runtime v2 without changing runtime behavior, production code, CLI surfaces,
+machine-readable contracts, or Go package structure.
+
+Future architecture work may refine the self-hosted microVM worker design,
+provider migration strategy, and contract shape, but it requires separate PRD
+scope before implementation begins.
+
+Future extraction work may introduce shared sandbox orchestration and package
+changes after the ownership boundaries in this ADR are accepted. That work is
+outside Phase 0.
+
+Future CLI work may design and implement sandbox flags for `hal run` and
+`hal auto` after factory extraction. That work is outside Phase 0.
+
+Future runtime implementation work may build or enable replacement sandbox
+runtimes after the architecture and extraction phases create the required
+boundaries. That work is outside Phase 0.
+
+## Compatibility Assumptions
+
+Current SSH-machine providers remain the compatibility path for existing
+sandbox usage. Phase 0 does not move users, factory runs, or sandbox commands
+to a new runtime, and it does not change how current providers are configured,
+selected, started, reused, or inspected.
+
+Future Sandbox Runtime v2 phases must treat existing sandbox users and provider
+integrations as compatibility inputs. Any migration away from the SSH-machine
+provider path requires an explicit implementation PRD, contract review where a
+machine-readable surface changes, and a rollout plan that preserves current
+behavior until the new runtime is intentionally enabled.
+
+## Non-Goals
+
+Phase 0 does not deliver Podman support. Podman may be evaluated in a future
+phase only under separate implementation scope.
+
+Phase 0 does not deliver `sandboxd`. The daemon design, process model,
+lifecycle contract, and deployment mechanics are outside this ADR-only phase.
+
+Phase 0 does not implement microVM workers, network proxy behavior, new CLI
+flags, executor extraction, production code changes, or runtime behavior
+changes. Those items require later PRD scope after the Phase 0 architecture
+boundary is accepted.

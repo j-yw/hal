@@ -11,8 +11,10 @@ package status
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -23,6 +25,23 @@ import (
 const ContractVersion = 1
 
 const autoSourcePriorityGuidance = "uses auto.sourcePriority (default report_first: latest report -> newest .hal/prd-*.md)"
+
+const publicRedactionPlaceholder = "[redacted]"
+
+var (
+	publicURLPattern         = regexp.MustCompile(`(?i)\b(?:https?|ssh)://[^\s"'<>()]+`)
+	publicSCPRemotePattern   = regexp.MustCompile(`\b[A-Za-z0-9._~+-]+@[A-Za-z0-9.-]+:[^\s"'<>()]+`)
+	publicUnixPathPattern    = regexp.MustCompile(`/[^\s"'<>()]+`)
+	publicWindowsPathPattern = regexp.MustCompile(`[A-Za-z]:\\[^\s"'<>()]+`)
+	publicTokenPatterns      = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bgithub_pat_[A-Za-z0-9_]{20,}\b`),
+		regexp.MustCompile(`(?i)\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b`),
+		regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}\b`),
+		regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`),
+		regexp.MustCompile(`(?i)\bglpat-[A-Za-z0-9_-]{20,}\b`),
+		regexp.MustCompile(`(?i)\bxox[baprs]-[A-Za-z0-9-]{10,}\b`),
+	}
+)
 
 // Workflow track values.
 const (
@@ -122,6 +141,122 @@ type NextAction struct {
 	Description string `json:"description"`
 }
 
+// SanitizePublicString redacts sensitive-looking runtime data before it is
+// exposed through status JSON or human output.
+func SanitizePublicString(value string) string {
+	if value == "" {
+		return ""
+	}
+
+	value = redactCredentialBearingURLs(value)
+	value = redactSCPStyleCredentialRemotes(value)
+	for _, pattern := range publicTokenPatterns {
+		value = pattern.ReplaceAllString(value, publicRedactionPlaceholder)
+	}
+	value = redactSensitiveLocalPaths(value, publicUnixPathPattern)
+	value = redactSensitiveLocalPaths(value, publicWindowsPathPattern)
+
+	return value
+}
+
+func redactCredentialBearingURLs(value string) string {
+	return publicURLPattern.ReplaceAllStringFunc(value, func(candidate string) string {
+		trimmed, suffix := trimStatusTrailingPunctuation(candidate)
+		if isCredentialBearingURL(trimmed) {
+			return publicRedactionPlaceholder + suffix
+		}
+		return candidate
+	})
+}
+
+func isCredentialBearingURL(candidate string) bool {
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return false
+	}
+	if parsed.User != nil {
+		return true
+	}
+	if hasCredentialParameter(parsed.Query()) {
+		return true
+	}
+	if parsed.Fragment != "" {
+		fragmentValues, err := url.ParseQuery(parsed.Fragment)
+		if err == nil && hasCredentialParameter(fragmentValues) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCredentialParameter(values url.Values) bool {
+	for key := range values {
+		if isCredentialParameterKey(key) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCredentialParameterKey(key string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
+	switch normalized {
+	case "auth", "authorization", "password", "token", "access_token", "api_key", "apikey", "access_key", "private_key", "secret", "client_secret":
+		return true
+	default:
+		return strings.Contains(normalized, "token") || strings.Contains(normalized, "secret")
+	}
+}
+
+func redactSCPStyleCredentialRemotes(value string) string {
+	return publicSCPRemotePattern.ReplaceAllStringFunc(value, func(candidate string) string {
+		user := candidate[:strings.IndexByte(candidate, '@')]
+		if user == "git" {
+			return candidate
+		}
+		return publicRedactionPlaceholder
+	})
+}
+
+func redactSensitiveLocalPaths(value string, pattern *regexp.Regexp) string {
+	return pattern.ReplaceAllStringFunc(value, func(candidate string) string {
+		trimmed, suffix := trimStatusTrailingPunctuation(candidate)
+		if isSensitiveLocalPath(trimmed) {
+			return publicRedactionPlaceholder + suffix
+		}
+		return candidate
+	})
+}
+
+func isSensitiveLocalPath(candidate string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(candidate, "\\", "/"))
+	sensitiveMarkers := []string{
+		"/.ssh",
+		"/.aws",
+		"/.kube",
+		"/.config/gcloud",
+		"/secrets",
+		"/secret",
+		"/tokens",
+		"/token",
+		"private_key",
+		"id_rsa",
+		"id_ed25519",
+		"credentials",
+	}
+	for _, marker := range sensitiveMarkers {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func trimStatusTrailingPunctuation(value string) (string, string) {
+	trimmed := strings.TrimRight(value, ".,;:")
+	return trimmed, value[len(trimmed):]
+}
+
 // prdJSON is the minimal structure to read pass/fail from prd.json.
 type prdJSON struct {
 	BranchName string     `json:"branchName"`
@@ -141,6 +276,11 @@ type prdStory struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Status string `json:"status"`
+	Passes bool   `json:"passes"`
+}
+
+func (s prdStory) passed() bool {
+	return s.Passes || s.Status == "passed"
 }
 
 // Get inspects the filesystem at dir (project root) and returns the current workflow status.
@@ -183,7 +323,7 @@ func Get(dir string) StatusResult {
 					Description: "Review loop completed. Create a PRD for new work, or run another review.",
 				},
 				ReviewLoop: &ReviewLoopDetail{
-					LatestReport: latestReview,
+					LatestReport: SanitizePublicString(latestReview),
 				},
 				Summary: "Review loop completed; latest report available.",
 			}
@@ -286,7 +426,7 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 	// Check if there's also a review-loop report (supplementary)
 	var reviewLoop *ReviewLoopDetail
 	if latest := findLatestReviewLoopReport(halDir); latest != "" {
-		reviewLoop = &ReviewLoopDetail{LatestReport: latest}
+		reviewLoop = &ReviewLoopDetail{LatestReport: SanitizePublicString(latest)}
 	}
 	data, err := os.ReadFile(prdPath)
 	if err != nil {
@@ -327,15 +467,18 @@ func classifyManual(dir, halDir string, artifacts Artifacts) StatusResult {
 	completed := 0
 	var nextStory *StoryRef
 	for _, s := range stories {
-		if s.Status == "passed" {
+		if s.passed() {
 			completed++
 		} else if nextStory == nil {
-			nextStory = &StoryRef{ID: s.ID, Title: s.Title}
+			nextStory = &StoryRef{
+				ID:    SanitizePublicString(s.ID),
+				Title: SanitizePublicString(s.Title),
+			}
 		}
 	}
 
 	manual := &ManualDetail{
-		BranchName:       prd.BranchName,
+		BranchName:       SanitizePublicString(prd.BranchName),
 		TotalStories:     total,
 		CompletedStories: completed,
 		NextStory:        nextStory,
@@ -401,8 +544,8 @@ func classifyAuto(halDir string, artifacts Artifacts) StatusResult {
 		if json.Unmarshal(data, &state) == nil {
 			normalizedStep := normalizeAutoStep(state.Step)
 			compound = &CompoundDetail{
-				Step:       normalizedStep,
-				BranchName: state.BranchName,
+				Step:       SanitizePublicString(normalizedStep),
+				BranchName: SanitizePublicString(state.BranchName),
 			}
 			autoActive = normalizedStep != "done"
 		}

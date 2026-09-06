@@ -14,6 +14,7 @@ import (
 	ci "github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -184,6 +185,13 @@ type ciStatusRunOptions struct {
 	JSON          bool
 }
 
+type ciStatusChangedFlags struct {
+	Wait          bool
+	Timeout       bool
+	PollInterval  bool
+	NoChecksGrace bool
+}
+
 type ciFixDeps struct {
 	newEngine     func(string) (engine.Engine, error)
 	resolveEngine func(string) (string, error)
@@ -203,6 +211,10 @@ type ciFixRunOptions struct {
 	MaxAttempts int
 	Engine      string
 	JSON        bool
+}
+
+type ciFixChangedFlags struct {
+	MaxAttempts bool
 }
 
 type ciMergeDeps struct {
@@ -229,6 +241,12 @@ type ciMergeRunOptions struct {
 	JSON          bool
 }
 
+type ciMergeChangedFlags struct {
+	Strategy      bool
+	DeleteBranch  bool
+	AllowNoChecks bool
+}
+
 const ciFieldValueColumn = 10
 
 func buildCIHeaderCtx() engine.HeaderContext {
@@ -238,6 +256,70 @@ func buildCIHeaderCtx() engine.HeaderContext {
 		Repo:   repo,
 		Branch: branch,
 	}
+}
+
+func loadCIProjectConfig(ctx context.Context) (*projectconfig.Config, error) {
+	configDir := "."
+	if root, err := ciRepoRoot(ctx); err == nil && strings.TrimSpace(root) != "" {
+		configDir = root
+	}
+
+	cfg, err := projectconfig.Load(configDir)
+	if err != nil {
+		return nil, fmt.Errorf("load project config: %w", err)
+	}
+	if cfg == nil {
+		return &projectconfig.Config{}, nil
+	}
+	return cfg, nil
+}
+
+func applyCIStatusProjectDefaults(opts ciStatusRunOptions, changed ciStatusChangedFlags, cfg *projectconfig.Config) ciStatusRunOptions {
+	if cfg == nil {
+		return opts
+	}
+	defaults := cfg.CI.Status
+	if !changed.Wait && defaults.Wait.Set {
+		opts.Wait = defaults.Wait.Value
+	}
+	if !changed.Timeout && defaults.Timeout.Set {
+		opts.Timeout = defaults.Timeout.Value
+	}
+	if !changed.PollInterval && defaults.Poll.Set {
+		opts.PollInterval = defaults.Poll.Value
+	}
+	if !changed.NoChecksGrace && defaults.NoChecksGrace.Set {
+		opts.NoChecksGrace = defaults.NoChecksGrace.Value
+	}
+	return opts
+}
+
+func applyCIFixProjectDefaults(opts ciFixRunOptions, changed ciFixChangedFlags, cfg *projectconfig.Config) ciFixRunOptions {
+	if cfg == nil {
+		return opts
+	}
+	defaults := cfg.CI.Fix
+	if !changed.MaxAttempts && defaults.MaxAttempts.Set {
+		opts.MaxAttempts = defaults.MaxAttempts.Value
+	}
+	return opts
+}
+
+func applyCIMergeProjectDefaults(opts ciMergeRunOptions, changed ciMergeChangedFlags, cfg *projectconfig.Config) ciMergeRunOptions {
+	if cfg == nil {
+		return opts
+	}
+	defaults := cfg.CI.Merge
+	if !changed.Strategy && defaults.Strategy.Set {
+		opts.Strategy = defaults.Strategy.Value
+	}
+	if !changed.DeleteBranch && defaults.DeleteBranch.Set {
+		opts.DeleteBranch = defaults.DeleteBranch.Value
+	}
+	if !changed.AllowNoChecks && defaults.AllowNoChecks.Set {
+		opts.AllowNoChecks = defaults.AllowNoChecks.Value
+	}
+	return opts
 }
 
 func ciWriteField(out io.Writer, label string, value string) {
@@ -450,11 +532,13 @@ func runCIStatus(cmd *cobra.Command, args []string) error {
 		NoChecksGrace: ciStatusNoChecksGraceFlag,
 		JSON:          ciStatusJSONFlag,
 	}
+	var changed ciStatusChangedFlags
 
 	if cmd != nil {
 		out = cmd.OutOrStdout()
 		if flags := cmd.Flags(); flags != nil {
 			if flags.Lookup("wait") != nil {
+				changed.Wait = flags.Changed("wait")
 				v, err := flags.GetBool("wait")
 				if err != nil {
 					return err
@@ -462,6 +546,7 @@ func runCIStatus(cmd *cobra.Command, args []string) error {
 				opts.Wait = v
 			}
 			if flags.Lookup("timeout") != nil {
+				changed.Timeout = flags.Changed("timeout")
 				v, err := flags.GetDuration("timeout")
 				if err != nil {
 					return err
@@ -469,6 +554,7 @@ func runCIStatus(cmd *cobra.Command, args []string) error {
 				opts.Timeout = v
 			}
 			if flags.Lookup("poll-interval") != nil {
+				changed.PollInterval = flags.Changed("poll-interval")
 				v, err := flags.GetDuration("poll-interval")
 				if err != nil {
 					return err
@@ -476,6 +562,7 @@ func runCIStatus(cmd *cobra.Command, args []string) error {
 				opts.PollInterval = v
 			}
 			if flags.Lookup("no-checks-grace") != nil {
+				changed.NoChecksGrace = flags.Changed("no-checks-grace")
 				v, err := flags.GetDuration("no-checks-grace")
 				if err != nil {
 					return err
@@ -491,6 +578,11 @@ func runCIStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	cfg, err := loadCIProjectConfig(ctx)
+	if err != nil {
+		return err
+	}
+	opts = applyCIStatusProjectDefaults(opts, changed, cfg)
 
 	return runCIStatusWithDeps(ctx, opts, out, defaultCIStatusDeps)
 }
@@ -589,11 +681,13 @@ func runCIFix(cmd *cobra.Command, args []string) error {
 		Engine:      ciFixEngineFlag,
 		JSON:        ciFixJSONFlag,
 	}
+	var changed ciFixChangedFlags
 
 	if cmd != nil {
 		out = cmd.OutOrStdout()
 		if flags := cmd.Flags(); flags != nil {
 			if flags.Lookup("max-attempts") != nil {
+				changed.MaxAttempts = flags.Changed("max-attempts")
 				v, err := flags.GetInt("max-attempts")
 				if err != nil {
 					return err
@@ -616,6 +710,11 @@ func runCIFix(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	cfg, err := loadCIProjectConfig(ctx)
+	if err != nil {
+		return err
+	}
+	opts = applyCIFixProjectDefaults(opts, changed, cfg)
 
 	if opts.MaxAttempts <= 0 {
 		err := fmt.Errorf("--max-attempts must be greater than 0")
@@ -794,11 +893,13 @@ func runCIMerge(cmd *cobra.Command, args []string) error {
 		DryRun:        ciMergeDryRunFlag,
 		JSON:          ciMergeJSONFlag,
 	}
+	var changed ciMergeChangedFlags
 
 	if cmd != nil {
 		out = cmd.OutOrStdout()
 		if flags := cmd.Flags(); flags != nil {
 			if flags.Lookup("strategy") != nil {
+				changed.Strategy = flags.Changed("strategy")
 				v, err := flags.GetString("strategy")
 				if err != nil {
 					return err
@@ -806,6 +907,7 @@ func runCIMerge(cmd *cobra.Command, args []string) error {
 				opts.Strategy = v
 			}
 			if flags.Lookup("delete-branch") != nil {
+				changed.DeleteBranch = flags.Changed("delete-branch")
 				v, err := flags.GetBool("delete-branch")
 				if err != nil {
 					return err
@@ -813,6 +915,7 @@ func runCIMerge(cmd *cobra.Command, args []string) error {
 				opts.DeleteBranch = v
 			}
 			if flags.Lookup("allow-no-checks") != nil {
+				changed.AllowNoChecks = flags.Changed("allow-no-checks")
 				v, err := flags.GetBool("allow-no-checks")
 				if err != nil {
 					return err
@@ -835,6 +938,11 @@ func runCIMerge(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	cfg, err := loadCIProjectConfig(ctx)
+	if err != nil {
+		return err
+	}
+	opts = applyCIMergeProjectDefaults(opts, changed, cfg)
 
 	return runCIMergeWithDeps(ctx, opts, out, defaultCIMergeDeps)
 }

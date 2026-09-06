@@ -8,9 +8,11 @@ import (
 )
 
 const (
-	halConfigHomeEnv = "HAL_CONFIG_HOME"
-	xdgConfigHomeEnv = "XDG_CONFIG_HOME"
-	sandboxesDirName = "sandboxes"
+	halConfigHomeEnv     = "HAL_CONFIG_HOME"
+	xdgConfigHomeEnv     = "XDG_CONFIG_HOME"
+	sandboxesDirName     = "sandboxes"
+	sandboxHostsDirName  = "sandbox-hosts"
+	sandboxLeasesDirName = "sandbox-leases"
 )
 
 var (
@@ -60,6 +62,40 @@ func sandboxesDirPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, sandboxesDirName), nil
+}
+
+// SandboxHostsDir returns the global sandbox host registry directory.
+func SandboxHostsDir() string {
+	dir, err := sandboxHostsDirPath()
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+func sandboxHostsDirPath() (string, error) {
+	dir, err := resolveGlobalDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, sandboxHostsDirName), nil
+}
+
+// SandboxLeasesDir returns the global sandbox lease store directory.
+func SandboxLeasesDir() string {
+	dir, err := sandboxLeasesDirPath()
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+func sandboxLeasesDirPath() (string, error) {
+	dir, err := resolveGlobalDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, sandboxLeasesDirName), nil
 }
 
 // EnsureGlobalDir creates the global sandbox directory and sandboxes subdirectory.

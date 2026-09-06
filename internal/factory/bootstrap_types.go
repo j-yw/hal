@@ -37,6 +37,7 @@ type BootstrapOptions struct {
 	RefreshHal         bool `json:"refreshHal"`
 	InstallMissingCLIs bool `json:"installMissingClis"`
 	DryRun             bool `json:"dryRun"`
+	ExactUpstream      bool `json:"exactUpstream"`
 }
 
 // BootstrapResult captures the machine-readable outcome of preparing a remote

@@ -29,7 +29,18 @@
       },
       "sshCommand": "hal sandbox ssh factory-run-records",
       "cleanupCommand": "hal sandbox delete factory-run-records",
-      "handoff": "Inspect the sandbox before cleanup."
+      "handoff": "Inspect the sandbox before cleanup.",
+      "lease": {
+        "id": "lease-20260620-002",
+        "hostId": "host-worker-01",
+        "hostName": "worker-01",
+        "runtimeDriver": "ssh_machine",
+        "resourceKey": "host:host-worker-01",
+        "purpose": "factory",
+        "runId": "run-20260620-002",
+        "acquiredAt": "2026-06-20T16:00:00Z",
+        "expiresAt": "2026-06-20T17:00:00Z"
+      }
     },
     "currentStep": "ci",
     "createdAt": "2026-06-20T16:00:00Z",

@@ -11,7 +11,7 @@ export GOCACHE
 
 DOCS_CLI_DIR := docs/cli
 
-.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check docs-cli docs-check sandbox-build sandbox-build-amd64 sandbox-test sandbox-shell
+.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check docs-cli docs-check sandbox-build sandbox-build-amd64 sandbox-test sandbox-shell sandbox-lab-prepare sandbox-lab-start sandbox-lab-status sandbox-lab-destroy
 
 ## Default target
 all: build
@@ -116,7 +116,7 @@ sandbox-build:
 		--build-arg BUILD_DATE="$(BUILD_DATE)" \
 		-f sandbox/Dockerfile -t hal-sandbox .
 
-## Build sandbox for Daytona (linux/amd64)
+## Build sandbox image for linux/amd64
 sandbox-build-amd64:
 	@echo "==> Building sandbox image (linux/amd64)..."
 	@docker build \
@@ -133,6 +133,22 @@ sandbox-test: sandbox-build
 ## Interactive sandbox shell
 sandbox-shell: sandbox-build
 	@docker run --rm -it $$([ -f sandbox/.env ] && echo "--env-file sandbox/.env") hal-sandbox
+
+## Prepare an isolated local Podman sandbox lab
+sandbox-lab-prepare:
+	@./sandbox/podman-lab.sh prepare
+
+## Start sandboxd and register the isolated lab worker
+sandbox-lab-start:
+	@./sandbox/podman-lab.sh start
+
+## Show isolated Podman sandbox lab status
+sandbox-lab-status:
+	@./sandbox/podman-lab.sh status
+
+## Remove every resource and file owned by the isolated lab
+sandbox-lab-destroy:
+	@./sandbox/podman-lab.sh destroy
 
 ## Show help
 help:
@@ -156,6 +172,10 @@ help:
 	@echo "  make sandbox-build    Build sandbox Docker image"
 	@echo "  make sandbox-test     Run sandbox smoke tests"
 	@echo "  make sandbox-shell    Interactive sandbox shell"
+	@echo "  make sandbox-lab-prepare  Build an isolated local Podman lab"
+	@echo "  make sandbox-lab-start    Start and register the lab worker"
+	@echo "  make sandbox-lab-status   Show isolated lab status"
+	@echo "  make sandbox-lab-destroy  Remove all isolated lab resources"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make install"

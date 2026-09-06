@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestCollectSandboxAuthFilesSelectsAuthProfilesOnly(t *testing.T) {
@@ -171,6 +172,45 @@ func TestRunSandboxAuthSyncToTargetTransfersArchive(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Synced sandbox auth to auth-box") {
 		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestRunSandboxAuthSyncUsesWorkerRuntime(t *testing.T) {
+	clearSandboxAuthCodexHome(t)
+	home := t.TempDir()
+	writeSandboxAuthTestFile(t, home, ".codex/auth.json", "codex-auth")
+	target := workerRootlessCachedSandbox("worker-auth")
+	var gotArchive []byte
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			var err error
+			gotArchive, err = io.ReadAll(req.Stdin)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(strings.Join(req.Args, " "), "hal-auth-sync") {
+				t.Fatalf("runtime auth args = %#v", req.Args)
+			}
+			return &sandboxruntime.ExecResult{}, nil
+		},
+	}
+	result, err := runSandboxAuthSyncWithDeps(context.Background(), target.Name, sandboxAuthSyncOptions{}, io.Discard, sandboxAuthSyncDeps{
+		homeDir:       func() (string, error) { return home, nil },
+		resolveTarget: func(string) (*sandbox.SandboxState, string, error) { return target, "", nil },
+		resolveRuntime: func(*sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		resolveProvider: func(string) (sandbox.Provider, error) {
+			t.Fatal("provider resolution should not run for worker auth sync")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runSandboxAuthSyncWithDeps() error: %v", err)
+	}
+	if result.FileCount != 1 || len(gotArchive) == 0 {
+		t.Fatalf("result = %#v, archive bytes = %d", result, len(gotArchive))
 	}
 }
 

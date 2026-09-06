@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func TestExecute_AllowsNonZeroAfterSuccessfulResult(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakePi(t, binDir, `#!/bin/sh
 printf '{"type":"session"}\n'
-printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}\n'
 exit 1
 `)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -39,6 +40,256 @@ exit 1
 	}
 }
 
+func TestExecute_AllowsRecoveredPiErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name   string
+		events string
+	}{
+		{
+			name: "assistant transport error",
+			events: `printf '{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"WebSocket connection failed: sk-live-test-secret"}}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"recovered"}],"stopReason":"stop"}}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","errorMessage":"WebSocket connection failed: sk-live-test-secret"},{"role":"assistant","content":[{"type":"text","text":"recovered"}],"stopReason":"stop"}]}\n'`,
+		},
+		{
+			name: "tool execution error",
+			events: `printf '{"type":"tool_execution_end","toolCallId":"tool1","toolName":"bash","result":{"content":[{"type":"text","text":"command failed with sk-live-test-secret"}]},"isError":true}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"used a fallback"}],"stopReason":"stop"}}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"tool1","name":"bash"}],"stopReason":"toolUse"},{"role":"toolResult","content":[{"type":"text","text":"command failed with sk-live-test-secret"}],"isError":true},{"role":"assistant","content":[{"type":"text","text":"used a fallback"}],"stopReason":"stop"}]}\n'`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, "#!/bin/sh\nprintf '{\"type\":\"session\"}\\n'\n"+tt.events+"exit 1\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+			var buf bytes.Buffer
+			result := eng.Execute(context.Background(), "test prompt", engine.NewDisplay(&buf))
+
+			if result.Error != nil {
+				t.Fatalf("Execute() error = %v, want nil", result.Error)
+			}
+			if !result.Success {
+				t.Fatal("Execute() success = false after Pi recovered")
+			}
+			if strings.Contains(buf.String(), "sk-live-test-secret") {
+				t.Fatalf("display output leaked credential: %q", buf.String())
+			}
+		})
+	}
+}
+
+func TestExecute_RequiresAuthoritativeTerminalOutcome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name   string
+		events string
+		exit   string
+	}{
+		{name: "missing agent end", events: `printf '{"type":"session"}\n'`, exit: "exit 0"},
+		{name: "malformed agent end", events: `printf '{"type":"agent_end","messages":['`, exit: "exit 0"},
+		{name: "missing messages", events: `printf '{"type":"agent_end"}\n'`, exit: "exit 0"},
+		{name: "empty messages zero exit", events: `printf '{"type":"agent_end","messages":[]}\n'`, exit: "exit 0"},
+		{name: "empty messages nonzero exit", events: `printf '{"type":"agent_end","messages":[]}\n'`, exit: "exit 1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, "#!/bin/sh\n"+tt.events+"\n"+tt.exit+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+			result := eng.Execute(context.Background(), "test prompt", nil)
+			if result.Error == nil {
+				t.Fatalf("Execute() error = nil for incomplete terminal output: %q", result.Output)
+			}
+			if result.Success {
+				t.Fatal("Execute() success = true for incomplete terminal output")
+			}
+		})
+	}
+}
+
+func TestExecute_RejectsUnfinishedToolUseOnProcessFailureOrDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name        string
+		toolIsError string
+		termination string
+		timeout     time.Duration
+	}{
+		{name: "failed tool nonzero", toolIsError: "true", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "successful tool nonzero", toolIsError: "false", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "failed tool deadline", toolIsError: "true", termination: "sleep 5", timeout: 50 * time.Millisecond},
+		{name: "successful tool deadline", toolIsError: "false", termination: "sleep 5", timeout: 50 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			events := `printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"tool1","name":"bash"}],"stopReason":"toolUse"},{"role":"toolResult","content":[{"type":"text","text":"tool result"}],"isError":` + tt.toolIsError + `}]}\n'`
+			writeFakePi(t, binDir, "#!/bin/sh\n"+events+"\n"+tt.termination+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: tt.timeout})
+			result := eng.Execute(context.Background(), "test prompt", nil)
+			if result.Error == nil {
+				t.Fatal("Execute() error = nil for unfinished tool use")
+			}
+			if result.Success {
+				t.Fatal("Execute() success = true for unfinished tool use")
+			}
+		})
+	}
+}
+
+func TestExecute_DoesNotRecoverStaleResultAfterNewAgentStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name        string
+		termination string
+		timeout     time.Duration
+	}{
+		{name: "zero exit", termination: "exit 0", timeout: 10 * time.Second},
+		{name: "nonzero exit", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "deadline", termination: "sleep 5", timeout: 50 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"stale"}],"stopReason":"stop"}]}\n'
+printf '{"type":"agent_start"}\n'
+`+tt.termination+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: tt.timeout})
+			result := eng.Execute(context.Background(), "test prompt", nil)
+			if result.Error == nil {
+				t.Fatal("Execute() error = nil after replacement run omitted agent_end")
+			}
+			if result.Success {
+				t.Fatal("Execute() success = true from stale prior agent_end")
+			}
+		})
+	}
+}
+
+func TestStreamPrompt_DoesNotRecoverStaleResultAfterNewAgentStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name        string
+		termination string
+		timeout     time.Duration
+	}{
+		{name: "zero exit", termination: "exit 0", timeout: 10 * time.Second},
+		{name: "nonzero exit", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "deadline", termination: "sleep 5", timeout: 50 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"stale"}],"stopReason":"stop"}]}\n'
+printf '{"type":"agent_start"}\n'
+`+tt.termination+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: tt.timeout})
+			resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
+			if err == nil {
+				t.Fatalf("StreamPrompt() error = nil with stale response %q", resp)
+			}
+			if resp != "" {
+				t.Fatalf("StreamPrompt() response = %q, want no stale text", resp)
+			}
+		})
+	}
+}
+
+func TestParseResultStatus_UsesLatestRunOnly(t *testing.T) {
+	eng := New(nil)
+	hasResult, success := eng.parseResultStatus(strings.Join([]string{
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"stale"}],"stopReason":"stop"}]}`,
+		`{"type":"agent_start"}`,
+	}, "\n"))
+	if hasResult || success {
+		t.Fatalf("parseResultStatus() = (%v, %v), want no current result", hasResult, success)
+	}
+}
+
+func TestExecute_DoesNotRecoverRetryableAgentEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	tests := []struct {
+		name        string
+		termination string
+		timeout     time.Duration
+	}{
+		{name: "nonzero exit", termination: "exit 1", timeout: 10 * time.Second},
+		{name: "deadline", termination: "sleep 5", timeout: 50 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant","content":[{"type":"text","text":"attempt"}],"stopReason":"stop"}]}\n'
+`+tt.termination+"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			eng := New(&engine.EngineConfig{Timeout: tt.timeout})
+			result := eng.Execute(context.Background(), "test prompt", nil)
+			if result.Error == nil || result.Success {
+				t.Fatalf("Execute() = %#v, want retryable agent_end failure", result)
+			}
+		})
+	}
+}
+
+func TestStreamPrompt_DoesNotRecoverRetryableAgentEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	binDir := t.TempDir()
+	writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant","content":[{"type":"text","text":"attempt"}],"stopReason":"stop"}]}\n'
+exit 1
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+	resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
+	if err == nil || resp != "" {
+		t.Fatalf("StreamPrompt() = (%q, %v), want retryable agent_end failure", resp, err)
+	}
+}
+
 func TestRecoverExecuteResult_PrefersSuccessfulTerminalResultOverTimeout(t *testing.T) {
 	eng := New(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
@@ -48,7 +299,7 @@ func TestRecoverExecuteResult_PrefersSuccessfulTerminalResultOverTimeout(t *test
 	result, recovered := eng.recoverExecuteResult(
 		ctx,
 		100*time.Millisecond,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}`,
 		25*time.Millisecond,
 		42,
 	)
@@ -74,7 +325,7 @@ func TestExecute_PreservesCanceledContextError(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakePi(t, binDir, `#!/bin/sh
 printf '{"type":"session"}\n'
-printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}\n'
 sleep 5
 exit 1
 `)
@@ -121,7 +372,7 @@ func TestPrompt_ReturnsErrorOnNonZeroWithStdoutAndNoStderr(t *testing.T) {
 	}
 }
 
-func TestStreamPrompt_RequiresOutputFallbackOnEmptySuccessfulStream(t *testing.T) {
+func TestStreamPrompt_RejectsEmptyAgentEnd(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script fixture is unix-only")
 	}
@@ -137,13 +388,67 @@ exit 1
 	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
 	resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
 	if err == nil {
-		t.Fatal("StreamPrompt() error = nil, want output fallback error")
+		t.Fatal("StreamPrompt() error = nil, want incomplete terminal error")
 	}
-	if !engine.RequiresOutputFallback(err) {
-		t.Fatalf("StreamPrompt() error = %v, want output fallback error", err)
+	if engine.RequiresOutputFallback(err) || !strings.Contains(err.Error(), incompletePiTerminalError) {
+		t.Fatalf("StreamPrompt() error = %v, want incomplete terminal error", err)
 	}
 	if resp != "" {
 		t.Fatalf("StreamPrompt() response = %q, want empty response", resp)
+	}
+}
+
+func TestStreamPrompt_ReturnsSanitizedTerminalAssistantErrorOnZeroExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	secret := "sk-live-secret-value"
+	binDir := t.TempDir()
+	writeFakePi(t, binDir, `#!/bin/sh
+printf '{"type":"session"}\n'
+printf '{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"No API key found: `+secret+`"}}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","errorMessage":"No API key found: `+secret+`"}]}\n'
+exit 0
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+	resp, err := eng.StreamPrompt(context.Background(), "test prompt", nil)
+	if err == nil {
+		t.Fatal("StreamPrompt() error = nil, want terminal assistant error")
+	}
+	if engine.RequiresOutputFallback(err) {
+		t.Fatalf("StreamPrompt() error = %v, terminal failures must not request output fallback", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "pi authentication failed") || strings.Contains(got, secret) {
+		t.Fatalf("StreamPrompt() error = %q, want sanitized authentication guidance", got)
+	}
+	if resp != "" {
+		t.Fatalf("StreamPrompt() response = %q, want empty response", resp)
+	}
+}
+
+func TestPrompt_SanitizesProviderError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is unix-only")
+	}
+
+	secret := "sk-live-secret-value"
+	binDir := t.TempDir()
+	writeFakePi(t, binDir, "#!/bin/sh\nprintf 'No API key found: "+secret+"' >&2\nexit 1\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	eng := New(&engine.EngineConfig{Timeout: 10 * time.Second})
+	resp, err := eng.Prompt(context.Background(), "test prompt")
+	if err == nil {
+		t.Fatal("Prompt() error = nil, want provider error")
+	}
+	if got := err.Error(); !strings.Contains(got, "pi authentication failed") || strings.Contains(got, secret) {
+		t.Fatalf("Prompt() error = %q, want sanitized authentication guidance", got)
+	}
+	if resp != "" {
+		t.Fatalf("Prompt() response = %q, want empty response", resp)
 	}
 }
 
@@ -157,7 +462,7 @@ func TestRecoverStreamPrompt_PrefersSuccessfulTerminalResultOverTimeout(t *testi
 		ctx,
 		100*time.Millisecond,
 		context.DeadlineExceeded,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}`,
 		"done",
 		"",
 	)
@@ -172,7 +477,7 @@ func TestRecoverStreamPrompt_PrefersSuccessfulTerminalResultOverTimeout(t *testi
 	}
 }
 
-func TestRecoverStreamPrompt_RequiresOutputFallbackForEmptySuccessfulStream(t *testing.T) {
+func TestRecoverStreamPrompt_RejectsEmptyAgentEnd(t *testing.T) {
 	eng := New(nil)
 
 	resp, err, recovered := eng.recoverStreamPrompt(
@@ -186,8 +491,8 @@ func TestRecoverStreamPrompt_RequiresOutputFallbackForEmptySuccessfulStream(t *t
 	if !recovered {
 		t.Fatal("recoverStreamPrompt() recovered = false, want true")
 	}
-	if !engine.RequiresOutputFallback(err) {
-		t.Fatalf("recoverStreamPrompt() error = %v, want output fallback error", err)
+	if engine.RequiresOutputFallback(err) || !strings.Contains(err.Error(), incompletePiTerminalError) {
+		t.Fatalf("recoverStreamPrompt() error = %v, want incomplete terminal error", err)
 	}
 	if resp != "" {
 		t.Fatalf("recoverStreamPrompt() response = %q, want empty response", resp)
@@ -202,7 +507,7 @@ func TestStreamPrompt_PreservesCanceledContextError(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakePi(t, binDir, `#!/bin/sh
 printf '{"type":"session"}\n'
-printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}\n'
+printf '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}\n'
 sleep 5
 exit 1
 `)

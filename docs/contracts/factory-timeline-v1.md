@@ -26,8 +26,38 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `message` | string | Human-readable event message |
 | `summary` | string | Short event summary suitable for display |
 | `metadata` | object | Event-specific structured data |
+| `networkPolicyDecisionLogs` | array | Sanitized network policy decision-log metadata for policy debugging; metadata only and not proof of live enforcement |
 
 `metadata` is an open JSON object. Consumers should ignore unknown metadata keys and should use `eventType` to decide whether a metadata key is meaningful.
+
+## Phase 26 Credential Proxy Omission
+
+Phase 26 credential proxy persistence is limited to non-factory sandbox
+execution manifests and factory sandbox metadata. Factory timeline events do not
+add `credentialProxy`, `credentialProxyPlan`, `credentialProxySession`, or
+`credentialProxyBindings`.
+
+Timeline metadata must not be used to claim credential delivery, credential
+proxy delivery, proxy enforcement, network enforcement, SSH-agent forwarding,
+tmpfs writes, or runtime support. Those claims require later live-delivery and
+enforcement phases and must not be inferred from Phase 26 credential proxy
+metadata.
+
+When `networkPolicyDecisionLogs` is present, entries contain redaction-safe policy decision details only:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Safe decision record identifier |
+| `source` | string | Decision source, such as `run`, `auto`, `factory`, or `worker` |
+| `proxySessionId` | string | Safe proxy session identifier |
+| `policySnapshot` | object | Safe policy snapshot identity |
+| `request` | object | Safe request summary with request ID, operation label, and destination category only |
+| `outcome` | string | Decision outcome, such as `allowed`, `denied`, `downgraded`, or `audit_only` |
+| `reasonCode` | string | Safe reason code for the decision |
+| `ruleKind` | string | Safe rule kind metadata |
+| `policyPreset` | string | Safe policy preset metadata |
+| `enforcementMode` | string | Metadata-only enforcement mode when explicitly known |
+| `enforced` | boolean | Optional explicit enforcement claim; omitted when unsafe or unsupported |
 
 ## Event Types
 
@@ -40,7 +70,7 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `verification_result` | A quality or browser verification result was recorded |
 | `ci_state` | CI state changed or was observed |
 | `artifact_sync` | An artifact was written, copied, uploaded, or linked |
-| `policy_decision` | A factory policy gate accepted, rejected, or blocked run progress |
+| `policy_decision` | A factory policy gate accepted, rejected, or blocked run progress, or a sandbox policy posture decision was recorded |
 | `failure_classification` | A failure was classified for retry, fix, or handoff |
 
 ## Ordering Rules

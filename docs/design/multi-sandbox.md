@@ -1,6 +1,8 @@
 # Multi-Sandbox Implementation Plan
 
-**Status**: Approved, ready for implementation
+**Status**: Historical implementation plan. The shipped CLI and current
+provider documentation are authoritative; this document no longer defines
+supported providers, defaults, or migration behavior.
 **Author**: hal team
 **Date**: 2026-03-20
 
@@ -51,7 +53,7 @@ type SandboxState struct {
     Name              string     `json:"name"`                        // human-readable — file key, validated
 
     // ── Provider ──
-    Provider          string     `json:"provider"`                    // "daytona", "hetzner", "digitalocean", "lightsail"
+    Provider          string     `json:"provider"`                    // "hetzner", "digitalocean", "lightsail"
     WorkspaceID       string     `json:"workspaceId,omitempty"`       // provider-native ID (droplet ID, instance name, etc.)
 
     // ── Networking ──
@@ -71,7 +73,7 @@ type SandboxState struct {
 
     // ── Labels ──
     Repo              string     `json:"repo,omitempty"`              // optional — informational only
-    SnapshotID        string     `json:"snapshotId,omitempty"`        // daytona snapshot
+    SnapshotID        string     `json:"snapshotId,omitempty"`        // provider-specific snapshot
 }
 ```
 
@@ -132,7 +134,6 @@ type Provider interface {
 
 | Provider | Removes | SSH uses | Stop/Delete uses |
 |----------|---------|----------|-----------------|
-| Daytona | — | `info.Name` | `info.Name` |
 | Hetzner | `StateDir`, `LoadState()` calls | `info.IP` (user: root) | `info.Name` |
 | DigitalOcean | `StateDir`, `resolveDropletTarget()`, `refreshIP()` | `info.IP` (user: root) | `info.WorkspaceID` |
 | Lightsail | `StateDir`, `LoadState()` calls | `info.IP` (user: ubuntu) | `info.Name` |
@@ -153,12 +154,12 @@ provider.SSH(info)
 
 ## 5. Global Config
 
-Replaces the project-scoped `.hal/config.yaml` `sandbox:` and `daytona:` sections.
+Replaces project-scoped `.hal/config.yaml` sandbox settings.
 
 ```yaml
 # ~/.config/hal/sandbox-config.yaml
 
-provider: digitalocean          # default: "daytona" (matches current codebase default)
+provider: digitalocean          # selected explicitly with `hal sandbox setup`
 
 defaults:
   autoShutdown: true
@@ -173,10 +174,6 @@ env:
   TAILSCALE_AUTHKEY: "tskey-auth-..."
 
 tailscaleLockdown: true
-
-daytona:
-  apiKey: "..."
-  serverURL: "https://app.daytona.io/api"
 
 digitalocean:
   sshKey: "aa:bb:cc:..."
@@ -194,7 +191,8 @@ lightsail:
   availabilityZone: "us-east-1a"
 ```
 
-Default provider is `"daytona"` when no config exists, matching the three current fallback sites: `compound.LoadSandboxConfig()`, `sandbox.LoadState()` auto-migrate, and `cmd/sandbox.go` `resolveProviderFromName()`.
+No cloud provider is selected implicitly. Users choose Hetzner, DigitalOcean,
+or AWS Lightsail with `hal sandbox setup` before provisioning.
 
 ---
 
@@ -206,12 +204,12 @@ Every `hal sandbox *` command calls `sandbox.Migrate(projectDir)` at the top, be
 
 ### Decision matrix
 
-| Global config exists | Local `sandbox:`+`daytona:` | Local `sandbox.json` | Action |
+| Global config exists | Local sandbox config | Local `sandbox.json` | Action |
 |:---:|:---:|:---:|------|
 | ✗ | ✗ | ✗ | No-op |
-| ✗ | ✓ | ✗ | Copy both sections → global config |
+| ✗ | ✓ | ✗ | Copy supported settings → global config |
 | ✗ | ✗ | ✓ | Create global dir, copy state → registry |
-| ✗ | ✓ | ✓ | Copy config + state → global |
+| ✗ | ✓ | ✓ | Copy supported config + state → global |
 | ✓ | ✗ | ✗ | No-op |
 | ✓ | ✗ | ✓ | Copy state → registry (config already global) |
 | ✓ | ✓ | ✗ | Skip config (global wins), print notice |
@@ -393,7 +391,6 @@ hal sandbox migrate              # non-interactive, idempotent
 | Hetzner | cloud-init systemd timer | ✅ |
 | DigitalOcean | cloud-init systemd timer | ✅ |
 | Lightsail | cloud-init systemd timer | ✅ |
-| Daytona | Platform-managed idle timeout | ❌ skip — document only |
 
 ### Implementation
 
@@ -423,7 +420,6 @@ All VPS providers bill until the instance is **deleted**, regardless of stopped 
 | Hetzner | **Yes** | Server resources reserved |
 | DigitalOcean | **Yes** | Disk and IP retained |
 | Lightsail | **Yes** | Instance billed until deleted |
-| Daytona | Platform-managed | No local tracking |
 
 ### Calculation
 
@@ -553,7 +549,6 @@ internal/sandbox/
 ├── migrate.go               ← Migrate(), 8-case matrix, conditional state cleanup, cross-device safe
 ├── pricing.go               ← hourlyRates, EstimatedCost (all VPS charge when stopped)
 ├── provider.go              ← ConnectInfo, LifecycleResult, Provider interface
-├── provider_daytona.go      ← uses ConnectInfo.Name (no StateDir)
 ├── provider_digitalocean.go ← uses ConnectInfo.IP + .WorkspaceID (no StateDir/resolveDropletTarget)
 ├── provider_hetzner.go      ← uses ConnectInfo.IP (no StateDir)
 ├── provider_lightsail.go    ← uses ConnectInfo.IP (no StateDir)

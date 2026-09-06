@@ -3,6 +3,8 @@
   "version": "dev",
   "runId": "run-20260620-002",
   "status": "failed",
+  "executorMode": "sandbox",
+  "baseBranch": "develop",
   "nextAction": {
     "id": "inspect_factory_run",
     "command": "hal factory status run-20260620-002 --json",

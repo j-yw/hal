@@ -63,8 +63,8 @@ func TestResolveProviderConfig_UsesDefaultsWhenGlobalPathUnavailableAndLegacyMis
 	if err != nil {
 		t.Fatalf("resolveProviderConfig() error = %v", err)
 	}
-	if providerName != "daytona" {
-		t.Fatalf("providerName = %q, want %q", providerName, "daytona")
+	if providerName != "" {
+		t.Fatalf("providerName = %q, want empty", providerName)
 	}
 	if provCfg != (sandbox.ProviderConfig{}) {
 		t.Fatalf("ProviderConfig = %#v, want zero-value config", provCfg)

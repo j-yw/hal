@@ -16,6 +16,7 @@ import (
 	ci "github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -84,6 +85,89 @@ func preserveCIPushGlobals(t *testing.T) {
 		ciMergeJSONFlag = origMergeJSON
 		defaultCIMergeDeps = origMergeDeps
 	})
+}
+
+func TestApplyCIStatusProjectDefaults(t *testing.T) {
+	cfg := &projectconfig.Config{
+		CI: projectconfig.CIDefaults{
+			Status: projectconfig.CIStatusDefaults{
+				Wait:          projectconfig.Value[bool]{Value: true, Set: true},
+				Timeout:       projectconfig.Value[time.Duration]{Value: 30 * time.Minute, Set: true},
+				Poll:          projectconfig.Value[time.Duration]{Value: 15 * time.Second, Set: true},
+				NoChecksGrace: projectconfig.Value[time.Duration]{Value: 2 * time.Minute, Set: true},
+			},
+		},
+	}
+
+	got := applyCIStatusProjectDefaults(ciStatusRunOptions{}, ciStatusChangedFlags{}, cfg)
+	if !got.Wait || got.Timeout != 30*time.Minute || got.PollInterval != 15*time.Second || got.NoChecksGrace != 2*time.Minute {
+		t.Fatalf("applyCIStatusProjectDefaults() = %+v, want configured defaults", got)
+	}
+
+	got = applyCIStatusProjectDefaults(ciStatusRunOptions{
+		Wait:          false,
+		Timeout:       5 * time.Minute,
+		PollInterval:  5 * time.Second,
+		NoChecksGrace: 10 * time.Second,
+	}, ciStatusChangedFlags{
+		Wait:          true,
+		Timeout:       true,
+		PollInterval:  true,
+		NoChecksGrace: true,
+	}, cfg)
+	if got.Wait || got.Timeout != 5*time.Minute || got.PollInterval != 5*time.Second || got.NoChecksGrace != 10*time.Second {
+		t.Fatalf("applyCIStatusProjectDefaults() with changed flags = %+v, want CLI values", got)
+	}
+}
+
+func TestApplyCIFixProjectDefaults(t *testing.T) {
+	cfg := &projectconfig.Config{
+		CI: projectconfig.CIDefaults{
+			Fix: projectconfig.CIFixDefaults{
+				MaxAttempts: projectconfig.Value[int]{Value: 4, Set: true},
+			},
+		},
+	}
+
+	got := applyCIFixProjectDefaults(ciFixRunOptions{MaxAttempts: 3, Engine: "codex"}, ciFixChangedFlags{}, cfg)
+	if got.MaxAttempts != 4 || got.Engine != "codex" {
+		t.Fatalf("applyCIFixProjectDefaults() = %+v, want config max attempts and unchanged engine", got)
+	}
+
+	got = applyCIFixProjectDefaults(ciFixRunOptions{MaxAttempts: 2, Engine: "codex"}, ciFixChangedFlags{MaxAttempts: true}, cfg)
+	if got.MaxAttempts != 2 {
+		t.Fatalf("applyCIFixProjectDefaults() with changed max attempts = %+v, want CLI max attempts", got)
+	}
+}
+
+func TestApplyCIMergeProjectDefaults(t *testing.T) {
+	cfg := &projectconfig.Config{
+		CI: projectconfig.CIDefaults{
+			Merge: projectconfig.CIMergeDefaults{
+				Strategy:      projectconfig.Value[string]{Value: "rebase", Set: true},
+				DeleteBranch:  projectconfig.Value[bool]{Value: true, Set: true},
+				AllowNoChecks: projectconfig.Value[bool]{Value: true, Set: true},
+			},
+		},
+	}
+
+	got := applyCIMergeProjectDefaults(ciMergeRunOptions{Strategy: "squash"}, ciMergeChangedFlags{}, cfg)
+	if got.Strategy != "rebase" || !got.DeleteBranch || !got.AllowNoChecks {
+		t.Fatalf("applyCIMergeProjectDefaults() = %+v, want configured defaults", got)
+	}
+
+	got = applyCIMergeProjectDefaults(ciMergeRunOptions{
+		Strategy:      "merge",
+		DeleteBranch:  false,
+		AllowNoChecks: false,
+	}, ciMergeChangedFlags{
+		Strategy:      true,
+		DeleteBranch:  true,
+		AllowNoChecks: true,
+	}, cfg)
+	if got.Strategy != "merge" || got.DeleteBranch || got.AllowNoChecks {
+		t.Fatalf("applyCIMergeProjectDefaults() with changed flags = %+v, want CLI values", got)
+	}
 }
 
 func TestCICommandHelpMetadata(t *testing.T) {
@@ -1287,8 +1371,8 @@ func TestRunCIFix_DefersEngineResolutionWhenStatusNotFailing(t *testing.T) {
 	if err := os.MkdirAll(halDir, 0o755); err != nil {
 		t.Fatalf("mkdir .hal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte("engine: ["), 0o644); err != nil {
-		t.Fatalf("write malformed config: %v", err)
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte("engine: codex\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
 
 	newEngineCalled := false

@@ -12,12 +12,156 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/template"
 )
+
+type workerLifecycleRuntimeDriver struct {
+	mu         sync.Mutex
+	startCalls []sandboxruntime.Target
+	stopCalls  []sandboxruntime.Target
+	startFn    func(sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
+	stopFn     func(sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
+}
+
+func (d *workerLifecycleRuntimeDriver) ID() string { return sandboxruntime.DriverRootlessPodman }
+
+func (d *workerLifecycleRuntimeDriver) Create(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+	return nil, nil
+}
+
+func (d *workerLifecycleRuntimeDriver) Start(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	d.mu.Lock()
+	d.startCalls = append(d.startCalls, req.Target)
+	d.mu.Unlock()
+	if d.startFn != nil {
+		return d.startFn(req)
+	}
+	target := req.Target
+	target.Status = sandbox.StatusRunning
+	return &target, nil
+}
+
+func (d *workerLifecycleRuntimeDriver) Stop(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+	d.mu.Lock()
+	d.stopCalls = append(d.stopCalls, req.Target)
+	d.mu.Unlock()
+	if d.stopFn != nil {
+		return d.stopFn(req)
+	}
+	target := req.Target
+	target.Status = sandbox.StatusStopped
+	return &target, nil
+}
+
+func (d *workerLifecycleRuntimeDriver) Delete(context.Context, sandboxruntime.LifecycleRequest) error {
+	return nil
+}
+
+func (d *workerLifecycleRuntimeDriver) Inspect(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	return &req.Target, nil
+}
+
+func (d *workerLifecycleRuntimeDriver) Exec(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+	return &sandboxruntime.ExecResult{}, nil
+}
+
+func (d *workerLifecycleRuntimeDriver) CopyIn(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+func (d *workerLifecycleRuntimeDriver) CopyOut(context.Context, sandboxruntime.CopyRequest) error {
+	return nil
+}
+
+func (d *workerLifecycleRuntimeDriver) sortedStartNames() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	names := make([]string, 0, len(d.startCalls))
+	for _, target := range d.startCalls {
+		names = append(names, target.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (d *workerLifecycleRuntimeDriver) sortedStopNames() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	names := make([]string, 0, len(d.stopCalls))
+	for _, target := range d.stopCalls {
+		names = append(names, target.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func workerLifecycleSandbox(name, status string) *sandbox.SandboxState {
+	return &sandbox.SandboxState{
+		ID:       "sandbox-" + name,
+		Name:     name,
+		Provider: "worker",
+		Status:   status,
+		Host: &sandbox.SandboxHost{
+			ID:   "worker-1",
+			Name: "worker one",
+			Kind: sandbox.SandboxHostKindWorker,
+		},
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			RuntimeID:      "ctr-old-" + name,
+			Image:          "localhost/hal:old",
+			WorkerID:       "worker-1",
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+		},
+		Workspace: &sandbox.SandboxWorkspace{
+			Mode:        sandbox.SandboxWorkspaceModeClone,
+			InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,
+			Repo:        "github.com/example/game",
+			Branch:      "feature/worker-lifecycle",
+		},
+	}
+}
+
+func saveWorkerLifecycleHost(t *testing.T, target *sandbox.SandboxState) {
+	t.Helper()
+	if target == nil || target.Host == nil {
+		t.Fatal("worker lifecycle target host is required")
+	}
+	host := *target.Host
+	host.Endpoint = "unix:///tmp/private/worker-1.sock"
+	host.SupportedRuntimes = []string{sandboxruntime.DriverRootlessPodman}
+	if err := sandbox.SaveHost(&host); err != nil {
+		t.Fatalf("SaveHost(): %v", err)
+	}
+}
+
+func installWorkerStartRoutingDeps(t *testing.T, driver sandboxruntime.Driver) *atomic.Int32 {
+	t.Helper()
+	originalProvider := sandboxStartResolveProvider
+	originalRuntime := sandboxStartResolveRuntime
+	providerCalls := new(atomic.Int32)
+	sandboxStartResolveProvider = func(string) (sandbox.Provider, error) {
+		providerCalls.Add(1)
+		return nil, errors.New("legacy provider resolution must not run for worker start")
+	}
+	sandboxStartResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+		if !factorySandboxUsesWorkerRuntime(target) {
+			return nil, fmt.Errorf("target %q is not worker-backed", target.Name)
+		}
+		return driver, nil
+	}
+	t.Cleanup(func() {
+		sandboxStartResolveProvider = originalProvider
+		sandboxStartResolveRuntime = originalRuntime
+	})
+	return providerCalls
+}
 
 type mockLifecycleStartProvider struct {
 	mu                sync.Mutex
@@ -103,8 +247,8 @@ func TestSandboxStartCommandLifecycleFlagsOnly(t *testing.T) {
 
 func TestResolveStartTargets_ExplicitNamesIncludeRunningAndDedupe(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "worker", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "api", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "worker", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	targets, _, err := resolveStartTargets([]string{"worker", "api", "worker"}, false, "")
@@ -122,9 +266,9 @@ func TestResolveStartTargets_ExplicitNamesIncludeRunningAndDedupe(t *testing.T) 
 
 func TestResolveStartTargets_AllAndPatternFilterStopped(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "worker-01", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
-		{Name: "worker-02", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "api", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "worker-02", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	allTargets, _, err := resolveStartTargets(nil, true, "")
@@ -146,7 +290,7 @@ func TestResolveStartTargets_AllAndPatternFilterStopped(t *testing.T) {
 
 func TestResolveStartTargets_NoStoppedGuidanceAndMultipleStopped(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "api", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 	_, _, err := resolveStartTargets(nil, false, "")
 	if err == nil || err.Error() != "no stopped sandboxes; use 'hal sandbox create' to provision a new sandbox" {
@@ -154,8 +298,8 @@ func TestResolveStartTargets_NoStoppedGuidanceAndMultipleStopped(t *testing.T) {
 	}
 
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "one", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
-		{Name: "two", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "one", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "two", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 	_, _, err = resolveStartTargets(nil, false, "")
 	if err == nil || !strings.Contains(err.Error(), "multiple stopped sandboxes found: one, two") {
@@ -174,7 +318,7 @@ func TestRunSandboxStart_StartsAndPersistsRunningState(t *testing.T) {
 	stoppedAt := time.Now().Add(-time.Hour)
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{{
 		Name:      "worker",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusStopped,
 		StoppedAt: &stoppedAt,
 		CreatedAt: time.Now().Add(-2 * time.Hour),
@@ -204,6 +348,214 @@ func TestRunSandboxStart_StartsAndPersistsRunningState(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Started worker") {
 		t.Fatalf("output = %q, want Started worker", out.String())
+	}
+	if !strings.Contains(out.String(), "SSH:    hal sandbox ssh worker") {
+		t.Fatalf("output = %q, want legacy provider SSH guidance", out.String())
+	}
+}
+
+func TestRunSandboxStart_WorkerTargetUsesRuntimeAndPersistsReturnedMetadata(t *testing.T) {
+	target := workerLifecycleSandbox("worker-start", sandbox.StatusStopped)
+	stoppedAt := time.Date(2026, 7, 12, 18, 0, 0, 0, time.UTC)
+	target.StoppedAt = &stoppedAt
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{target})
+
+	driver := &workerLifecycleRuntimeDriver{
+		startFn: func(req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			started := req.Target
+			started.Status = sandbox.StatusRunning
+			started.Runtime.RuntimeID = "ctr-started-worker-start"
+			started.Runtime.Image = "localhost/hal:started"
+			started.Connection.WorkspaceID = "workspace-started"
+			return &started, nil
+		},
+	}
+	providerCalls := installWorkerStartRoutingDeps(t, driver)
+
+	var out bytes.Buffer
+	if err := runSandboxStart([]string{target.Name}, false, "", &out, nil); err != nil {
+		t.Fatalf("runSandboxStart() error: %v", err)
+	}
+	if providerCalls.Load() != 0 {
+		t.Fatalf("legacy provider resolution calls = %d, want 0", providerCalls.Load())
+	}
+	if got := driver.sortedStartNames(); strings.Join(got, ",") != target.Name {
+		t.Fatalf("runtime Start calls = %v, want %v", got, []string{target.Name})
+	}
+
+	loaded, err := sandbox.LoadActiveInstance(target.Name)
+	if err != nil {
+		t.Fatalf("LoadActiveInstance(): %v", err)
+	}
+	if loaded.Status != sandbox.StatusRunning || loaded.StoppedAt != nil {
+		t.Fatalf("persisted lifecycle = status %q stoppedAt %v, want running without stoppedAt", loaded.Status, loaded.StoppedAt)
+	}
+	if loaded.Runtime == nil || loaded.Runtime.RuntimeID != "ctr-started-worker-start" || loaded.Runtime.Image != "localhost/hal:started" {
+		t.Fatalf("persisted runtime = %#v, want returned runtime metadata", loaded.Runtime)
+	}
+	if loaded.WorkspaceID != "workspace-started" {
+		t.Fatalf("persisted workspace ID = %q, want workspace-started", loaded.WorkspaceID)
+	}
+	if loaded.Host == nil || loaded.Host.ID != target.Host.ID || loaded.Workspace == nil || loaded.Workspace.Repo != target.Workspace.Repo {
+		t.Fatalf("persisted target lost durable worker metadata: %#v", loaded)
+	}
+	if !strings.Contains(out.String(), "Runtime: "+sandboxruntime.DriverRootlessPodman) {
+		t.Fatalf("output = %q, want worker runtime metadata", out.String())
+	}
+	if strings.Contains(out.String(), "hal sandbox ssh") || strings.Contains(out.String(), "SSH:") {
+		t.Fatalf("output = %q, must not advertise provider-only SSH for worker runtime", out.String())
+	}
+}
+
+func TestRunSandboxStart_MultipleWorkerTargetsUseRuntimeAndPersistEach(t *testing.T) {
+	targets := []*sandbox.SandboxState{
+		workerLifecycleSandbox("worker-start-a", sandbox.StatusStopped),
+		workerLifecycleSandbox("worker-start-b", sandbox.StatusStopped),
+	}
+	setupStopGlobalRegistry(t, targets)
+
+	driver := &workerLifecycleRuntimeDriver{
+		startFn: func(req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			started := req.Target
+			started.Status = sandbox.StatusRunning
+			started.Runtime.RuntimeID = "ctr-started-" + req.Target.Name
+			return &started, nil
+		},
+	}
+	providerCalls := installWorkerStartRoutingDeps(t, driver)
+
+	if err := runSandboxStart([]string{targets[1].Name, targets[0].Name}, false, "", io.Discard, nil); err != nil {
+		t.Fatalf("runSandboxStart() error: %v", err)
+	}
+	if providerCalls.Load() != 0 {
+		t.Fatalf("legacy provider resolution calls = %d, want 0", providerCalls.Load())
+	}
+	wantNames := []string{targets[0].Name, targets[1].Name}
+	if got := driver.sortedStartNames(); strings.Join(got, ",") != strings.Join(wantNames, ",") {
+		t.Fatalf("runtime Start calls = %v, want %v", got, wantNames)
+	}
+	for _, target := range targets {
+		loaded, err := sandbox.LoadActiveInstance(target.Name)
+		if err != nil {
+			t.Fatalf("LoadActiveInstance(%q): %v", target.Name, err)
+		}
+		if loaded.Status != sandbox.StatusRunning || loaded.Runtime == nil || loaded.Runtime.RuntimeID != "ctr-started-"+target.Name {
+			t.Fatalf("persisted target %q = %#v, want running returned runtime metadata", target.Name, loaded)
+		}
+	}
+}
+
+func TestRunSandboxStart_WorkerRuntimeFailurePreservesStoppedState(t *testing.T) {
+	target := workerLifecycleSandbox("worker-start-failure", sandbox.StatusStopped)
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{target})
+	driver := &workerLifecycleRuntimeDriver{
+		startFn: func(sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			return nil, errors.New("worker start unavailable")
+		},
+	}
+	providerCalls := installWorkerStartRoutingDeps(t, driver)
+
+	err := runSandboxStart([]string{target.Name}, false, "", io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "sandbox start failed") {
+		t.Fatalf("runSandboxStart() error = %v, want runtime start failure", err)
+	}
+	if providerCalls.Load() != 0 {
+		t.Fatalf("legacy provider resolution calls = %d, want 0", providerCalls.Load())
+	}
+	loaded, loadErr := sandbox.LoadInstance(target.Name)
+	if loadErr != nil {
+		t.Fatalf("LoadInstance(): %v", loadErr)
+	}
+	if loaded.Status != sandbox.StatusStopped || loaded.Runtime == nil || loaded.Runtime.RuntimeID != target.Runtime.RuntimeID {
+		t.Fatalf("persisted target after failed start = %#v, want original stopped state", loaded)
+	}
+}
+
+func TestRunSandboxStart_WorkerHostInvalidRuntimeMetadataNeverUsesProvider(t *testing.T) {
+	tests := []struct {
+		name       string
+		runtime    *sandbox.SandboxRuntimeState
+		wantDriver string
+	}{
+		{
+			name:       "missing runtime metadata",
+			wantDriver: sandboxruntime.DriverSSHMachine,
+		},
+		{
+			name: "unsupported runtime driver",
+			runtime: &sandbox.SandboxRuntimeState{
+				Driver: "unsupported_runtime",
+			},
+			wantDriver: "unsupported_runtime",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := workerLifecycleSandbox("worker-start-invalid-runtime", sandbox.StatusStopped)
+			target.Runtime = tt.runtime
+			setupStopGlobalRegistry(t, []*sandbox.SandboxState{target})
+			saveWorkerLifecycleHost(t, target)
+
+			originalProvider := sandboxStartResolveProvider
+			originalRuntime := sandboxStartResolveRuntime
+			var providerResolverCalls atomic.Int32
+			var runtimeResolverCalls atomic.Int32
+			sandboxStartResolveProvider = func(string) (sandbox.Provider, error) {
+				providerResolverCalls.Add(1)
+				return nil, errors.New("provider resolver must not run for worker host")
+			}
+			sandboxStartResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+				runtimeResolverCalls.Add(1)
+				return resolveFactoryStoredSandboxRuntime(".", target)
+			}
+			t.Cleanup(func() {
+				sandboxStartResolveProvider = originalProvider
+				sandboxStartResolveRuntime = originalRuntime
+			})
+
+			provider := &mockLifecycleStartProvider{}
+			err := runSandboxStart([]string{target.Name}, false, "", io.Discard, provider)
+			if err == nil || !strings.Contains(err.Error(), "runtime_unsupported") || !strings.Contains(err.Error(), tt.wantDriver) {
+				t.Fatalf("runSandboxStart() error = %v, want worker runtime metadata error for %q", err, tt.wantDriver)
+			}
+			if got := runtimeResolverCalls.Load(); got != 1 {
+				t.Fatalf("worker runtime resolver calls = %d, want 1", got)
+			}
+			if got := providerResolverCalls.Load(); got != 0 {
+				t.Fatalf("provider resolver calls = %d, want 0", got)
+			}
+			if got := provider.sortedStartCalls(); len(got) != 0 {
+				t.Fatalf("provider Start calls = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestRunSandboxStart_LegacyTargetDoesNotResolveWorkerRuntime(t *testing.T) {
+	setupStopGlobalRegistry(t, []*sandbox.SandboxState{{
+		Name:      "legacy-start",
+		Provider:  "hetzner",
+		Status:    sandbox.StatusStopped,
+		CreatedAt: time.Now(),
+	}})
+	originalRuntime := sandboxStartResolveRuntime
+	var runtimeCalls atomic.Int32
+	sandboxStartResolveRuntime = func(*sandbox.SandboxState) (sandboxruntime.Driver, error) {
+		runtimeCalls.Add(1)
+		return nil, errors.New("worker runtime resolver should not run")
+	}
+	t.Cleanup(func() { sandboxStartResolveRuntime = originalRuntime })
+	provider := &mockLifecycleStartProvider{}
+
+	if err := runSandboxStart([]string{"legacy-start"}, false, "", io.Discard, provider); err != nil {
+		t.Fatalf("runSandboxStart() error: %v", err)
+	}
+	if runtimeCalls.Load() != 0 {
+		t.Fatalf("worker runtime resolver calls = %d, want 0", runtimeCalls.Load())
+	}
+	if got := provider.sortedStartCalls(); strings.Join(got, ",") != "legacy-start" {
+		t.Fatalf("provider Start calls = %v, want legacy-start", got)
 	}
 }
 
@@ -237,7 +589,7 @@ func TestRunSandboxStart_LiveStatusRefreshPersistsChangedIP(t *testing.T) {
 func TestRunSandboxStart_ExplicitAlreadyRunningIsIdempotent(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{{
 		Name:      "api",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	}})
@@ -253,8 +605,8 @@ func TestRunSandboxStart_ExplicitAlreadyRunningIsIdempotent(t *testing.T) {
 
 func TestRunSandboxStart_PartialFailures(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "one", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
-		{Name: "two", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "one", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "two", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 	provider := &mockLifecycleStartProvider{startErrByName: map[string]error{"two": errors.New("boom")}}
 
@@ -284,7 +636,7 @@ func TestRunSandboxStart_SyncsMatchingLocalState(t *testing.T) {
 	state := &sandbox.SandboxState{
 		ID:        "global-id",
 		Name:      "local-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusStopped,
 		StoppedAt: &stoppedAt,
 		CreatedAt: time.Now(),

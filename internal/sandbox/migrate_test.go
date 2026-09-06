@@ -165,10 +165,6 @@ func expectedMigratedGlobalConfig() *GlobalConfig {
 			"GITHUB_TOKEN":   "gh-local",
 		},
 		TailscaleLockdown: true,
-		Daytona: DaytonaGlobalConfig{
-			APIKey:    "local-daytona-key",
-			ServerURL: "https://daytona.local/api",
-		},
 		DigitalOcean: DigitalOceanGlobalConfig{
 			SSHKey: "do-local-key",
 			Size:   "s-2vcpu-4gb",
@@ -198,10 +194,6 @@ func existingGlobalConfig() *GlobalConfig {
 			"OPENAI_API_KEY": "sk-global",
 		},
 		TailscaleLockdown: false,
-		Daytona: DaytonaGlobalConfig{
-			APIKey:    "global-daytona-key",
-			ServerURL: "https://global.daytona/api",
-		},
 		DigitalOcean: DigitalOceanGlobalConfig{
 			SSHKey: "do-global-key",
 			Size:   "s-1vcpu-1gb",
@@ -285,7 +277,7 @@ func TestMigrate_StateFile(t *testing.T) {
 				writeSandboxJSON(t, projectDir, &SandboxState{
 					ID:       "test-id-002",
 					Name:     "already-there",
-					Provider: "daytona",
+					Provider: "hetzner",
 					Status:   StatusRunning,
 				})
 			},
@@ -294,7 +286,7 @@ func TestMigrate_StateFile(t *testing.T) {
 				if err := ForceWriteInstance(&SandboxState{
 					ID:          "test-id-002",
 					Name:        "already-there",
-					Provider:    "daytona",
+					Provider:    "hetzner",
 					WorkspaceID: "test-id-002",
 					Status:      StatusRunning,
 				}); err != nil {
@@ -306,13 +298,13 @@ func TestMigrate_StateFile(t *testing.T) {
 			wantOutput:       "Removed already-migrated sandbox.json",
 		},
 		{
-			name: "auto-migrates empty provider to daytona",
+			name: "preserves empty provider without selecting a replacement",
 			setupLocal: func(t *testing.T, projectDir string) {
 				t.Helper()
 				writeSandboxJSON(t, projectDir, &SandboxState{
 					ID:       "legacy-id",
 					Name:     "legacy-box",
-					Provider: "", // empty = legacy daytona
+					Provider: "",
 					Status:   StatusRunning,
 				})
 			},
@@ -324,8 +316,8 @@ func TestMigrate_StateFile(t *testing.T) {
 				if err != nil {
 					t.Fatalf("LoadInstance: %v", err)
 				}
-				if inst.Provider != "daytona" {
-					t.Errorf("Provider = %q, want %q", inst.Provider, "daytona")
+				if inst.Provider != "" {
+					t.Errorf("Provider = %q, want empty", inst.Provider)
 				}
 			},
 		},
@@ -344,7 +336,7 @@ func TestMigrate_StateFile(t *testing.T) {
 			seedRegistry: func(t *testing.T) {
 				t.Helper()
 				cfg := DefaultGlobalConfig()
-				cfg.Provider = "daytona"
+				cfg.Provider = "hetzner"
 				if err := SaveGlobalConfig(&cfg); err != nil {
 					t.Fatalf("SaveGlobalConfig(seed) error: %v", err)
 				}
@@ -689,7 +681,7 @@ func TestMigrate_StateFile_ExistingRegistryParseError(t *testing.T) {
 	writeSandboxJSON(t, projectDir, &SandboxState{
 		ID:       "legacy-id",
 		Name:     "legacy-box",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   StatusRunning,
 	})
 
@@ -728,7 +720,7 @@ func TestMigrate_StateFile_ExistingRegistryConflictPreservesLocal(t *testing.T) 
 	writeSandboxJSON(t, projectDir, &SandboxState{
 		ID:          "legacy-id",
 		Name:        "legacy-box",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-legacy",
 		Status:      StatusRunning,
 	})
@@ -736,7 +728,7 @@ func TestMigrate_StateFile_ExistingRegistryConflictPreservesLocal(t *testing.T) 
 	if err := ForceWriteInstance(&SandboxState{
 		ID:          "global-id",
 		Name:        "legacy-box",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-global",
 		Status:      StatusRunning,
 	}); err != nil {
@@ -775,14 +767,14 @@ func TestMigrate_StateFile_AlreadyMigratedLegacyWorkspaceIDBackfill(t *testing.T
 	writeSandboxJSON(t, projectDir, &SandboxState{
 		ID:       "legacy-id",
 		Name:     "legacy-box",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   StatusRunning,
 	})
 
 	if err := ForceWriteInstance(&SandboxState{
 		ID:          "legacy-id",
 		Name:        "legacy-box",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "legacy-id",
 		Status:      StatusRunning,
 	}); err != nil {
@@ -849,7 +841,7 @@ func TestMigrate_StateFile_AlreadyMigratedMergesMissingRegistryFields(t *testing
 	writeSandboxJSON(t, projectDir, &SandboxState{
 		ID:                "legacy-id",
 		Name:              "legacy-box",
-		Provider:          "daytona",
+		Provider:          "hetzner",
 		IP:                "203.0.113.10",
 		TailscaleIP:       "100.64.0.10",
 		TailscaleHostname: "legacy-box.tail",
@@ -865,7 +857,7 @@ func TestMigrate_StateFile_AlreadyMigratedMergesMissingRegistryFields(t *testing
 
 	if err := ForceWriteInstance(&SandboxState{
 		Name:         "legacy-box",
-		Provider:     "daytona",
+		Provider:     "hetzner",
 		Status:       StatusUnknown,
 		AutoShutdown: true,
 	}); err != nil {
@@ -917,7 +909,7 @@ func TestMigrate_StateFile_LateRegistryCollisionPreservesLocal(t *testing.T) {
 	projectDir := t.TempDir()
 	writeSandboxJSON(t, projectDir, &SandboxState{
 		Name:     "legacy-box",
-		Provider: "daytona",
+		Provider: "hetzner",
 		IP:       "1.2.3.4",
 		Status:   StatusRunning,
 	})
@@ -926,7 +918,7 @@ func TestMigrate_StateFile_LateRegistryCollisionPreservesLocal(t *testing.T) {
 	// runs so the compatibility check fails.
 	if err := ForceWriteInstance(&SandboxState{
 		Name:     "legacy-box",
-		Provider: "daytona",
+		Provider: "hetzner",
 		IP:       "5.6.7.8",
 		Status:   StatusStopped,
 	}); err != nil {
@@ -968,7 +960,7 @@ func TestMigrate_StateFile_ExistingEntryFieldMismatchPreservesLocal(t *testing.T
 	writeSandboxJSON(t, projectDir, &SandboxState{
 		ID:                sandboxID,
 		Name:              "legacy-box",
-		Provider:          "daytona",
+		Provider:          "hetzner",
 		IP:                "203.0.113.10",
 		TailscaleIP:       "100.64.0.10",
 		TailscaleHostname: "legacy-box.tail",
@@ -984,7 +976,7 @@ func TestMigrate_StateFile_ExistingEntryFieldMismatchPreservesLocal(t *testing.T
 	if err := ForceWriteInstance(&SandboxState{
 		ID:                sandboxID,
 		Name:              "legacy-box",
-		Provider:          "daytona",
+		Provider:          "hetzner",
 		IP:                "203.0.113.11",
 		TailscaleIP:       "100.64.0.11",
 		TailscaleHostname: "stale-box.tail",
@@ -1039,9 +1031,6 @@ func writeSandboxJSON(t *testing.T, projectDir string, state *SandboxState) {
 }
 
 const localSandboxConfigYAML = `engine: codex
-daytona:
-  apiKey: local-daytona-key
-  serverURL: https://daytona.local/api
 sandbox:
   provider: digitalocean
   tailscaleLockdown: true

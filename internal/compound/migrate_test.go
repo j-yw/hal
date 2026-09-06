@@ -196,6 +196,59 @@ func TestMigrateAutoProgress_MergeBothHaveContent(t *testing.T) {
 	}
 }
 
+func TestUS007MigrateAutoProgressRedactsDurableProgressArtifact(t *testing.T) {
+	const (
+		githubToken   = "ghp_US007ProgressToken1234567890"
+		openAIToken   = "sk-us007ProgressToken1234567890"
+		localKeyPath  = "/Users/alice/.ssh/id_ed25519"
+		credentialURL = "https://user:pass@example.invalid/repo.git?token=ghp_US007ProgressRemote1234567890"
+	)
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("failed to create hal dir: %v", err)
+	}
+
+	progressPath := filepath.Join(halDir, template.ProgressFile)
+	existingContent := "Existing progress used " + githubToken + " from " + localKeyPath
+	if err := os.WriteFile(progressPath, []byte(existingContent), 0644); err != nil {
+		t.Fatalf("failed to write progress.txt: %v", err)
+	}
+	autoProgressPath := filepath.Join(halDir, "auto-progress.txt")
+	autoContent := "Migrated progress fetched " + credentialURL + " with " + openAIToken
+	if err := os.WriteFile(autoProgressPath, []byte(autoContent), 0644); err != nil {
+		t.Fatalf("failed to write auto-progress.txt: %v", err)
+	}
+
+	if err := MigrateAutoProgress(dir, &mockDisplay{}); err != nil {
+		t.Fatalf("MigrateAutoProgress returned error: %v", err)
+	}
+
+	merged, err := os.ReadFile(progressPath)
+	if err != nil {
+		t.Fatalf("failed to read merged progress.txt: %v", err)
+	}
+	mergedStr := string(merged)
+	for _, forbidden := range []string{
+		githubToken,
+		openAIToken,
+		localKeyPath,
+		credentialURL,
+		"user:pass@example.invalid",
+		"ghp_US007ProgressRemote1234567890",
+	} {
+		if strings.Contains(mergedStr, forbidden) {
+			t.Fatalf("durable progress artifact leaked %q:\n%s", forbidden, mergedStr)
+		}
+	}
+	if strings.Count(mergedStr, "[redacted]") < 4 {
+		t.Fatalf("durable progress artifact missing stable redaction markers:\n%s", mergedStr)
+	}
+	if _, err := os.Stat(autoProgressPath); !os.IsNotExist(err) {
+		t.Errorf("auto-progress.txt should be deleted after merge")
+	}
+}
+
 func TestMigrateAutoProgress_ReplaceWhenEmpty(t *testing.T) {
 	// Create temp directory
 	dir := t.TempDir()

@@ -43,6 +43,8 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `engine` | string | Engine snapshot resolved at factory run creation time, such as `codex`, `claude`, or `pi` |
 | `policy` | object | Factory policy snapshot applied to the run |
 | `policyDecisions` | array | Policy decisions recorded from the run timeline |
+| `runner` | object | Redaction-safe runner summary for post-run publish-capable work |
+| `publishFrom` | string | Normalized publish source request: `host`, `sandbox`, or `auto` |
 | `sandboxName` | string | Sandbox name used for the run |
 | `sandbox` | object | Redaction-safe sandbox execution metadata for sandbox-backed runs |
 | `finishedAt` | string | RFC 3339 timestamp of terminal completion |
@@ -52,9 +54,45 @@ These fields use `omitempty` and are only present when the value is non-zero.
 | `failure` | object | Terminal failure summary when the run failed or stopped on a recoverable error |
 | `handoff` | object | Redaction-safe human handoff and next-action guidance for failed runs with actionable follow-up |
 | `secrets` | array | Redaction-safe run-scoped secret metadata; raw values are never stored |
+| `postRun` | object | Post-run recovery and publish outcomes recorded after the original pipeline state |
 
 `sandboxName` is retained as a compatibility summary field. New consumers
 should read `sandbox.name` when the `sandbox` object is present.
+
+## Runner And Post-Run Publish Metadata
+
+When `runner` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `mode` | string | yes | Runner that performed publish-capable work: `host` or `sandbox` |
+| `sandboxName` | string | no | Sandbox name when `mode` is `sandbox` |
+
+`publishFrom` records the normalized operator request. `auto` lets Hal try the
+sandbox publisher for sandbox-backed runs and fall back to host-side recovery
+publish when needed. `host` publishes from the host worktree. `sandbox` runs the
+publish command inside the stored sandbox workspace.
+
+The `postRun` object may contain a `publish` object. When
+`postRun.publish` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `status` | string | no | Publish lifecycle status |
+| `policy` | string | no | Publish policy used: `push` or `pr` |
+| `branchName` | string | no | Branch that was pushed or used for the pull request |
+| `recoveredBundle` | string | no | Store-relative recovery bundle used before host publish |
+| `pushed` | boolean | no | Whether a branch push completed |
+| `pullRequestUrl` | string | no | Pull request URL when a PR was created |
+| `pullRequestId` | integer | no | Pull request number when available |
+| `allowUnverified` | boolean | no | Whether an unverified stored run was explicitly allowed |
+| `runner` | string | no | Actual publish runner: `host` or `sandbox` |
+| `fallbackFrom` | string | no | Failed runner that caused fallback, usually `sandbox` when `publishFrom` was `auto` |
+| `credentialMode` | string | no | Credential delivery mode used by the publisher, such as `env` |
+| `commit` | string | no | Commit hash observed by the sandbox publisher |
+| `attempts` | array | no | Per-runner publish attempts with `runner`, `status`, optional `error`, `startedAt`, and `completedAt` |
+| `source` | string | no | Publish initiator such as `automatic` or `manual` |
+| `completedAt` | string | no | RFC3339 timestamp when publish metadata was recorded |
 
 ## Policy Metadata
 
@@ -110,10 +148,30 @@ When `sandbox` is present:
 | `sshCommand` | string | no | Suggested local command for interactive inspection |
 | `cleanupCommand` | string | no | Suggested local command for sandbox cleanup |
 | `handoff` | string | no | Human-readable diagnostic or continuation guidance |
+| `host` | object | no | Redaction-safe Sandbox Runtime v2 host summary metadata |
+| `runtime` | object | no | Redaction-safe Sandbox Runtime v2 runtime summary metadata |
+| `workspace` | object | no | Redaction-safe Sandbox Runtime v2 workspace summary metadata |
+| `security` | object | no | Redaction-safe Sandbox Runtime v2 security summary metadata |
+| `networkProxySession` | object | no | Sanitized network proxy-session metadata for policy debugging; metadata only and not proof of live enforcement |
+| `credentialProxyPlan` | object | no | Sanitized credential proxy plan metadata; safe identifiers and enum-like metadata only |
+| `credentialProxySession` | object | no | Sanitized credential proxy session metadata; safe identifiers and enum-like metadata only |
+| `credentialProxyBindings` | array | no | Sanitized credential proxy binding metadata; safe identifiers, safe secret references, and enum-like metadata only |
+| `credentialDelivery` | object | no | Sanitized credential delivery status metadata; requested versus active mode labels only |
+| `lease` | object | no | Redaction-safe Sandbox Runtime v2 lease summary metadata |
+| `workerRouting` | object | no | Redaction-safe worker-backed execution route metadata |
+| `templateLock` | object | no | Redaction-safe template acquisition lock metadata; digest and status labels only |
 
 Sandbox metadata is safe for durable local records. It must not include tokens,
-private keys, secret environment values, raw credentials, API keys, or unsafe
-environment details.
+private keys, secret names, secret values, raw filesystem paths, raw workspace
+paths, raw credentials, API keys, lease holders, provider credentials, or unsafe
+environment details. Credential proxy metadata is metadata-only and must not
+include raw hosts, URLs, ports, headers, bodies, environment values, socket
+paths, local paths, credential values, or secret values. In Phase 26, credential
+proxy persistence is limited to non-factory sandbox execution manifests and
+factory sandbox metadata; factory timeline events do not mirror credential
+proxy plan, session, or binding metadata. Template lock metadata must not
+include local paths, raw registry endpoints, query strings, credentials, tokens,
+or secret-like values.
 
 When `sandbox.connection` is present:
 
@@ -124,6 +182,131 @@ When `sandbox.connection` is present:
 | `tailscaleIp` | string | no | Tailscale IP address when available |
 | `tailscaleHostname` | string | no | Tailscale hostname when available |
 | `tailscaleLockdown` | boolean | no | Whether provider access expects Tailscale-only connectivity |
+
+When `sandbox.host` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Stable host identifier |
+| `name` | string | yes | Redaction-safe host display name |
+| `kind` | string | yes | Host kind, such as `local`, `ssh`, `worker`, or `k8s` |
+
+When `sandbox.runtime` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `driver` | string | yes | Runtime driver, such as `ssh_machine`, `rootless_podman`, or `microvm` |
+| `isolationLevel` | string | yes | Runtime isolation level, such as `host`, `container`, or `vm` |
+| `runtimeId` | string | yes | Stable runtime identifier |
+| `image` | string | yes | Runtime image or image reference when known |
+| `workerId` | string | yes | Worker identifier associated with the runtime when known |
+
+For factory sandbox runs, `rootless_podman` is an experimental lower-isolation
+local container runtime. Its `sandbox.runtime.isolationLevel` is `container`;
+consumers must not treat it as VM isolation or as the production default runtime.
+When rootless Podman uses the current compatibility security posture,
+`sandbox.security.network.policyEnforced` is `best_effort` and
+`sandbox.security.network.enforcementMode` is `none`.
+
+When `sandbox.workspace` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `mode` | string | yes | Workspace materialization mode, such as `clone`, `copy`, or `direct` |
+| `inputSource` | string | yes | Workspace input source, such as `remote_ref`, `git_bundle`, or `copy` |
+| `branch` | string | yes | Branch associated with the workspace |
+| `syncRef` | string | yes | Redaction-safe synchronization reference |
+
+When `sandbox.security` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `network` | object | no | Redaction-safe network policy summary |
+| `secrets` | object | no | Redaction-safe secret delivery summary |
+| `capabilityReadiness` | object | no | Additive security capability readiness output with redaction-safe result metadata |
+| `capabilityReadinessDiagnostics` | object | no | Additive advisory diagnostics derived from redaction-safe capability readiness output |
+| `securityReadinessGate` | object | no | Additive redaction-safe secure-default readiness gate decision with stable reason codes and aggregate counts |
+| `strictComposition` | object | no | Additive redaction-safe strict composition decision for the exact sandbox execution |
+
+When `sandbox.security.network` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `policyRequested` | string | no | Requested network policy summary |
+| `policyEnforced` | string | no | Enforced network policy summary |
+| `enforcementMode` | string | no | Network enforcement mode, such as `none`, `best_effort`, `proxy`, `firewall`, `runtime`, or `proxy_firewall` |
+| `policyResult` | object | no | Additive effective policy metadata with requested/effective intent, enforcement capability, selected enforcement mode, and redaction-safe warnings |
+
+When `sandbox.networkProxySession` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Safe proxy-session identifier |
+| `source` | string | yes | Decision source label, such as `factory` |
+| `policySnapshot` | object | no | Safe policy snapshot identity |
+| `enforcementMode` | string | no | Metadata-only enforcement mode, such as `none`, `best_effort`, `proxy`, `firewall`, `runtime`, or `proxy_firewall` |
+
+When `sandbox.networkProxySession.policySnapshot` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Safe policy snapshot identifier |
+| `version` | string | no | Safe policy snapshot version identifier |
+| `preset` | string | no | Policy preset identifier, such as `deny_by_default`, `allow_listed`, `best_effort`, `disabled`, or `legacy_default` |
+| `ruleSetId` | string | no | Safe rule-set identifier |
+
+When `sandbox.security.secrets` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `requestedModes` | array | no | Requested secret delivery mode identifiers; mode names are safe summaries only |
+| `activeModes` | array | no | Active secret delivery mode identifiers; mode names are safe summaries only |
+
+When `sandbox.credentialDelivery` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Safe credential delivery status identifier |
+| `requestId` | string | no | Safe request identifier |
+| `planId` | string | no | Safe delivery plan identifier |
+| `activationId` | string | no | Safe activation identifier |
+| `requestedModes` | array | no | Requested delivery mode identifiers; mode names are safe summaries only |
+| `activeModes` | array | no | Active delivery mode identifiers; omitted for plan-only metadata |
+| `status` | string | no | Sanitized lifecycle status, such as `planned`, `ready`, `active`, `completed`, `skipped`, `failed`, or `disabled` |
+| `reasonCode` | string | no | Sanitized reason code |
+| `warningCount` | number | no | Count of sanitized warning records |
+| `errorCount` | number | no | Count of sanitized error records |
+
+When `sandbox.lease` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Stable lease identifier |
+| `hostId` | string | yes | Stable selected host identifier associated with the lease |
+| `hostName` | string | yes | Redaction-safe selected host display name |
+| `runtimeDriver` | string | yes | Selected runtime driver associated with the lease, such as `ssh_machine`, `rootless_podman`, or `microvm` |
+| `resourceKey` | string | yes | Redaction-safe leased resource key |
+| `purpose` | string | yes | Lease purpose |
+| `runId` | string | yes | Factory run identifier associated with the lease |
+| `acquiredAt` | string | yes | RFC 3339 timestamp when the lease was acquired |
+| `expiresAt` | string | yes | RFC 3339 timestamp when the lease expires |
+
+When `sandbox.workerRouting` is present:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `selectedWorkerHostId` | string | yes | Stable identifier of the selected worker host |
+| `selectedWorkerHostName` | string | yes | Redaction-safe display name of the selected worker host |
+| `runtimeDriverId` | string | yes | Selected runtime driver ID, such as `rootless_podman` |
+| `isolationLevel` | string | yes | Selected isolation level, such as `host`, `container`, or `vm` |
+| `endpointSummary` | string | yes | Safe endpoint summary, such as `local Unix socket`; raw socket paths, hostnames, credentials, query strings, and temp paths are omitted |
+
+Factory sandbox workspace metadata intentionally omits repository paths, raw
+workspace paths, and raw filesystem paths. Factory sandbox security metadata
+intentionally omits secret names, secret values, tokens, credentials, private
+keys, provider credentials, and raw environment values. Factory sandbox lease
+metadata intentionally omits the lease holder. Worker routing metadata
+intentionally omits raw endpoint values and filesystem paths.
 
 ## Source Metadata
 

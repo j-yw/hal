@@ -17,6 +17,8 @@ When no arguments or flags are provided, the command auto-resolves:
 When --all is used without --yes, a confirmation prompt is shown.
 
 Resolved targets are de-duplicated and sorted by name before execution.
+Worker-backed runtime targets are deleted through their registered sandboxd
+runtime driver; provider-backed targets retain their provider lifecycle path.
 
 ```
 hal sandbox delete [NAME ...] [flags]

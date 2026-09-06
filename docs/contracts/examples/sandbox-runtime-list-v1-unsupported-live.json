@@ -1,0 +1,42 @@
+{
+  "contractType": "sandbox-runtime-list",
+  "contractVersion": "sandbox-runtime-list-v1",
+  "host": {
+    "id": "ssh-1",
+    "name": "zeta",
+    "kind": "ssh",
+    "endpoint": {
+      "type": "endpoint",
+      "summary": "ssh endpoint",
+      "scheme": "ssh"
+    }
+  },
+  "source": {
+    "mode": "unsupported-live",
+    "requestedLive": true,
+    "cacheUpdated": false,
+    "refreshedAt": null,
+    "summary": "live runtime inspection is unsupported for host kind ssh; using cached durable metadata"
+  },
+  "runtimes": [],
+  "capacity": {
+    "summary": "unknown",
+    "cpuCores": null,
+    "memoryMb": null,
+    "diskGb": null,
+    "maxConcurrentSandboxes": null,
+    "activeSandboxes": null
+  },
+  "security": {
+    "requested": {},
+    "enforced": {}
+  },
+  "diagnostics": [
+    {
+      "code": "live_unsupported",
+      "severity": "warning",
+      "message": "live runtime inspection is unsupported for this host kind"
+    }
+  ],
+  "errors": []
+}

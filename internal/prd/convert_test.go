@@ -127,6 +127,34 @@ func promptResponseWithBranch(t *testing.T, branch string) string {
 	return string(data)
 }
 
+func promptResponseWithStoryIDs(t *testing.T, branch string, ids []string) string {
+	t.Helper()
+
+	stories := make([]engine.UserStory, 0, len(ids))
+	for i, id := range ids {
+		stories = append(stories, engine.UserStory{
+			ID:                 id,
+			Title:              fmt.Sprintf("Fixture story %d", i+1),
+			Description:        "As a tester, I want a generic fixture story so that conversion behavior is verifiable.",
+			AcceptanceCriteria: []string{"Fixture behavior is verifiable", "Typecheck passes"},
+			Priority:           i + 1,
+		})
+	}
+
+	payload := engine.PRD{
+		Project:     "test",
+		BranchName:  branch,
+		Description: "generic conversion fixture",
+		UserStories: stories,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("failed to marshal prompt response: %v", err)
+	}
+
+	return string(data)
+}
+
 func TestConvertWithEngine_UsesOutputFallbackWhenStreamRequiresFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	chdirTo(t, tmpDir)
@@ -611,6 +639,115 @@ func TestConvertWithEngine_GranularOptionAddsTaskGuidanceToPrompt(t *testing.T) 
 			t.Fatalf("granular prompt missing %q:\n%s", want, eng.lastPrompt)
 		}
 	}
+}
+
+func TestExplicitMarkdownStoryIDs(t *testing.T) {
+	markdown := `# Generic Feature
+
+## User Stories
+
+### US-001: First fixture story
+
+Some text that mentions US-999 but is not a heading.
+
+~~~markdown
+### US-888: Fenced example
+~~~
+
+#### User Story us-002 - Second fixture story
+`
+
+	got := explicitMarkdownStoryIDs(markdown)
+	want := []string{"US-001", "US-002"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("explicitMarkdownStoryIDs() = %v, want %v", got, want)
+	}
+}
+
+func TestConvertWithEngine_StandardPreservesExplicitSourceStories(t *testing.T) {
+	const markdown = `---
+branchName: hal/generic-boundary
+---
+
+# Generic Boundary Fixture
+
+## User Stories
+
+### US-001: First fixture story
+
+### US-002: Second fixture story
+`
+	expectedIDs := explicitMarkdownStoryIDs(markdown)
+	if len(expectedIDs) == 0 {
+		t.Fatal("fixture must derive explicit source story IDs")
+	}
+
+	t.Run("matching structure succeeds", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		chdirTo(t, tmpDir)
+		mdPath := filepath.Join(tmpDir, "prd.md")
+		outPath := filepath.Join(tmpDir, "prd.json")
+		writeFile(t, mdPath, markdown)
+
+		eng := &mockEngine{promptResponse: promptResponseWithStoryIDs(t, "hal/generic-boundary", expectedIDs)}
+		if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil); err != nil {
+			t.Fatalf("ConvertWithEngine() error = %v, want nil", err)
+		}
+
+		invariant := fmt.Sprintf("the markdown contains exactly %d explicit user stories with IDs %s", len(expectedIDs), strings.Join(expectedIDs, ", "))
+		if !strings.Contains(eng.lastPrompt, invariant) {
+			t.Fatalf("standard prompt missing source structure invariant %q:\n%s", invariant, eng.lastPrompt)
+		}
+	})
+
+	t.Run("expanded structure fails closed and restores output", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		chdirTo(t, tmpDir)
+		mdPath := filepath.Join(tmpDir, "prd.md")
+		outPath := filepath.Join(tmpDir, "prd.json")
+		writeFile(t, mdPath, markdown)
+		writeFile(t, outPath, promptResponseWithStoryIDs(t, "hal/generic-boundary", expectedIDs))
+		before, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		expandedIDs := append(append([]string(nil), expectedIDs...), "US-999")
+		eng := &mockEngine{promptResponse: promptResponseWithStoryIDs(t, "hal/generic-boundary", expandedIDs)}
+		err = ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{}, nil)
+		if err == nil {
+			t.Fatal("ConvertWithEngine() error = nil, want explicit story structure error")
+		}
+		wantError := fmt.Sprintf("source defines %d stories but output contains %d", len(expectedIDs), len(expandedIDs))
+		if !strings.Contains(err.Error(), wantError) {
+			t.Fatalf("ConvertWithEngine() error = %q, want %q", err, wantError)
+		}
+
+		after, readErr := os.ReadFile(outPath)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !bytes.Equal(after, before) {
+			t.Fatal("failed standard conversion did not restore the previous output")
+		}
+	})
+
+	t.Run("granular mode may decompose source stories", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		chdirTo(t, tmpDir)
+		mdPath := filepath.Join(tmpDir, "prd.md")
+		outPath := filepath.Join(tmpDir, "prd.json")
+		writeFile(t, mdPath, markdown)
+
+		decomposedIDs := []string{"T-001", "T-002", "T-003"}
+		eng := &mockEngine{promptResponse: promptResponseWithStoryIDs(t, "hal/generic-boundary", decomposedIDs)}
+		if err := ConvertWithEngine(context.Background(), eng, mdPath, outPath, ConvertOptions{Granular: true}, nil); err != nil {
+			t.Fatalf("ConvertWithEngine() granular error = %v, want nil", err)
+		}
+		if !strings.Contains(eng.lastPrompt, "Granular mode may intentionally decompose source stories") {
+			t.Fatalf("granular prompt missing decomposition guidance:\n%s", eng.lastPrompt)
+		}
+	})
 }
 
 func TestConvertWithEngine_ExplicitBranchAnnotationsPinOutputAndPrompt(t *testing.T) {

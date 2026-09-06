@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -18,7 +19,7 @@ func TestSaveInstanceAndLoadInstance(t *testing.T) {
 	instance := &SandboxState{
 		ID:          "0195b8d6-0f40-7a3f-8c4e-cf7a99e8cc1f",
 		Name:        "api-backend",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "ws-123",
 		IP:          "100.64.1.10",
 		Status:      StatusRunning,
@@ -217,6 +218,255 @@ func TestForceWriteInstance_Overwrites(t *testing.T) {
 	}
 	if loaded.Status != StatusStopped {
 		t.Fatalf("loaded status = %q, want %q", loaded.Status, StatusStopped)
+	}
+}
+
+func TestUpdateActiveInstanceExactSerializesSameNameReplacement(t *testing.T) {
+	setSandboxHome(t)
+
+	original := &SandboxState{
+		ID:        "sandbox-original",
+		Name:      "shared-name",
+		Status:    StatusStopped,
+		CreatedAt: time.Date(2026, 7, 25, 8, 0, 0, 0, time.UTC),
+	}
+	if err := SaveInstance(original); err != nil {
+		t.Fatalf("SaveInstance(original) error: %v", err)
+	}
+
+	updateEntered := make(chan struct{})
+	continueUpdate := make(chan struct{})
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- UpdateActiveInstanceExact(original.Name, original.ID, func(current *SandboxState) error {
+			close(updateEntered)
+			<-continueUpdate
+			current.Status = StatusRunning
+			current.IP = "stale-original-address"
+			return nil
+		})
+	}()
+	<-updateEntered
+
+	replacement := &SandboxState{
+		ID:        "sandbox-replacement",
+		Name:      original.Name,
+		Status:    StatusStopped,
+		IP:        "replacement-address",
+		CreatedAt: original.CreatedAt.Add(time.Minute),
+	}
+	replaceStarted := make(chan struct{})
+	replaceDone := make(chan error, 1)
+	go func() {
+		close(replaceStarted)
+		replaceDone <- ForceWriteInstance(replacement)
+	}()
+	<-replaceStarted
+	close(continueUpdate)
+
+	if err := <-updateDone; err != nil {
+		t.Fatalf("UpdateActiveInstanceExact() error: %v", err)
+	}
+	if err := <-replaceDone; err != nil {
+		t.Fatalf("ForceWriteInstance(replacement) error: %v", err)
+	}
+	current, err := LoadActiveInstance(original.Name)
+	if err != nil {
+		t.Fatalf("LoadActiveInstance() error: %v", err)
+	}
+	if current.ID != replacement.ID ||
+		current.Status != replacement.Status ||
+		current.IP != replacement.IP {
+		t.Fatalf("same-name replacement was overwritten by stale update: %#v", current)
+	}
+}
+
+func TestUpdateActiveInstanceExactRejectsSameNameReplacement(t *testing.T) {
+	setSandboxHome(t)
+
+	original := &SandboxState{
+		ID:        "sandbox-original",
+		Name:      "shared-name",
+		Status:    StatusStopped,
+		CreatedAt: time.Date(2026, 7, 25, 8, 0, 0, 0, time.UTC),
+	}
+	if err := SaveInstance(original); err != nil {
+		t.Fatalf("SaveInstance(original) error: %v", err)
+	}
+	replacement := &SandboxState{
+		ID:        "sandbox-replacement",
+		Name:      original.Name,
+		Status:    StatusStopped,
+		IP:        "replacement-address",
+		CreatedAt: original.CreatedAt.Add(time.Minute),
+	}
+	if err := ForceWriteInstance(replacement); err != nil {
+		t.Fatalf("ForceWriteInstance(replacement) error: %v", err)
+	}
+
+	err := UpdateActiveInstanceExact(original.Name, original.ID, func(current *SandboxState) error {
+		current.Status = StatusRunning
+		current.IP = "stale-original-address"
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "sandbox instance changed") {
+		t.Fatalf("UpdateActiveInstanceExact() error = %v, want stable identity rejection", err)
+	}
+	current, loadErr := LoadActiveInstance(original.Name)
+	if loadErr != nil {
+		t.Fatalf("LoadActiveInstance() error: %v", loadErr)
+	}
+	if current.ID != replacement.ID ||
+		current.Status != replacement.Status ||
+		current.IP != replacement.IP {
+		t.Fatalf("same-name replacement was mutated by stale update: %#v", current)
+	}
+}
+
+func TestLegacyInstanceIDRepairSerializesSameNameReplacement(t *testing.T) {
+	home := setSandboxHome(t)
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() error: %v", err)
+	}
+
+	const name = "legacy-repair-replacement"
+	path := filepath.Join(home, sandboxesDirName, name+sandboxStateFileExt)
+	if err := os.WriteFile(path, []byte("{\n  \"name\": \"legacy-repair-replacement\",\n  \"provider\": \"hetzner\",\n  \"status\": \"stopped\"\n}\n"), 0o600); err != nil {
+		t.Fatalf("seed legacy entry: %v", err)
+	}
+
+	originalRename := renameRegistryFile
+	t.Cleanup(func() { renameRegistryFile = originalRename })
+	repairReady := make(chan struct{})
+	continueRepair := make(chan struct{})
+	blocked := false
+	renameRegistryFile = func(oldPath, newPath string) error {
+		if !blocked && oldPath == path+".tmp" && newPath == path {
+			blocked = true
+			close(repairReady)
+			<-continueRepair
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	loadDone := make(chan error, 1)
+	go func() {
+		_, err := LoadActiveInstance(name)
+		loadDone <- err
+	}()
+	<-repairReady
+
+	originalAcquire := acquireSandboxRegistryLock
+	t.Cleanup(func() { acquireSandboxRegistryLock = originalAcquire })
+	replaceAttempted := make(chan struct{})
+	var replaceAttemptOnce sync.Once
+	acquireSandboxRegistryLock = func() (*sandboxLeaseStoreFileLock, error) {
+		replaceAttemptOnce.Do(func() { close(replaceAttempted) })
+		return originalAcquire()
+	}
+	replacement := &SandboxState{
+		ID:       "sandbox-replacement",
+		Name:     name,
+		Provider: "hetzner",
+		Status:   StatusRunning,
+	}
+	replaceStarted := make(chan struct{})
+	replaceDone := make(chan error, 1)
+	go func() {
+		close(replaceStarted)
+		if err := RemoveInstance(name); err != nil {
+			replaceDone <- err
+			return
+		}
+		replaceDone <- SaveInstance(replacement)
+	}()
+	<-replaceStarted
+	<-replaceAttempted
+	close(continueRepair)
+	if err := <-loadDone; err != nil {
+		t.Fatalf("LoadActiveInstance(legacy) error: %v", err)
+	}
+	if err := <-replaceDone; err != nil {
+		t.Fatalf("replace instance after repair error: %v", err)
+	}
+
+	current, err := LoadActiveInstance(name)
+	if err != nil {
+		t.Fatalf("LoadActiveInstance(final) error: %v", err)
+	}
+	if current.ID != replacement.ID || current.Status != replacement.Status {
+		t.Fatalf("legacy repair overwrote same-name replacement: %#v", current)
+	}
+}
+
+func TestLegacyInstanceIDRepairSerializesStagedRemoval(t *testing.T) {
+	home := setSandboxHome(t)
+	if err := EnsureGlobalDir(); err != nil {
+		t.Fatalf("EnsureGlobalDir() error: %v", err)
+	}
+
+	const name = "legacy-repair-stage"
+	path := filepath.Join(home, sandboxesDirName, name+sandboxStateFileExt)
+	if err := os.WriteFile(path, []byte("{\n  \"name\": \"legacy-repair-stage\",\n  \"provider\": \"hetzner\",\n  \"status\": \"stopped\"\n}\n"), 0o600); err != nil {
+		t.Fatalf("seed legacy entry: %v", err)
+	}
+
+	originalRename := renameRegistryFile
+	t.Cleanup(func() { renameRegistryFile = originalRename })
+	repairReady := make(chan struct{})
+	continueRepair := make(chan struct{})
+	blocked := false
+	renameRegistryFile = func(oldPath, newPath string) error {
+		if !blocked && oldPath == path+".tmp" && newPath == path {
+			blocked = true
+			close(repairReady)
+			<-continueRepair
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	loadDone := make(chan error, 1)
+	go func() {
+		_, err := LoadActiveInstance(name)
+		loadDone <- err
+	}()
+	<-repairReady
+	originalAcquire := acquireSandboxRegistryLock
+	t.Cleanup(func() { acquireSandboxRegistryLock = originalAcquire })
+	stageAttempted := make(chan struct{})
+	var stageAttemptOnce sync.Once
+	acquireSandboxRegistryLock = func() (*sandboxLeaseStoreFileLock, error) {
+		stageAttemptOnce.Do(func() { close(stageAttempted) })
+		return originalAcquire()
+	}
+	type stageResult struct {
+		pending *PendingInstanceRemoval
+		err     error
+	}
+	stageStarted := make(chan struct{})
+	stageDone := make(chan stageResult, 1)
+	go func() {
+		close(stageStarted)
+		pending, err := StageInstanceRemoval(name)
+		stageDone <- stageResult{pending: pending, err: err}
+	}()
+	<-stageStarted
+	<-stageAttempted
+	close(continueRepair)
+	if err := <-loadDone; err != nil {
+		t.Fatalf("LoadActiveInstance(legacy) error: %v", err)
+	}
+	staged := <-stageDone
+	if staged.err != nil {
+		t.Fatalf("StageInstanceRemoval() after repair error: %v", staged.err)
+	}
+	t.Cleanup(func() { _ = staged.pending.Commit() })
+
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("active path exists beside staged entry after repair: %v", err)
+	}
+	if _, err := os.Stat(path + pendingRemovalRegistryFileExt); err != nil {
+		t.Fatalf("staged path is unavailable after repair: %v", err)
 	}
 }
 
@@ -490,6 +740,203 @@ func TestStageInstanceRemoval_RetryReusesExistingStagedBackup(t *testing.T) {
 	}
 }
 
+func TestPendingInstanceRemovalRejectsStaleCommitAfterRollback(t *testing.T) {
+	setSandboxHome(t)
+	if err := SaveInstance(&SandboxState{
+		ID:     "sandbox-original",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() error: %v", err)
+	}
+
+	stale, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("first StageInstanceRemoval() error: %v", err)
+	}
+	retry, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("retry StageInstanceRemoval() error: %v", err)
+	}
+	if err := retry.Rollback(); err != nil {
+		t.Fatalf("retry Rollback() error: %v", err)
+	}
+
+	if err := stale.Commit(); err == nil {
+		t.Fatal("stale Commit() error = nil after rollback")
+	}
+	current, err := LoadActiveInstance("shared-name")
+	if err != nil {
+		t.Fatalf("LoadActiveInstance() after stale commit error: %v", err)
+	}
+	if current.ID != "sandbox-original" {
+		t.Fatalf("active sandbox ID = %q, want original", current.ID)
+	}
+}
+
+func TestPendingInstanceRemovalRejectsStaleCommitForSameNameReplacement(t *testing.T) {
+	setSandboxHome(t)
+	if err := SaveInstance(&SandboxState{
+		ID:     "sandbox-original",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() error: %v", err)
+	}
+
+	stale, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("first StageInstanceRemoval() error: %v", err)
+	}
+	retry, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("retry StageInstanceRemoval() error: %v", err)
+	}
+	if err := retry.Rollback(); err != nil {
+		t.Fatalf("retry Rollback() error: %v", err)
+	}
+	if err := ForceWriteInstance(&SandboxState{
+		ID:     "sandbox-replacement",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("ForceWriteInstance(replacement) error: %v", err)
+	}
+	replacement, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("StageInstanceRemoval(replacement) error: %v", err)
+	}
+	t.Cleanup(func() { _ = replacement.Rollback() })
+
+	if err := stale.Commit(); err == nil {
+		t.Fatal("stale Commit() error = nil for same-name replacement")
+	}
+	current, err := LoadInstance("shared-name")
+	if err != nil {
+		t.Fatalf("LoadInstance(replacement) after stale commit error: %v", err)
+	}
+	if current.ID != "sandbox-replacement" {
+		t.Fatalf("staged sandbox ID = %q, want replacement", current.ID)
+	}
+}
+
+func TestPendingInstanceRemovalRejectsStaleCommitForNewGenerationOfSameInstance(t *testing.T) {
+	setSandboxHome(t)
+	if err := SaveInstance(&SandboxState{
+		ID:     "sandbox-original",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() error: %v", err)
+	}
+
+	stale, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("first StageInstanceRemoval() error: %v", err)
+	}
+	retry, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("retry StageInstanceRemoval() error: %v", err)
+	}
+	if err := retry.Rollback(); err != nil {
+		t.Fatalf("retry Rollback() error: %v", err)
+	}
+	current, err := StageInstanceRemoval("shared-name")
+	if err != nil {
+		t.Fatalf("new-generation StageInstanceRemoval() error: %v", err)
+	}
+	t.Cleanup(func() { _ = current.Rollback() })
+
+	if err := stale.Commit(); err == nil {
+		t.Fatal("stale Commit() error = nil for a new removal generation")
+	}
+	staged, err := LoadInstance("shared-name")
+	if err != nil {
+		t.Fatalf("LoadInstance() after stale commit error: %v", err)
+	}
+	if staged.ID != "sandbox-original" {
+		t.Fatalf("staged sandbox ID = %q, want original", staged.ID)
+	}
+}
+
+func TestLoadActiveInstanceWaitsForOverwriteFallback(t *testing.T) {
+	home := setSandboxHome(t)
+	if err := SaveInstance(&SandboxState{
+		ID:     "sandbox-original",
+		Name:   "shared-name",
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SaveInstance() error: %v", err)
+	}
+
+	path := filepath.Join(home, sandboxesDirName, "shared-name.json")
+	originalRename := renameRegistryFile
+	t.Cleanup(func() { renameRegistryFile = originalRename })
+	movedToBackup := make(chan struct{})
+	continueOverwrite := make(chan struct{})
+	blockedFirstReplace := false
+	renameRegistryFile = func(oldPath, newPath string) error {
+		if !blockedFirstReplace && oldPath == path+".tmp" && newPath == path {
+			blockedFirstReplace = true
+			return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: fs.ErrExist}
+		}
+		if oldPath == path && newPath == path+".bak" {
+			if err := originalRename(oldPath, newPath); err != nil {
+				return err
+			}
+			close(movedToBackup)
+			<-continueOverwrite
+			return nil
+		}
+		return originalRename(oldPath, newPath)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- ForceWriteInstance(&SandboxState{
+			ID:     "sandbox-replacement",
+			Name:   "shared-name",
+			Status: StatusRunning,
+		})
+	}()
+	<-movedToBackup
+
+	type loadResult struct {
+		instance *SandboxState
+		err      error
+	}
+	loadDone := make(chan loadResult, 1)
+	go func() {
+		instance, err := LoadActiveInstance("shared-name")
+		loadDone <- loadResult{instance: instance, err: err}
+	}()
+
+	var early *loadResult
+	select {
+	case result := <-loadDone:
+		early = &result
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(continueOverwrite)
+	if err := <-writeDone; err != nil {
+		t.Fatalf("ForceWriteInstance() error: %v", err)
+	}
+	if early != nil {
+		t.Fatalf("LoadActiveInstance() returned during overwrite gap: %v", early.err)
+	}
+	select {
+	case result := <-loadDone:
+		if result.err != nil {
+			t.Fatalf("LoadActiveInstance() error after overwrite: %v", result.err)
+		}
+		if result.instance.ID != "sandbox-replacement" {
+			t.Fatalf("loaded sandbox ID = %q, want replacement", result.instance.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("LoadActiveInstance() remained blocked after overwrite")
+	}
+}
+
 func TestListInstances_IncludesStagedRemovalWhenActiveMissing(t *testing.T) {
 	setSandboxHome(t)
 
@@ -627,12 +1074,12 @@ func TestLoadInstance_BackfillsMissingLegacyID(t *testing.T) {
 		{
 			name:     "workspace fallback",
 			filename: "workspace-box",
-			data:     "{\n  \"name\": \"workspace-box\",\n  \"provider\": \"daytona\",\n  \"workspaceId\": \"ws-123\",\n  \"status\": \"running\"\n}\n",
+			data:     "{\n  \"name\": \"workspace-box\",\n  \"provider\": \"hetzner\",\n  \"workspaceId\": \"ws-123\",\n  \"status\": \"running\"\n}\n",
 		},
 		{
 			name:     "name fallback",
 			filename: "name-box",
-			data:     "{\n  \"name\": \"name-box\",\n  \"provider\": \"daytona\",\n  \"status\": \"running\"\n}\n",
+			data:     "{\n  \"name\": \"name-box\",\n  \"provider\": \"hetzner\",\n  \"status\": \"running\"\n}\n",
 		},
 	}
 

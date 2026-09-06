@@ -1,0 +1,6 @@
+format=hal-l8-runtime-lock-v1
+go_version=go1.25.7
+toolchain_module=golang.org/toolchain@v0.0.1-go1.25.7.linux-amd64
+toolchain_archive_sha256=43a6a44615934ab4533b010735fc39757accc93f421ffafa67a34f73c5703e7b
+runtime_source_path=src/internal/runtime/syscall/asm_linux_amd64.s
+runtime_source_sha256=dd6191356bf0c18b3c9862b19e4014f06e217987b225823612b6da56fb6e193a

@@ -85,7 +85,7 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 		engine, _ := compound.LoadDefaultEngine(dir)
 		wrapped := statusWithEngine{
 			StatusResult: result,
-			Engine:       engine,
+			Engine:       status.SanitizePublicString(engine),
 		}
 		data, err := json.MarshalIndent(wrapped, "", "  ")
 		if err != nil {
@@ -98,6 +98,8 @@ func runStatusFn(dir string, jsonMode bool, out io.Writer) error {
 	// Human-readable output
 	engine, _ := compound.LoadDefaultEngine(dir)
 	gitBranch, _ := compound.CurrentBranchOptional()
+	engine = status.SanitizePublicString(engine)
+	gitBranch = status.SanitizePublicString(gitBranch)
 
 	// Header
 	fmt.Fprintf(out, "%s\n", display.StyleTitle.Render("Status"))

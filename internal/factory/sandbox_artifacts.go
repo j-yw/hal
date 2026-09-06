@@ -85,7 +85,7 @@ func CollectSandboxArtifactsWithRedactor(ctx context.Context, store Store, runID
 		for _, artifact := range partials {
 			record.Artifacts = upsertArtifact(record.Artifacts, artifact)
 		}
-		if err := store.SaveRun(record); err != nil {
+		if err := store.SaveRunWithRedactor(record, redactor); err != nil {
 			return nil, fmt.Errorf("record sandbox artifact metadata: %w", err)
 		}
 	}
@@ -216,6 +216,9 @@ func redactSandboxArtifactError(err error, redactor RunSecretRedactor) error {
 		return nil
 	}
 	message := redactor.RedactString(err.Error())
+	if message == err.Error() && sandboxArtifactErrorMessageNeedsRedaction(message) {
+		message = RunSecretRedactionPlaceholder
+	}
 	if message == err.Error() {
 		return err
 	}
@@ -223,6 +226,16 @@ func redactSandboxArtifactError(err error, redactor RunSecretRedactor) error {
 		message: message,
 		cause:   err,
 	}
+}
+
+func sandboxArtifactErrorMessageNeedsRedaction(message string) bool {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return false
+	}
+	return handoffStringNeedsRedaction(message) ||
+		handoffStringContainsAbsolutePath(message) ||
+		handoffURLQueryValueNeedsRedaction(message)
 }
 
 func sandboxArtifactPathInsideDir(root, candidate string) bool {
@@ -253,7 +266,7 @@ func saveSandboxArtifactFile(store Store, runID string, artifact ArtifactReferen
 		return ArtifactReference{}, fmt.Errorf("load factory run for sandbox artifact metadata: %w", err)
 	}
 	record.Artifacts = upsertArtifact(record.Artifacts, stored)
-	if err := store.SaveRun(record); err != nil {
+	if err := store.SaveRunWithRedactor(record, redactor); err != nil {
 		return ArtifactReference{}, fmt.Errorf("record sandbox artifact metadata: %w", err)
 	}
 

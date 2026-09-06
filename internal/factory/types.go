@@ -12,11 +12,12 @@ import (
 
 // Run status values.
 const (
-	RunStatusPending   = "pending"
-	RunStatusRunning   = "running"
-	RunStatusSucceeded = "succeeded"
-	RunStatusFailed    = "failed"
-	RunStatusCanceled  = "canceled"
+	RunStatusPending               = "pending"
+	RunStatusRunning               = "running"
+	RunStatusSucceeded             = "succeeded"
+	RunStatusSucceededWithWarnings = "succeeded_with_warnings"
+	RunStatusFailed                = "failed"
+	RunStatusCanceled              = "canceled"
 )
 
 // Executor mode values.
@@ -50,6 +51,44 @@ func ValidateExecutorMode(executorMode string) (string, error) {
 	return "", fmt.Errorf("unsupported factory executor mode %q (supported: %s)", trimmedExecutorMode, strings.Join(SupportedExecutorModes(), ", "))
 }
 
+// Publish runner values.
+const (
+	PublishRunnerHost    = "host"
+	PublishRunnerSandbox = "sandbox"
+	PublishRunnerAuto    = "auto"
+)
+
+// SupportedPublishRunners returns the durable publish runner modes.
+func SupportedPublishRunners() []string {
+	return []string{PublishRunnerHost, PublishRunnerSandbox, PublishRunnerAuto}
+}
+
+// NormalizePublishRunner trims and lowercases publish runner metadata.
+func NormalizePublishRunner(publishRunner string) string {
+	return strings.ToLower(strings.TrimSpace(publishRunner))
+}
+
+// ValidatePublishRunner normalizes and validates a durable publish runner mode.
+func ValidatePublishRunner(publishRunner string) (string, error) {
+	normalizedPublishRunner := NormalizePublishRunner(publishRunner)
+	if normalizedPublishRunner == "" {
+		return "", fmt.Errorf("factory publish runner is required")
+	}
+	if isSupportedPublishRunner(normalizedPublishRunner) {
+		return normalizedPublishRunner, nil
+	}
+	return "", fmt.Errorf("unsupported factory publish runner %q (supported: %s)", normalizedPublishRunner, strings.Join(SupportedPublishRunners(), ", "))
+}
+
+func isSupportedPublishRunner(publishRunner string) bool {
+	for _, supported := range SupportedPublishRunners() {
+		if publishRunner == supported {
+			return true
+		}
+	}
+	return false
+}
+
 // Queue status values.
 const (
 	QueueStatusQueued    = "queued"
@@ -69,6 +108,16 @@ const (
 // Run secret source values.
 const (
 	RunSecretSourceEnv = "env"
+)
+
+// Secret broker delivery mode values are durable metadata only. They mirror the
+// sandbox security mode contract without implying that delivery is implemented.
+const (
+	SecretBrokerDeliveryModeEnv            = sandbox.SandboxSecretModeEnv
+	SecretBrokerDeliveryModeFileTmpfs      = sandbox.SandboxSecretModeFileTmpfs
+	SecretBrokerDeliveryModeSSHAgent       = sandbox.SandboxSecretModeSSHAgent
+	SecretBrokerDeliveryModeHTTPProxy      = sandbox.SandboxSecretModeHTTPProxy
+	SecretBrokerDeliveryModeLegacyAuthSync = sandbox.SandboxSecretModeLegacyAuthSync
 )
 
 // Failure category values.
@@ -167,6 +216,7 @@ const (
 // Policy decision outcome values recorded in policy decision timeline events.
 const (
 	PolicyOutcomeAllowed  = "allowed"
+	PolicyOutcomeAdvisory = "advisory"
 	PolicyOutcomeRejected = "rejected"
 	PolicyOutcomePassed   = "passed"
 	PolicyOutcomeBlocked  = "blocked"
@@ -241,6 +291,49 @@ type RunRecord struct {
 	Telemetry    *RunTelemetry       `json:"telemetry,omitempty"`
 	Failure      *FailureSummary     `json:"failure,omitempty"`
 	Secrets      []RunSecretMetadata `json:"secrets,omitempty"`
+	PostRun      *PostRunState       `json:"postRun,omitempty"`
+}
+
+// PostRunState captures operator actions that happen after the original
+// pipeline reaches a terminal state. It is intentionally separate from Status
+// so failed pipelines remain auditable after manual recovery or publish.
+type PostRunState struct {
+	Recovery *RecoveryOutcome `json:"recovery,omitempty"`
+	Publish  *PublishOutcome  `json:"publish,omitempty"`
+}
+
+type RecoveryOutcome struct {
+	Status          string     `json:"status,omitempty"`
+	RecoveredBundle string     `json:"recoveredBundle,omitempty"`
+	BranchName      string     `json:"branchName,omitempty"`
+	Source          string     `json:"source,omitempty"`
+	CompletedAt     *time.Time `json:"completedAt,omitempty"`
+}
+
+type PublishOutcome struct {
+	Status          string           `json:"status,omitempty"`
+	Policy          string           `json:"policy,omitempty"`
+	Runner          string           `json:"runner,omitempty"`
+	BranchName      string           `json:"branchName,omitempty"`
+	Commit          string           `json:"commit,omitempty"`
+	RecoveredBundle string           `json:"recoveredBundle,omitempty"`
+	Pushed          bool             `json:"pushed,omitempty"`
+	PullRequestURL  string           `json:"pullRequestUrl,omitempty"`
+	PullRequestID   int              `json:"pullRequestId,omitempty"`
+	CredentialMode  string           `json:"credentialMode,omitempty"`
+	FallbackFrom    string           `json:"fallbackFrom,omitempty"`
+	Attempts        []PublishAttempt `json:"attempts,omitempty"`
+	AllowUnverified bool             `json:"allowUnverified,omitempty"`
+	Source          string           `json:"source,omitempty"`
+	CompletedAt     *time.Time       `json:"completedAt,omitempty"`
+}
+
+type PublishAttempt struct {
+	Runner      string     `json:"runner,omitempty"`
+	Status      string     `json:"status,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
 // RunSecretInput describes one secret required by a factory run. For
@@ -270,17 +363,99 @@ type RunSecretMetadata struct {
 	Present  bool   `json:"present"`
 }
 
+// SandboxHostMetadata captures redaction-safe sandbox host summary details.
+type SandboxHostMetadata struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+// SandboxRuntimeMetadata captures redaction-safe sandbox runtime summary details.
+type SandboxRuntimeMetadata struct {
+	Driver         string `json:"driver"`
+	IsolationLevel string `json:"isolationLevel"`
+	RuntimeID      string `json:"runtimeId"`
+	Image          string `json:"image"`
+	WorkerID       string `json:"workerId"`
+}
+
+// SandboxWorkspaceMetadata captures redaction-safe sandbox workspace summary details.
+type SandboxWorkspaceMetadata struct {
+	Mode        string `json:"mode"`
+	InputSource string `json:"inputSource"`
+	Branch      string `json:"branch"`
+	SyncRef     string `json:"syncRef"`
+}
+
+// SandboxSecurityMetadata captures redaction-safe sandbox security summary details.
+type SandboxSecurityMetadata struct {
+	Network                        *SandboxNetworkSecurityMetadata                              `json:"network,omitempty"`
+	Secrets                        *SandboxSecretSecurityMetadata                               `json:"secrets,omitempty"`
+	CapabilityReadiness            *sandbox.SandboxSecurityCapabilityReadinessOutput            `json:"capabilityReadiness,omitempty"`
+	CapabilityReadinessDiagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics,omitempty"`
+	SecurityReadinessGate          *sandbox.SandboxSecurityCapabilityReadinessGateDecision      `json:"securityReadinessGate,omitempty"`
+	StrictComposition              *sandbox.SandboxStrictCompositionDecision                    `json:"strictComposition,omitempty"`
+}
+
+// SecurityReadinessGateDecision returns the sanitized durable readiness-gate
+// decision attached to a factory run record, if one was persisted.
+func SecurityReadinessGateDecision(record RunRecord) *sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if record.Sandbox == nil || record.Sandbox.Security == nil {
+		return nil
+	}
+	return sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(record.Sandbox.Security.SecurityReadinessGate)
+}
+
+// SandboxNetworkSecurityMetadata captures redaction-safe sandbox network policy details.
+type SandboxNetworkSecurityMetadata struct {
+	PolicyRequested string                              `json:"policyRequested,omitempty"`
+	PolicyEnforced  string                              `json:"policyEnforced,omitempty"`
+	EnforcementMode string                              `json:"enforcementMode,omitempty"`
+	PolicyResult    *sandbox.SandboxNetworkPolicyResult `json:"policyResult,omitempty"`
+}
+
+// SandboxSecretSecurityMetadata captures redaction-safe sandbox secret delivery details.
+type SandboxSecretSecurityMetadata struct {
+	RequestedModes []string `json:"requestedModes,omitempty"`
+	ActiveModes    []string `json:"activeModes,omitempty"`
+}
+
+// SandboxLeaseMetadata captures redaction-safe sandbox lease summary details.
+type SandboxLeaseMetadata struct {
+	ID            string    `json:"id"`
+	HostID        string    `json:"hostId"`
+	HostName      string    `json:"hostName"`
+	RuntimeDriver string    `json:"runtimeDriver"`
+	ResourceKey   string    `json:"resourceKey"`
+	Purpose       string    `json:"purpose"`
+	RunID         string    `json:"runId"`
+	AcquiredAt    time.Time `json:"acquiredAt"`
+	ExpiresAt     time.Time `json:"expiresAt"`
+}
+
 // SandboxMetadata captures redaction-safe remote execution details for a
 // sandbox-backed factory run.
 type SandboxMetadata struct {
-	Name           string                     `json:"name"`
-	Provider       string                     `json:"provider"`
-	Size           string                     `json:"size,omitempty"`
-	Status         string                     `json:"status"`
-	Connection     *SandboxConnectionMetadata `json:"connection,omitempty"`
-	SSHCommand     string                     `json:"sshCommand,omitempty"`
-	CleanupCommand string                     `json:"cleanupCommand,omitempty"`
-	Handoff        string                     `json:"handoff,omitempty"`
+	Name                    string                                           `json:"name"`
+	Provider                string                                           `json:"provider"`
+	Size                    string                                           `json:"size,omitempty"`
+	Status                  string                                           `json:"status"`
+	Connection              *SandboxConnectionMetadata                       `json:"connection,omitempty"`
+	SSHCommand              string                                           `json:"sshCommand,omitempty"`
+	CleanupCommand          string                                           `json:"cleanupCommand,omitempty"`
+	Handoff                 string                                           `json:"handoff,omitempty"`
+	Host                    *SandboxHostMetadata                             `json:"host,omitempty"`
+	Runtime                 *SandboxRuntimeMetadata                          `json:"runtime,omitempty"`
+	Workspace               *SandboxWorkspaceMetadata                        `json:"workspace,omitempty"`
+	Security                *SandboxSecurityMetadata                         `json:"security,omitempty"`
+	NetworkProxySession     *sandbox.SandboxNetworkProxySessionMetadata      `json:"networkProxySession,omitempty"`
+	CredentialProxyPlan     *sandbox.SandboxCredentialProxyPlanMetadata      `json:"credentialProxyPlan,omitempty"`
+	CredentialProxySession  *sandbox.SandboxCredentialProxySessionMetadata   `json:"credentialProxySession,omitempty"`
+	CredentialProxyBindings []sandbox.SandboxCredentialProxyBindingMetadata  `json:"credentialProxyBindings,omitempty"`
+	CredentialDelivery      *sandbox.SandboxCredentialDeliveryStatusMetadata `json:"credentialDelivery,omitempty"`
+	Lease                   *SandboxLeaseMetadata                            `json:"lease,omitempty"`
+	WorkerRouting           *sandbox.WorkerRoutingMetadata                   `json:"workerRouting,omitempty"`
+	TemplateLock            *sandbox.SandboxTemplateLockMetadata             `json:"templateLock,omitempty"`
 }
 
 // SandboxConnectionMetadata contains safe connection display fields. It must
@@ -423,33 +598,48 @@ type QueueClaim struct {
 
 // EventRecord captures one append-only timeline entry for a factory run.
 type EventRecord struct {
-	Sequence  int64          `json:"sequence"`
-	RunID     string         `json:"runId"`
-	EventType string         `json:"eventType"`
-	Timestamp time.Time      `json:"timestamp"`
-	Message   string         `json:"message,omitempty"`
-	Summary   string         `json:"summary,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	Sequence                  int64                                           `json:"sequence"`
+	RunID                     string                                          `json:"runId"`
+	EventType                 string                                          `json:"eventType"`
+	Timestamp                 time.Time                                       `json:"timestamp"`
+	Message                   string                                          `json:"message,omitempty"`
+	Summary                   string                                          `json:"summary,omitempty"`
+	Metadata                  map[string]any                                  `json:"metadata,omitempty"`
+	NetworkPolicyDecisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord `json:"networkPolicyDecisionLogs,omitempty"`
 }
 
 // PolicyDecisionMetadata is the safe, whitelisted metadata shape for policy
 // decision timeline events. It must not grow raw config values, environment
 // values, source paths, provider internals, or credentials.
 type PolicyDecisionMetadata struct {
-	PolicyField string `json:"policyField"`
-	Decision    string `json:"decision"`
-	Outcome     string `json:"outcome"`
-	Reason      string `json:"reason"`
+	PolicyField string                                                   `json:"policyField"`
+	Decision    string                                                   `json:"decision"`
+	Outcome     string                                                   `json:"outcome"`
+	Reason      string                                                   `json:"reason"`
+	PolicyMode  sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `json:"policyMode,omitempty"`
+	Code        sandbox.SandboxSecurityCapabilityReadinessGateCode       `json:"code,omitempty"`
+	Counts      *sandbox.SandboxSecurityCapabilityReadinessGateCounts    `json:"counts,omitempty"`
 }
 
 // EventMetadata returns the map representation stored in EventRecord.Metadata.
 func (m PolicyDecisionMetadata) EventMetadata() map[string]any {
-	return map[string]any{
+	metadata := map[string]any{
 		"policyField": strings.TrimSpace(m.PolicyField),
 		"decision":    strings.TrimSpace(m.Decision),
 		"outcome":     strings.TrimSpace(m.Outcome),
 		"reason":      strings.TrimSpace(m.Reason),
 	}
+	if m.PolicyMode != "" {
+		metadata["policyMode"] = strings.TrimSpace(string(m.PolicyMode))
+	}
+	if m.Code != "" {
+		metadata["code"] = strings.TrimSpace(string(m.Code))
+	}
+	if m.Counts != nil {
+		counts := *m.Counts
+		metadata["counts"] = &counts
+	}
+	return metadata
 }
 
 // LogChunk captures one durable factory log chunk or summarized output line.
@@ -666,6 +856,313 @@ func deriveOutcomeFromArtifacts(artifacts []ArtifactReference, kind string) stri
 	return ""
 }
 
+func DerivePostRunState(record RunRecord) *PostRunState {
+	var state PostRunState
+	if record.PostRun != nil {
+		if record.PostRun.Recovery != nil {
+			recovery := *record.PostRun.Recovery
+			state.Recovery = &recovery
+		}
+		if record.PostRun.Publish != nil {
+			state.Publish = clonePublishOutcome(record.PostRun.Publish)
+		}
+	}
+	if state.Publish == nil {
+		state.Publish = derivePublishOutcomeFromArtifacts(record.Artifacts)
+	}
+	if state.Recovery == nil && state.Publish != nil && strings.TrimSpace(state.Publish.RecoveredBundle) != "" {
+		state.Recovery = &RecoveryOutcome{
+			Status:          RunStatusSucceeded,
+			RecoveredBundle: state.Publish.RecoveredBundle,
+			BranchName:      state.Publish.BranchName,
+			Source:          state.Publish.Source,
+			CompletedAt:     state.Publish.CompletedAt,
+		}
+	}
+	if state.Recovery == nil && state.Publish == nil {
+		return nil
+	}
+	return &state
+}
+
+func DeriveDisplayStatus(record RunRecord) string {
+	status := strings.TrimSpace(record.Status)
+	postRun := DerivePostRunState(record)
+	if postRun == nil || postRun.Publish == nil {
+		return status
+	}
+	if status == RunStatusFailed && strings.TrimSpace(postRun.Publish.Status) == RunStatusSucceeded {
+		return "failed_published"
+	}
+	if strings.TrimSpace(postRun.Publish.Status) != "" {
+		return status + "_publish_" + strings.TrimSpace(postRun.Publish.Status)
+	}
+	return status
+}
+
+func derivePublishOutcomeFromArtifacts(artifacts []ArtifactReference) *PublishOutcome {
+	for _, artifact := range artifacts {
+		if artifact.Partial {
+			continue
+		}
+		outcomeKind, _ := artifact.Summary["outcomeKind"].(string)
+		if strings.TrimSpace(outcomeKind) != "publish" && artifact.Name != "publish-outcome" {
+			continue
+		}
+		completedAt := artifact.CreatedAt
+		status := summaryString(artifact.Summary, "status")
+		if status == "" {
+			status = RunStatusSucceeded
+		}
+		outcome := &PublishOutcome{
+			Status:      status,
+			Policy:      summaryString(artifact.Summary, "policy"),
+			BranchName:  summaryStringAny(artifact.Summary, "branch", "branchName"),
+			Pushed:      summaryBool(artifact.Summary, "pushed"),
+			Source:      "artifact",
+			CompletedAt: completedAt,
+		}
+		if runner := normalizePublishRunnerSummaryValue(summaryString(artifact.Summary, "runner")); runner != "" {
+			outcome.Runner = runner
+		}
+		if fallbackFrom := normalizePublishRunnerSummaryValue(summaryString(artifact.Summary, "fallbackFrom")); fallbackFrom != "" {
+			outcome.FallbackFrom = fallbackFrom
+		}
+		if credentialMode := summaryString(artifact.Summary, "credentialMode"); credentialMode != "" {
+			outcome.CredentialMode = credentialMode
+		}
+		if commit := summaryString(artifact.Summary, "commit"); commit != "" {
+			outcome.Commit = commit
+		}
+		if pullRequestURL := summaryString(artifact.Summary, "pullRequestUrl"); pullRequestURL != "" {
+			outcome.PullRequestURL = pullRequestURL
+		}
+		if pullRequestID := summaryInt(artifact.Summary, "pullRequestId"); pullRequestID != 0 {
+			outcome.PullRequestID = pullRequestID
+		}
+		if recoveredBundle := summaryString(artifact.Summary, "recoveredBundle"); recoveredBundle != "" {
+			outcome.RecoveredBundle = recoveredBundle
+		}
+		if attempts := summaryPublishAttempts(artifact.Summary, "attempts"); len(attempts) > 0 {
+			outcome.Attempts = attempts
+		}
+		return outcome
+	}
+	return nil
+}
+
+func normalizePublishRunnerSummaryValue(value string) string {
+	normalized := NormalizePublishRunner(value)
+	if !isSupportedPublishRunner(normalized) {
+		return ""
+	}
+	return normalized
+}
+
+func summaryStringAny(summary map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := summaryString(summary, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func summaryString(summary map[string]any, key string) string {
+	if len(summary) == 0 {
+		return ""
+	}
+	value, ok := summary[key]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func summaryInt(summary map[string]any, key string) int {
+	if len(summary) == 0 {
+		return 0
+	}
+	value, ok := summary[key]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int8:
+		return int(typed)
+	case int16:
+		return int(typed)
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case uint:
+		return int(typed)
+	case uint8:
+		return int(typed)
+	case uint16:
+		return int(typed)
+	case uint32:
+		return int(typed)
+	case uint64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
+func summaryBool(summary map[string]any, key string) bool {
+	if len(summary) == 0 {
+		return false
+	}
+	value, ok := summary[key]
+	if !ok {
+		return false
+	}
+	enabled, ok := value.(bool)
+	return ok && enabled
+}
+
+func summaryPublishAttempts(summary map[string]any, key string) []PublishAttempt {
+	if len(summary) == 0 {
+		return nil
+	}
+	value, ok := summary[key]
+	if !ok {
+		return nil
+	}
+
+	switch typed := value.(type) {
+	case []PublishAttempt:
+		return normalizePublishAttempts(typed)
+	case []*PublishAttempt:
+		attempts := make([]PublishAttempt, 0, len(typed))
+		for _, attempt := range typed {
+			if attempt == nil {
+				continue
+			}
+			attempts = append(attempts, *attempt)
+		}
+		return normalizePublishAttempts(attempts)
+	case []map[string]any:
+		attempts := make([]PublishAttempt, 0, len(typed))
+		for _, item := range typed {
+			if attempt, ok := publishAttemptFromSummaryMap(item); ok {
+				attempts = append(attempts, attempt)
+			}
+		}
+		return attempts
+	case []any:
+		attempts := make([]PublishAttempt, 0, len(typed))
+		for _, item := range typed {
+			switch attemptValue := item.(type) {
+			case PublishAttempt:
+				if attempt, ok := normalizePublishAttempt(attemptValue); ok {
+					attempts = append(attempts, attempt)
+				}
+			case *PublishAttempt:
+				if attemptValue == nil {
+					continue
+				}
+				if attempt, ok := normalizePublishAttempt(*attemptValue); ok {
+					attempts = append(attempts, attempt)
+				}
+			case map[string]any:
+				if attempt, ok := publishAttemptFromSummaryMap(attemptValue); ok {
+					attempts = append(attempts, attempt)
+				}
+			}
+		}
+		return attempts
+	default:
+		return nil
+	}
+}
+
+func publishAttemptFromSummaryMap(summary map[string]any) (PublishAttempt, bool) {
+	attempt := PublishAttempt{
+		Runner:      normalizePublishRunnerSummaryValue(summaryString(summary, "runner")),
+		Status:      summaryString(summary, "status"),
+		Error:       summaryString(summary, "error"),
+		StartedAt:   summaryTime(summary, "startedAt"),
+		CompletedAt: summaryTime(summary, "completedAt"),
+	}
+	return normalizePublishAttempt(attempt)
+}
+
+func normalizePublishAttempts(attempts []PublishAttempt) []PublishAttempt {
+	if len(attempts) == 0 {
+		return nil
+	}
+	out := make([]PublishAttempt, 0, len(attempts))
+	for _, attempt := range attempts {
+		if normalized, ok := normalizePublishAttempt(attempt); ok {
+			out = append(out, normalized)
+		}
+	}
+	return out
+}
+
+func normalizePublishAttempt(attempt PublishAttempt) (PublishAttempt, bool) {
+	attempt.Runner = normalizePublishRunnerSummaryValue(attempt.Runner)
+	attempt.Status = strings.TrimSpace(attempt.Status)
+	attempt.Error = strings.TrimSpace(attempt.Error)
+	if attempt.StartedAt != nil && attempt.StartedAt.IsZero() {
+		attempt.StartedAt = nil
+	}
+	if attempt.CompletedAt != nil && attempt.CompletedAt.IsZero() {
+		attempt.CompletedAt = nil
+	}
+	if attempt.Runner == "" && attempt.Status == "" && attempt.Error == "" && attempt.StartedAt == nil && attempt.CompletedAt == nil {
+		return PublishAttempt{}, false
+	}
+	return attempt, true
+}
+
+func summaryTime(summary map[string]any, key string) *time.Time {
+	if len(summary) == 0 {
+		return nil
+	}
+	return timeFromSummaryValue(summary[key])
+}
+
+func timeFromSummaryValue(value any) *time.Time {
+	switch typed := value.(type) {
+	case time.Time:
+		if typed.IsZero() {
+			return nil
+		}
+		copied := typed
+		return &copied
+	case *time.Time:
+		if typed == nil || typed.IsZero() {
+			return nil
+		}
+		copied := *typed
+		return &copied
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return nil
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, text)
+		if err != nil {
+			return nil
+		}
+		return &parsed
+	default:
+		return nil
+	}
+}
+
 func deriveOutcomeFromEvents(events []EventRecord, kind string) string {
 	if kind == "verification" {
 		if outcome := deriveVerificationOutcomeFromResultEvents(events); outcome != "" {
@@ -785,4 +1282,36 @@ func cloneRunTelemetry(src *RunTelemetry) *RunTelemetry {
 		dst.ArtifactCount = &artifactCount
 	}
 	return &dst
+}
+
+func clonePublishOutcome(src *PublishOutcome) *PublishOutcome {
+	if src == nil {
+		return nil
+	}
+
+	dst := *src
+	if src.CompletedAt != nil {
+		completedAt := *src.CompletedAt
+		dst.CompletedAt = &completedAt
+	}
+	if len(src.Attempts) > 0 {
+		dst.Attempts = make([]PublishAttempt, len(src.Attempts))
+		for i, attempt := range src.Attempts {
+			dst.Attempts[i] = clonePublishAttempt(attempt)
+		}
+	}
+	return &dst
+}
+
+func clonePublishAttempt(src PublishAttempt) PublishAttempt {
+	dst := src
+	if src.StartedAt != nil {
+		startedAt := *src.StartedAt
+		dst.StartedAt = &startedAt
+	}
+	if src.CompletedAt != nil {
+		completedAt := *src.CompletedAt
+		dst.CompletedAt = &completedAt
+	}
+	return dst
 }

@@ -13,29 +13,42 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 
 var (
-	autoDryRunFlag       bool
-	autoResumeFlag       bool
-	autoNoCIFlag         bool
-	autoSkipPRFlag       bool
-	autoNoReviewFlag     bool
-	autoModeFlag         string
-	autoReviewStreakFlag int
-	autoReviewMaxFlag    int
-	autoReportFlag       string
-	autoEngineFlag       string
-	autoBaseFlag         string
-	autoJSONFlag         bool
+	autoDryRunFlag               bool
+	autoResumeFlag               bool
+	autoNoCIFlag                 bool
+	autoSkipPRFlag               bool
+	autoNoReviewFlag             bool
+	autoModeFlag                 string
+	autoReviewStreakFlag         int
+	autoReviewMaxFlag            int
+	autoReportFlag               string
+	autoEngineFlag               string
+	autoBaseFlag                 string
+	autoJSONFlag                 bool
+	autoSandboxFlag              bool
+	autoSandboxNameFlag          string
+	autoSandboxHostFlag          string
+	autoSandboxRuntimeFlag       string
+	autoSandboxTemplateFlag      string
+	autoSandboxTemplateTrustFlag string
+	autoSandboxSyncOutFlag       bool
+	autoSandboxApplyFlag         bool
 )
 
 const (
 	autoFactoryMaxRunAttemptsEnv       = "HAL_FACTORY_MAX_RUN_ATTEMPTS"
 	autoFactoryMaxReviewFixAttemptsEnv = "HAL_FACTORY_MAX_REVIEW_FIX_ATTEMPTS"
 	autoFactoryMaxCIFixAttemptsEnv     = "HAL_FACTORY_MAX_CI_FIX_ATTEMPTS"
+	autoFactoryCIPolicyEnv             = "HAL_FACTORY_CI_POLICY"
+	autoFactoryRuntimeStatePolicyEnv   = "HAL_FACTORY_RUNTIME_STATE_POLICY"
 )
 
 type autoEntryMode string
@@ -62,6 +75,8 @@ type autoFactoryAttemptPolicy struct {
 }
 
 type autoFactoryAttemptPolicyContextKey struct{}
+type autoFactoryCIPolicyContextKey struct{}
+type autoFactoryRuntimeStatePolicyContextKey struct{}
 
 const (
 	autoStepStatusCompleted autoStepStatus = "completed"
@@ -72,15 +87,20 @@ const (
 
 // AutoResult is the machine-readable output of hal auto --json.
 type AutoResult struct {
-	ContractVersion int             `json:"contractVersion"`
-	OK              bool            `json:"ok"`
-	EntryMode       string          `json:"entryMode"`
-	Resumed         bool            `json:"resumed"`
-	Duration        string          `json:"duration,omitempty"`
-	Steps           AutoSteps       `json:"steps"`
-	Error           string          `json:"error,omitempty"`
-	Summary         string          `json:"summary"`
-	NextAction      *AutoNextAction `json:"nextAction,omitempty"`
+	ContractVersion       int                                                     `json:"contractVersion"`
+	OK                    bool                                                    `json:"ok"`
+	EntryMode             string                                                  `json:"entryMode"`
+	Resumed               bool                                                    `json:"resumed"`
+	Duration              string                                                  `json:"duration,omitempty"`
+	Steps                 AutoSteps                                               `json:"steps"`
+	CredentialDelivery    *sandbox.SandboxCredentialDeliveryStatusMetadata        `json:"credentialDelivery,omitempty"`
+	SyncOut               *sandboxworkspace.SyncOutSummary                        `json:"syncOut,omitempty"`
+	SyncOutApply          *sandboxworkspace.SafeApplyResult                       `json:"syncOutApply,omitempty"`
+	SandboxExecutionID    string                                                  `json:"sandboxExecutionId,omitempty"`
+	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
+	Error                 string                                                  `json:"error,omitempty"`
+	Summary               string                                                  `json:"summary"`
+	NextAction            *AutoNextAction                                         `json:"nextAction,omitempty"`
 }
 
 // AutoStep captures status and optional telemetry for one pipeline step.
@@ -183,7 +203,14 @@ Convert mode policy:
 Agent-safe usage:
 - Pass a positional PRD path or --report <path> to avoid source discovery ambiguity.
 - Use --resume only when continuing saved state.
+- --sandbox currently rejects --resume until sandbox resume state rewriting is implemented.
 - Use --json for the auto-v2 machine-readable contract.
+
+Exit status with --json:
+- 0 when ok=true
+- 2 when validation or preflight fails after emitting ok=false JSON
+- 4 when pipeline execution finishes with ok=false
+- Sandbox execution preserves the inner hal command's nonzero status
 
 Examples:
   hal auto                           # Uses auto.sourcePriority discovery + auto.convertMode policy
@@ -197,7 +224,12 @@ Examples:
   hal auto --review-max 15           # Cap review cycles for this run
   hal auto --dry-run                 # Show what would happen without executing
   hal auto --resume                  # Continue from last saved state
-  hal auto --json                    # Machine-readable result output`,
+  hal auto --json                    # Machine-readable result output
+  hal auto --sandbox                 # Run inside a sandbox
+  hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox
+  hal auto --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
+  hal auto --sandbox --sandbox-apply    # Run a new execution, then apply its eligible artifacts
+  hal auto --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection`,
 	Example: `  hal auto
   hal auto .hal/prd-feature.md --dry-run
   hal auto --json
@@ -205,6 +237,11 @@ Examples:
   hal auto --mode strict
   hal auto --no-ci
   hal auto --review-streak 3 --review-max 15
+  hal auto --sandbox
+  hal auto --sandbox --sandbox-name worker-1
+  hal auto --sandbox --sandbox-sync-out
+  hal auto --sandbox --sandbox-apply
+  hal auto --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman
   hal auto --engine codex --base develop`,
 	RunE: runAuto,
 }
@@ -224,6 +261,14 @@ func init() {
 	autoCmd.Flags().StringVarP(&autoEngineFlag, "engine", "e", "codex", "Engine to use (claude, codex, pi)")
 	autoCmd.Flags().StringVarP(&autoBaseFlag, "base", "b", "", "Base branch for new work branch and PR target (default: current branch, or HEAD when detached)")
 	autoCmd.Flags().BoolVar(&autoJSONFlag, "json", false, "Output machine-readable JSON result")
+	autoCmd.Flags().BoolVar(&autoSandboxFlag, "sandbox", false, "Run inside a sandbox")
+	autoCmd.Flags().StringVar(&autoSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
+	autoCmd.Flags().StringVar(&autoSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
+	autoCmd.Flags().StringVar(&autoSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
+	autoCmd.Flags().StringVar(&autoSandboxTemplateFlag, sandboxTemplateFlagName, "", "OCI sandbox template reference to select before runtime construction")
+	autoCmd.Flags().StringVar(&autoSandboxTemplateTrustFlag, sandboxTemplateTrustFlagName, defaultSandboxTemplateTrustMode, "Sandbox template trust mode (strict or advisory)")
+	autoCmd.Flags().BoolVar(&autoSandboxSyncOutFlag, sandboxSyncOutFlagName, false, "Collect sandbox sync-out metadata without applying to the host worktree")
+	autoCmd.Flags().BoolVar(&autoSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree")
 	rootCmd.AddCommand(autoCmd)
 }
 
@@ -253,12 +298,34 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	engineName := autoEngineFlag
 	baseBranch := autoBaseFlag
 	jsonMode := autoJSONFlag
+	sandboxMode := autoSandboxFlag
+	sandboxName := autoSandboxNameFlag
+	sandboxHost := autoSandboxHostFlag
+	sandboxRuntime := autoSandboxRuntimeFlag
+	sandboxTemplate := autoSandboxTemplateFlag
+	sandboxTemplateTrust := autoSandboxTemplateTrustFlag
+	sandboxSyncOut := autoSandboxSyncOutFlag
+	sandboxApply := autoSandboxApplyFlag
 
+	dryRunChanged := false
+	resumeChanged := false
 	noCIChanged := false
 	skipPRChanged := false
+	noReviewChanged := false
 	modeChanged := false
 	reviewStreakChanged := false
 	reviewMaxChanged := false
+	reportChanged := false
+	engineChanged := false
+	baseChanged := false
+	jsonChanged := false
+	sandboxNameChanged := strings.TrimSpace(autoSandboxNameFlag) != ""
+	sandboxHostChanged := strings.TrimSpace(autoSandboxHostFlag) != ""
+	sandboxRuntimeChanged := strings.TrimSpace(autoSandboxRuntimeFlag) != ""
+	sandboxTemplateChanged := strings.TrimSpace(autoSandboxTemplateFlag) != ""
+	sandboxTemplateTrustChanged := false
+	sandboxSyncOutChanged := false
+	sandboxApplyChanged := false
 
 	if cmd != nil {
 		if cmd.Context() != nil {
@@ -273,6 +340,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			dryRun = value
+			dryRunChanged = cmd.Flags().Changed("dry-run")
 		}
 		if cmd.Flags().Lookup("resume") != nil {
 			value, err := cmd.Flags().GetBool("resume")
@@ -280,6 +348,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			resume = value
+			resumeChanged = cmd.Flags().Changed("resume")
 		}
 		if cmd.Flags().Lookup("no-ci") != nil {
 			value, err := cmd.Flags().GetBool("no-ci")
@@ -303,6 +372,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			noReview = value
+			noReviewChanged = cmd.Flags().Changed("no-review")
 		}
 		if cmd.Flags().Lookup("mode") != nil {
 			value, err := cmd.Flags().GetString("mode")
@@ -334,6 +404,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			reportPath = value
+			reportChanged = cmd.Flags().Changed("report")
 		}
 		if cmd.Flags().Lookup("engine") != nil {
 			value, err := cmd.Flags().GetString("engine")
@@ -341,6 +412,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			engineName = value
+			engineChanged = cmd.Flags().Changed("engine")
 		}
 		if cmd.Flags().Lookup("base") != nil {
 			value, err := cmd.Flags().GetString("base")
@@ -348,6 +420,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			baseBranch = value
+			baseChanged = cmd.Flags().Changed("base")
 		}
 		if cmd.Flags().Lookup("json") != nil {
 			value, err := cmd.Flags().GetBool("json")
@@ -355,11 +428,141 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 				return err
 			}
 			jsonMode = value
+			jsonChanged = cmd.Flags().Changed("json")
+		}
+		if cmd.Flags().Lookup("sandbox") != nil {
+			value, err := cmd.Flags().GetBool("sandbox")
+			if err != nil {
+				return err
+			}
+			sandboxMode = value
+		}
+		if cmd.Flags().Lookup("sandbox-name") != nil {
+			value, err := cmd.Flags().GetString("sandbox-name")
+			if err != nil {
+				return err
+			}
+			sandboxName = value
+			sandboxNameChanged = cmd.Flags().Changed("sandbox-name")
+		}
+		if cmd.Flags().Lookup(sandboxHostFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxHostFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxHost = value
+			sandboxHostChanged = cmd.Flags().Changed(sandboxHostFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxRuntimeFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxRuntimeFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxRuntime = value
+			sandboxRuntimeChanged = cmd.Flags().Changed(sandboxRuntimeFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxTemplateFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxTemplateFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxTemplate = value
+			sandboxTemplateChanged = cmd.Flags().Changed(sandboxTemplateFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxTemplateTrustFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxTemplateTrustFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxTemplateTrust = value
+			sandboxTemplateTrustChanged = cmd.Flags().Changed(sandboxTemplateTrustFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxSyncOutFlagName) != nil {
+			value, err := cmd.Flags().GetBool(sandboxSyncOutFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxSyncOut = value
+			sandboxSyncOutChanged = cmd.Flags().Changed(sandboxSyncOutFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxApplyFlagName) != nil {
+			value, err := cmd.Flags().GetBool(sandboxApplyFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxApply = value
+			sandboxApplyChanged = cmd.Flags().Changed(sandboxApplyFlagName)
 		}
 	}
 	if skipPRChanged && !noCIChanged {
 		noCI = skipPR
 	}
+	projectCfg, err := loadCommandProjectConfig(dir)
+	if err != nil {
+		err = fmt.Errorf("failed to load project config: %w", err)
+		if jsonMode {
+			jr := autoFailureResult(autoEntryModeReportDiscovery, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoValidationJSON(cmd, out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	applyAutoProjectConfigDefaults(projectCfg, &baseBranch, &baseChanged)
+	if sandboxMode {
+		sandboxDefaults := commandSandboxDefaultState{
+			SandboxName:           sandboxName,
+			SandboxNameChanged:    sandboxNameChanged,
+			SandboxHostID:         sandboxHost,
+			SandboxHostChanged:    sandboxHostChanged,
+			SandboxRuntime:        sandboxRuntime,
+			SandboxRuntimeChanged: sandboxRuntimeChanged,
+			SandboxSyncOut:        sandboxSyncOut,
+			SandboxSyncOutChanged: sandboxSyncOutChanged,
+			SandboxApply:          sandboxApply,
+			SandboxApplyChanged:   sandboxApplyChanged,
+		}
+		applyProjectSandboxDefaults(projectCfg, sandboxMode, &sandboxDefaults)
+		sandboxName = sandboxDefaults.SandboxName
+		sandboxHost = sandboxDefaults.SandboxHostID
+		sandboxRuntime = sandboxDefaults.SandboxRuntime
+		sandboxSyncOut = sandboxDefaults.SandboxSyncOut
+		sandboxApply = sandboxDefaults.SandboxApply
+	}
+	targetFlags, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
+		HostID:         sandboxHost,
+		HostChanged:    sandboxHostChanged,
+		RuntimeDriver:  sandboxRuntime,
+		RuntimeChanged: sandboxRuntimeChanged,
+	})
+	if err == nil {
+		err = validateSandboxTargetFlagsRequireSandbox(sandboxMode, sandboxTargetFlagValues{
+			HostChanged:    sandboxHostChanged,
+			RuntimeChanged: sandboxRuntimeChanged,
+		})
+	}
+	if err == nil {
+		_, err = validateSandboxTemplateFlagValues(sandboxTemplateFlagValues{
+			Sandbox:          sandboxMode,
+			Reference:        sandboxTemplate,
+			ReferenceChanged: sandboxTemplateChanged,
+			TrustMode:        sandboxTemplateTrust,
+			TrustChanged:     sandboxTemplateTrustChanged,
+		})
+	}
+	if err == nil {
+		err = validateSandboxSyncOutFlagsRequireSandbox(sandboxMode, sandboxSyncOutFlagValues{
+			SyncOutChanged: sandboxSyncOutChanged,
+			ApplyChanged:   sandboxApplyChanged,
+		})
+	}
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(autoEntryModeReportDiscovery, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoValidationJSON(cmd, out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	sandboxHost = targetFlags.HostID
+	sandboxRuntime = targetFlags.RuntimeDriver
 
 	sourceMarkdown := ""
 	if len(args) > 0 {
@@ -377,6 +580,49 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		}
 	}
 
+	if sandboxMode {
+		return runAutoSandboxWithWriter(ctx, cmd, args, dir, autoSandboxOptions{
+			DryRun:                      dryRun,
+			DryRunChanged:               dryRunChanged,
+			Resume:                      resume,
+			ResumeChanged:               resumeChanged,
+			NoCI:                        noCI,
+			NoCIChanged:                 noCIChanged,
+			SkipPR:                      skipPR,
+			SkipPRChanged:               skipPRChanged,
+			NoReview:                    noReview,
+			NoReviewChanged:             noReviewChanged,
+			Mode:                        mode,
+			ModeChanged:                 modeChanged,
+			ReviewStreak:                reviewStreak,
+			ReviewStreakChanged:         reviewStreakChanged,
+			ReviewMax:                   reviewMax,
+			ReviewMaxChanged:            reviewMaxChanged,
+			Report:                      reportPath,
+			ReportChanged:               reportChanged,
+			Engine:                      engineName,
+			EngineChanged:               engineChanged,
+			Base:                        baseBranch,
+			BaseChanged:                 baseChanged,
+			JSON:                        jsonMode,
+			JSONChanged:                 jsonChanged,
+			SandboxName:                 sandboxName,
+			SandboxNameChanged:          sandboxNameChanged,
+			SandboxHostID:               sandboxHost,
+			SandboxHostChanged:          sandboxHostChanged,
+			SandboxRuntime:              sandboxRuntime,
+			SandboxRuntimeChanged:       sandboxRuntimeChanged,
+			SandboxTemplate:             sandboxTemplate,
+			SandboxTemplateChanged:      sandboxTemplateChanged,
+			SandboxTemplateTrust:        sandboxTemplateTrust,
+			SandboxTemplateTrustChanged: sandboxTemplateTrustChanged,
+			SandboxSyncOut:              sandboxSyncOut,
+			SandboxSyncOutChanged:       sandboxSyncOutChanged,
+			SandboxApply:                sandboxApply,
+			SandboxApplyChanged:         sandboxApplyChanged,
+		}, out, errOut, defaultAutoSandboxDeps)
+	}
+
 	entryMode := autoEntryModeReportDiscovery
 	autoDiscoveredSource := false
 	resolvedConvertMode := ""
@@ -386,7 +632,31 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	factoryCIPolicy, err := autoFactoryCIPolicyForRun(ctx)
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoValidationJSON(cmd, out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	factoryRuntimeStatePolicy, err := autoFactoryRuntimeStatePolicyForRun(ctx)
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoValidationJSON(cmd, out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	factoryExecutionProfile, err := factoryAutoExecutionProfileFromEnv(os.LookupEnv)
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", "")
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -394,7 +664,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err := compound.MigrateLegacyAutoPRD(dir, errOut); err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, "failed to migrate legacy auto-prd.json: "+err.Error(), "failed to migrate legacy auto-prd.json: "+err.Error(), autoFailurePipeline, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return fmt.Errorf("failed to migrate legacy auto-prd.json: %w", err)
 	}
@@ -404,7 +674,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, "failed to load config: "+err.Error(), "failed to load config: "+err.Error(), autoFailureConfig, false, "", "")
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -430,7 +700,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			}
 			if jsonMode {
 				jr := autoFailureResult(attemptedEntryMode, false, resolveErr.Error(), resolveErr.Error(), autoFailureNoSource, false, "", convertModeTelemetry)
-				return outputAutoJSON(out, jr)
+				return outputAutoValidationJSON(cmd, out, jr)
 			}
 			return resolveErr
 		}
@@ -462,7 +732,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", convertModeTelemetry)
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -471,18 +741,26 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureEngine, false, "", convertModeTelemetry)
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 
 	// Create engine with per-engine config
 	engineCfg := compound.LoadEngineConfig(dir, resolvedEngine)
+	engineCfg, err = applyFactoryAutoExecutionProfile(config, engineCfg, resolvedEngine, factoryExecutionProfile)
+	if err != nil {
+		if jsonMode {
+			jr := autoFailureResult(entryMode, resume, err.Error(), err.Error(), autoFailureConfig, false, "", convertModeTelemetry)
+			return outputAutoValidationJSON(cmd, out, jr)
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
 	eng, err := engine.NewWithConfig(resolvedEngine, engineCfg)
 	if err != nil {
 		if jsonMode {
 			jr := autoFailureResult(entryMode, resume, "failed to create engine: "+err.Error(), "failed to create engine: "+err.Error(), autoFailureEngine, false, "", convertModeTelemetry)
-			return outputAutoJSON(out, jr)
+			return outputAutoValidationJSON(cmd, out, jr)
 		}
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
@@ -521,7 +799,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		if !pipeline.HasState() {
 			if jsonMode {
 				jr := autoFailureResult(entryMode, resume, "no saved state to resume from", "no saved state to resume from", autoFailureNoResumeState, false, "", convertModeTelemetry)
-				return outputAutoJSON(out, jr)
+				return outputAutoValidationJSON(cmd, out, jr)
 			}
 			return fmt.Errorf("no saved state to resume from")
 		}
@@ -536,16 +814,18 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 
 	// Run options
 	opts := compound.RunOptions{
-		Resume:            resume,
-		DryRun:            dryRun,
-		SkipCI:            policy.skipCI,
-		SkipReview:        policy.skipReview,
-		ReviewCleanStreak: policy.reviewCleanStreak,
-		ReviewMaxCycles:   policy.reviewMaxCycles,
-		ReportPath:        reportPath,
-		SourceMarkdown:    sourceMarkdown,
-		ConvertMode:       resolvedConvertMode,
-		BaseBranch:        baseBranch,
+		Resume:             resume,
+		DryRun:             dryRun,
+		SkipCI:             policy.skipCI,
+		CIPolicy:           factoryCIPolicy,
+		RuntimeStatePolicy: factoryRuntimeStatePolicy,
+		SkipReview:         policy.skipReview,
+		ReviewCleanStreak:  policy.reviewCleanStreak,
+		ReviewMaxCycles:    policy.reviewMaxCycles,
+		ReportPath:         reportPath,
+		SourceMarkdown:     sourceMarkdown,
+		ConvertMode:        resolvedConvertMode,
+		BaseBranch:         baseBranch,
 
 		MaxRunAttempts:       factoryAttemptPolicy.MaxRunAttempts,
 		MaxReviewFixAttempts: factoryAttemptPolicy.MaxReviewFixAttempts,
@@ -563,7 +843,7 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			jr := autoFailureResult(entryMode, resume, summary, err.Error(), autoFailurePipeline, pipeline.HasState(), failedStep, convertModeTelemetry, time.Since(autoStart))
 			applyAutoFailurePolicySkips(&jr.Steps, failedStep, policy.skipCI, policy.skipReview)
 			applyAutoFailureCIState(&jr.Steps, failedStep, pipeline.LastCIState())
-			return outputAutoJSON(out, jr)
+			return outputAutoJSONForCommand(cmd, out, jr)
 		}
 		return err
 	}
@@ -577,8 +857,8 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		if autoBranch != "" {
 			summary = fmt.Sprintf("Auto pipeline completed on branch %s.", autoBranch)
 		}
-		jr := autoSuccessResult(entryMode, resume, policy.skipCI, policy.skipReview, pipeline.LastCIState(), summary, convertModeTelemetry, elapsed)
-		return outputAutoJSON(out, jr)
+		jr := autoSuccessResult(entryMode, resume, policy.skipCI, policy.skipReview, pipeline.LastCIState(), pipeline.LastArchivePath(), summary, convertModeTelemetry, elapsed)
+		return outputAutoJSONForCommand(cmd, out, jr)
 	}
 
 	// Show pipeline summary
@@ -599,11 +879,34 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 }
 
 func outputAutoJSON(out io.Writer, jr AutoResult) error {
+	return writeAutoJSON(out, jr)
+}
+
+func outputAutoJSONForCommand(cmd *cobra.Command, out io.Writer, jr AutoResult) error {
+	if err := outputAutoJSON(out, jr); err != nil {
+		return err
+	}
+	if !jr.OK {
+		return exitWithCode(cmd, ExitCodeExpectedNonZero, nil)
+	}
+	return nil
+}
+
+func outputAutoValidationJSON(cmd *cobra.Command, out io.Writer, jr AutoResult) error {
+	if err := outputAutoJSON(out, jr); err != nil {
+		return err
+	}
+	return exitWithCode(cmd, ExitCodeValidation, nil)
+}
+
+func writeAutoJSON(out io.Writer, jr AutoResult) error {
 	data, err := json.MarshalIndent(jr, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal auto result: %w", err)
 	}
-	fmt.Fprintln(out, string(data))
+	if _, err := fmt.Fprintln(out, string(data)); err != nil {
+		return fmt.Errorf("write auto result: %w", err)
+	}
 	return nil
 }
 
@@ -612,6 +915,20 @@ func contextWithAutoFactoryAttemptPolicy(ctx context.Context, policy autoFactory
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, autoFactoryAttemptPolicyContextKey{}, policy)
+}
+
+func contextWithAutoFactoryCIPolicy(ctx context.Context, policy string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, autoFactoryCIPolicyContextKey{}, strings.TrimSpace(policy))
+}
+
+func contextWithAutoFactoryRuntimeStatePolicy(ctx context.Context, policy string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, autoFactoryRuntimeStatePolicyContextKey{}, strings.TrimSpace(policy))
 }
 
 func autoFactoryAttemptPolicyForRun(ctx context.Context) (autoFactoryAttemptPolicy, error) {
@@ -663,9 +980,57 @@ func validateAutoFactoryAttemptPolicy(policy autoFactoryAttemptPolicy) error {
 	return nil
 }
 
-func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipReview bool, ciState *compound.CIState, summary string, convertMode string, duration time.Duration) AutoResult {
+func autoFactoryCIPolicyForRun(ctx context.Context) (string, error) {
+	if ctx != nil {
+		if policy, ok := ctx.Value(autoFactoryCIPolicyContextKey{}).(string); ok {
+			return validateAutoFactoryCIPolicy(policy)
+		}
+	}
+	return validateAutoFactoryCIPolicy(os.Getenv(autoFactoryCIPolicyEnv))
+}
+
+func validateAutoFactoryCIPolicy(policy string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(policy))
+	if normalized == "" {
+		return "", nil
+	}
+	for _, supported := range factory.SupportedCIPolicies() {
+		if normalized == supported {
+			return normalized, nil
+		}
+	}
+	return "", fmt.Errorf("%s must be one of %s", autoFactoryCIPolicyEnv, strings.Join(factory.SupportedCIPolicies(), ", "))
+}
+
+func autoFactoryRuntimeStatePolicyForRun(ctx context.Context) (string, error) {
+	if ctx != nil {
+		if policy, ok := ctx.Value(autoFactoryRuntimeStatePolicyContextKey{}).(string); ok {
+			return validateAutoFactoryRuntimeStatePolicy(policy)
+		}
+	}
+	return validateAutoFactoryRuntimeStatePolicy(os.Getenv(autoFactoryRuntimeStatePolicyEnv))
+}
+
+func validateAutoFactoryRuntimeStatePolicy(policy string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(policy))
+	switch normalized {
+	case "":
+		return "", nil
+	case compound.RuntimeStatePolicyStrict:
+		return compound.RuntimeStatePolicyStrict, nil
+	case "checkpoint", compound.RuntimeStatePolicyCheckpointFactoryState:
+		return compound.RuntimeStatePolicyCheckpointFactoryState, nil
+	case compound.RuntimeStatePolicyCheckpointHalState:
+		return compound.RuntimeStatePolicyCheckpointHalState, nil
+	default:
+		return "", fmt.Errorf("%s must be one of strict, checkpoint, %s", autoFactoryRuntimeStatePolicyEnv, compound.RuntimeStatePolicyCheckpointHalState)
+	}
+}
+
+func autoSuccessResult(entryMode autoEntryMode, resumed bool, skipCI bool, skipReview bool, ciState *compound.CIState, archivePath string, summary string, convertMode string, duration time.Duration) AutoResult {
 	steps := autoStepsForSuccess(entryMode, skipCI, skipReview, ciState)
 	applyConvertModeTelemetry(&steps, convertMode)
+	steps.Archive.Path = strings.TrimSpace(archivePath)
 
 	jr := AutoResult{
 		ContractVersion: 2,
@@ -1260,6 +1625,15 @@ func applyAutoSuccessCIState(ci *AutoStep, ciState *compound.CIState) {
 
 	status := strings.TrimSpace(ciState.Status)
 	if status == "" || status == "passed" {
+		return
+	}
+	if status == "unavailable" {
+		ci.Status = autoStepStatusSkipped
+		reason := strings.TrimSpace(ciState.Reason)
+		if reason == "" {
+			reason = "ci_unavailable"
+		}
+		ci.Reason = reason
 		return
 	}
 

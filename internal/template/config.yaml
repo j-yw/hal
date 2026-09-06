@@ -42,10 +42,92 @@ maxRetries: 3
 #     timeout: 30m
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Command Defaults (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+# These defaults are applied only when the matching CLI flag is omitted.
+# CLI flags always win over values from this file.
+#
+# run:
+#   # Default base branch for `hal run --base`.
+#   base: develop
+#
+#   # Per-engine session timeout for `hal run --timeout`.
+#   timeout: 20m
+#
+# factory:
+#   defaults:
+#     # Default base branch for factory run/trigger when --base is omitted.
+#     base: develop
+#
+#     # Default executor for factory run/trigger: local or sandbox.
+#     # Use sandbox when project work should happen in a configured sandbox by default.
+#     executor: sandbox
+#
+#     # Sandbox target defaults for factory run when executor is sandbox.
+#     sandboxName: dev
+#     sandboxHost: local-worker
+#     sandboxRuntime: ssh_machine
+#
+#     # Default publish runner: host, sandbox, or auto.
+#     publishFrom: host
+#
+#     # Environment variable names to resolve at execution time.
+#     # Do not put raw secret values here.
+#     secretEnv:
+#       - GITHUB_TOKEN
+#
+#   policy:
+#     # Governance policy remains separate from command defaults.
+#     # Defaults shown here are examples, not requirements.
+#     ciPolicy: skip-if-unavailable
+#     publishPolicy: none
+#     sandboxRequired: false
+#     prCreationAllowed: true
+#     mergeAllowed: false
+#
+# ci:
+#   status:
+#     # Defaults for `hal ci status` when matching flags are omitted.
+#     wait: false
+#     timeout: 30m
+#     poll: 15s
+#     noChecksGrace: 2m
+#
+#   fix:
+#     # Default for `hal ci fix --max-attempts`.
+#     maxAttempts: 3
+#
+#   merge:
+#     # Defaults for `hal ci merge` when matching flags are omitted.
+#     strategy: squash
+#     deleteBranch: false
+#     allowNoChecks: false
+#
+# sandbox:
+#   defaults:
+#     # Sandbox target defaults are used only when --sandbox is active.
+#     # They do not make `hal run` or `hal auto` enter sandbox mode by themselves.
+#     name: dev
+#     host: local-worker
+#     runtime: ssh_machine
+#
+#     # run/auto sandbox execution currently supports only clone-mode command planning.
+#     # copy and direct are rejected during project config loading.
+#     workspaceMode: clone
+#
+#     # Collect sync-out metadata by default, but keep host apply opt-in.
+#     syncOut: true
+#     apply: false
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Auto Pipeline Settings (hal auto)
 # ─────────────────────────────────────────────────────────────────────────────
 
 auto:
+  # Default base branch for `hal auto --base` when omitted.
+  # Example: develop
+  # base: develop
+
   # Directory where analysis reports are stored.
   # The auto command looks here for reports to analyze.
   # Default: .hal/reports
@@ -100,13 +182,3 @@ auto:
   # Maximum review cycles before review gate fails.
   # Default (balanced): 10
   reviewMaxIterations: 10
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Daytona Sandbox Settings (optional)
-# ─────────────────────────────────────────────────────────────────────────────
-# Configure credentials for Daytona sandbox integration.
-# Run `hal sandbox setup` to set these interactively.
-#
-# daytona:
-#   apiKey: ""        # API key for Daytona server
-#   serverURL: ""     # Server URL (empty = SDK default)

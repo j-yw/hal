@@ -1,0 +1,5 @@
+format=hal-l8-workload-lock-v1
+l4_path=internal/sandboxruntime/microvm/guestagent/server/isolation_linux.go
+l4_sha256=565a7c1dd6ae9618428580b8f11de5a504032c394c32b6f4ad8a4368df2f8cd3
+l7_path=internal/sandboxruntime/microvm/guestagent/l8composition/agent_supervisor.go
+l7_sha256=05a7118b6468c1390cbc15ecbd22db87cd01e2e55098e90492f64c0a3565f859

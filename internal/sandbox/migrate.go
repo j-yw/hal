@@ -16,7 +16,7 @@ import (
 
 // Migrate moves legacy project sandbox state to global locations:
 //
-//  1. Config migration: .hal/config.yaml sandbox/daytona sections → global
+//  1. Config migration: .hal/config.yaml sandbox section → global
 //     sandbox-config.yaml (only when global config is missing).
 //  2. State migration: .hal/sandbox.json → global registry entry
 //     (sandboxes/{name}.json). The local file is deleted only after the global
@@ -97,7 +97,8 @@ func migrateState(projectDir string, out io.Writer) error {
 	}
 
 	// Prefer the legacy project sandbox.provider when backfilling providerless
-	// sandbox.json state, then fall back to Daytona defaults.
+	// sandbox.json state. Missing provider values remain empty so callers fail
+	// with explicit setup guidance instead of routing to a different provider.
 	if strings.TrimSpace(state.Provider) == "" {
 		provider, err := legacyMigrationProvider(projectDir)
 		if err != nil {
@@ -105,10 +106,6 @@ func migrateState(projectDir string, out io.Writer) error {
 		}
 		state.Provider = provider
 	}
-	if strings.TrimSpace(state.Provider) == "" {
-		state.Provider = "daytona"
-	}
-
 	legacyID := strings.TrimSpace(state.ID)
 
 	// Legacy provider state only used "id" as a lifecycle target for specific
@@ -411,10 +408,7 @@ func normalizeMigrationStatus(status string) string {
 }
 
 func normalizeMigrationProvider(provider string) string {
-	if strings.TrimSpace(provider) == "" {
-		return "daytona"
-	}
-	return provider
+	return strings.TrimSpace(provider)
 }
 
 func legacyMigrationProvider(projectDir string) (string, error) {
@@ -430,7 +424,6 @@ func legacyMigrationProvider(projectDir string) (string, error) {
 
 type rawLegacyProjectConfig struct {
 	Sandbox *rawLegacySandboxSection `yaml:"sandbox"`
-	Daytona *rawLegacyDaytonaSection `yaml:"daytona"`
 }
 
 type rawLegacySandboxSection struct {
@@ -440,11 +433,6 @@ type rawLegacySandboxSection struct {
 	Hetzner           rawLegacyHetznerSection     `yaml:"hetzner"`
 	DigitalOcean      rawLegacyDigitalOceanConfig `yaml:"digitalocean"`
 	Lightsail         rawLegacyLightsailSection   `yaml:"lightsail"`
-}
-
-type rawLegacyDaytonaSection struct {
-	APIKey    *string `yaml:"apiKey"`
-	ServerURL *string `yaml:"serverURL"`
 }
 
 type rawLegacyHetznerSection struct {
@@ -480,7 +468,7 @@ func loadLegacyProjectConfig(projectDir string) (*GlobalConfig, bool, error) {
 		return nil, false, fmt.Errorf("parse project sandbox config: %w", err)
 	}
 
-	if raw.Sandbox == nil && raw.Daytona == nil {
+	if raw.Sandbox == nil {
 		return nil, false, nil
 	}
 
@@ -522,15 +510,6 @@ func loadLegacyProjectConfig(projectDir string) (*GlobalConfig, bool, error) {
 		}
 		if raw.Sandbox.Lightsail.KeyPairName != nil {
 			cfg.Lightsail.KeyPairName = *raw.Sandbox.Lightsail.KeyPairName
-		}
-	}
-
-	if raw.Daytona != nil {
-		if raw.Daytona.APIKey != nil {
-			cfg.Daytona.APIKey = *raw.Daytona.APIKey
-		}
-		if raw.Daytona.ServerURL != nil {
-			cfg.Daytona.ServerURL = *raw.Daytona.ServerURL
 		}
 	}
 

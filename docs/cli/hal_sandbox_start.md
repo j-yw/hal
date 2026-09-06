@@ -15,9 +15,9 @@ When no arguments or flags are provided, the command auto-resolves:
   - If multiple are stopped, an error lists the available choices.
 
 Explicit names are loaded from the registry regardless of cached lifecycle
-status, so stale registry state can be corrected by the provider's idempotent
-start operation. Resolved targets are de-duplicated and sorted by name before
-execution.
+status, so stale registry state can be corrected by the selected provider or
+runtime driver's idempotent start operation. Resolved targets are de-duplicated
+and sorted by name before execution.
 
 ```
 hal sandbox start [NAME ...] [flags]

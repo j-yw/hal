@@ -33,6 +33,3 @@ vendor/
 # Sandbox secrets
 sandbox/.env
 .env
-
-# Daytona runner
-daytona-runner/node_modules/

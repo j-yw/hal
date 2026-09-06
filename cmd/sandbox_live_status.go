@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -101,6 +102,22 @@ func queryProviderLiveStatus(ctx context.Context, provider sandbox.Provider, inf
 		IP:          parseLiveIP(out.String()),
 		WorkspaceID: resolvedWorkspaceID(info),
 	}, err
+}
+
+func queryRuntimeLiveStatus(ctx context.Context, driver sandboxruntime.Driver, instance *sandbox.SandboxState) (liveStatusResult, error) {
+	if driver == nil {
+		return liveStatusResult{}, fmt.Errorf("sandbox runtime driver is required")
+	}
+	inspected, err := driver.Inspect(ctx, sandboxruntime.InspectRequest{
+		Target: sandboxRuntimeTargetFromState(instance),
+	})
+	if err != nil {
+		return liveStatusResult{}, err
+	}
+	if inspected == nil {
+		return liveStatusResult{}, fmt.Errorf("sandbox runtime returned no target")
+	}
+	return liveStatusResult{Status: strings.TrimSpace(inspected.Status)}, nil
 }
 
 func resolvedWorkspaceID(info *sandbox.ConnectInfo) string {

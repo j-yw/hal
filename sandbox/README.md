@@ -1,6 +1,7 @@
 # Dev Sandbox
 
-Portable dev environment you can spin up anywhere — Daytona, any VPS, GitHub Codespaces — and SSH into from your phone.
+Portable dev environment you can run on Hetzner, DigitalOcean, AWS Lightsail,
+a registered worker host, local Podman, Docker, or GitHub Codespaces.
 
 ## What's included
 
@@ -8,19 +9,19 @@ Portable dev environment you can spin up anywhere — Daytona, any VPS, GitHub C
 |------|---------|---------|
 | **Go** | 1.25.7 | Build hal and Go projects |
 | **Node.js** | 22.x | Runtime for JS-based CLI tools |
-| **gh** | latest | GitHub CLI (authenticated via GITHUB_TOKEN) |
-| **Claude Code** | latest | AI coding assistant |
-| **Pi** | latest | Coding agent harness |
-| **Codex** | latest | OpenAI Codex CLI |
+| **gh** | repository-selected (distro fallback) | GitHub CLI (authenticated via GITHUB_TOKEN) |
+| **Claude Code** | 2.1.207 | AI coding assistant |
+| **Pi** | 0.85.0 | Coding agent harness |
+| **Codex** | 0.144.1 | OpenAI Codex CLI |
 | **hal** | built from source | This project |
-| **tmux** | latest | Terminal multiplexer (keep sessions alive) |
-| **ripgrep** | latest | Fast search |
-| **vim** | latest | Editor |
+| **tmux** | distro package | Terminal multiplexer (keep sessions alive) |
+| **ripgrep** | distro package | Fast search |
+| **vim** | distro package | Editor |
 | Claude agents & skills | from sandbox/claude/ | Pre-configured Claude Code agents |
 
 ## Quick Start
 
-### Option 1: Any VPS (DigitalOcean, Hetzner, AWS, etc.)
+### Option 1: Cloud VPS (Hetzner, DigitalOcean, or AWS Lightsail)
 
 SSH into a fresh Ubuntu 22.04+ machine and run:
 
@@ -39,18 +40,19 @@ export OPENAI_API_KEY="sk-..."
 curl -fsSL https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup.sh | bash
 ```
 
-### Option 2: Daytona (pre-baked snapshot)
+### Option 2: Rootless Podman lab
+
+Linux uses native rootless Podman with isolated lab storage. macOS and explicit
+`HAL_SANDBOX_LAB_PODMAN_MODE=machine` runs use a named Podman machine.
 
 ```bash
-# First time — create the snapshot
-hal sandbox snapshot create
-
-# Spin up a sandbox
-hal sandbox start -n my-dev
-
-# SSH in
-daytona ssh my-dev
+make sandbox-lab-prepare
+make sandbox-lab-start
+./sandbox/podman-lab.sh run -- hal sandbox host status hal-lab-worker --live
+make sandbox-lab-destroy
 ```
+
+See [TESTING.md](TESTING.md) for the contained lab workflow and cleanup rules.
 
 ### Option 3: Docker (local testing)
 
@@ -77,7 +79,9 @@ docker run --rm -it --env-file sandbox/.env hal-sandbox
 
 For VPS: set these before running `setup.sh` — they'll be persisted to `~/.profile`.
 
-For Docker/Daytona: pass via `--env-file sandbox/.env` or `-e KEY=VALUE`.
+For Docker: pass values via `--env-file sandbox/.env` or `-e KEY=VALUE`.
+For the contained Podman lab, use `sandbox/podman-lab.sh seed-auth` so copied
+credentials stay inside the disposable lab root.
 
 ```bash
 cp sandbox/.env.example sandbox/.env
@@ -86,7 +90,7 @@ cp sandbox/.env.example sandbox/.env
 
 ## SSH from Phone
 
-1. **Create a VPS** or Daytona sandbox
+1. **Create a supported cloud VPS** or register a worker host
 2. **Add your phone's SSH key** to `~/.ssh/authorized_keys` on the machine
 3. **Use a mobile SSH client**:
    - **iOS**: [Blink Shell](https://blink.sh) or [Termius](https://termius.com)
@@ -97,33 +101,28 @@ cp sandbox/.env.example sandbox/.env
    tmux a -t work       # reattach after reconnect
    ```
 
-### Daytona SSH shortcut
+## Version Defaults
+
+AI CLI tools use the exact versions in the table above, not the latest npm release.
+Pi 0.85.0 matches the host version exercised in the native Linux rootless game
+smoke, including its xAI OAuth provider. Other agent pins are unchanged. Override
+versions explicitly with environment variables for direct bootstrap:
 
 ```bash
-# From any machine with daytona CLI installed
-daytona ssh my-dev
+PI_CODING_AGENT_VERSION=0.85.0 ./sandbox/setup.sh
 ```
 
-## Version Freshness
-
-AI CLI tools install the latest npm release by default when a sandbox is created.
-Pin versions with env vars only when reproducibility is more important than model
-compatibility:
-
-```bash
-GO_VERSION=1.25.7 NODE_MAJOR=22 CODEX_VERSION=0.142.2 ./sandbox/setup.sh
-```
-
-The Dockerfile passes these as build args but delegates installation to `setup.sh` — **one source of truth**.
+For image builds, use `--build-arg PI_CODING_AGENT_VERSION=0.85.0` (or the
+corresponding variable for another tool). The Dockerfile passes its build-argument
+defaults to `setup.sh`; deterministic Go tests keep both sets of defaults aligned.
+Node is pinned only to major 22, and OS packages are repository-selected, so the
+complete image is not a fully locked dependency snapshot. `/test.sh` reports tool
+versions and smoke-tests availability; it does not enforce exact version pins.
 
 ## Updating Tools
 
-1. For VPS: re-run `setup.sh` to install the latest AI CLIs, or pass explicit version env vars to pin
-2. For Daytona: rebuild the snapshot:
-   ```bash
-   hal sandbox snapshot delete --id <old-id>
-   hal sandbox snapshot create
-   ```
+1. For VPS: re-run `setup.sh` to install the selected defaults, or pass explicit version environment variables.
+2. For Docker or Podman: rebuild with explicit build arguments, or update the defaults in both `setup.sh` and `Dockerfile` and their regression test.
 
 ## Updating Claude Agents & Skills
 
@@ -140,12 +139,12 @@ Then re-run `setup.sh` or rebuild the Docker image.
 ```
 setup.sh          ← Universal bootstrap (the ONE script)
   ↑ used by
-Dockerfile        ← Pre-baked image (for Daytona snapshots / Docker)
+Dockerfile        ← Portable Docker/Podman image
 entrypoint.sh     ← Runtime config (git identity, gh auth, SSH agent)
 test.sh           ← Smoke tests (verify all tools present)
 claude/           ← Claude Code settings, agents, skills
 .env.example      ← Secrets template
 ```
 
-`setup.sh` is the single source of truth. The Dockerfile calls it internally.
-Both paths produce the exact same environment.
+`setup.sh` owns the shared installation logic. The Dockerfile calls it internally
+with matching version defaults; container and VPS runtime setup still differ.

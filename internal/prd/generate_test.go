@@ -233,6 +233,48 @@ func TestConvertPRDToJSON_UsesOutputFallbackWhenStreamRequiresFile(t *testing.T)
 	}
 }
 
+func TestConvertPRDToJSON_RejectsExplicitStoryStructureDrift(t *testing.T) {
+	const markdown = `# Generic Plan Fixture
+
+## User Stories
+
+### US-001: First fixture story
+
+### US-002: Second fixture story
+`
+	expectedIDs := explicitMarkdownStoryIDs(markdown)
+	if len(expectedIDs) == 0 {
+		t.Fatal("fixture must derive explicit source story IDs")
+	}
+
+	tmpDir := t.TempDir()
+	chdirTo(t, tmpDir)
+	outPath := filepath.Join(tmpDir, template.HalDir, template.PRDFile)
+	writeFile(t, outPath, promptResponseWithStoryIDs(t, "hal/generic-plan-fixture", expectedIDs))
+	before, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expandedIDs := append(append([]string(nil), expectedIDs...), "US-999")
+	eng := &mockEngine{promptResponse: promptResponseWithStoryIDs(t, "hal/generic-plan-fixture", expandedIDs)}
+	_, err = convertPRDToJSON(context.Background(), eng, "skill", markdown, outPath, nil)
+	if err == nil {
+		t.Fatal("convertPRDToJSON() error = nil, want explicit story structure error")
+	}
+	if !strings.Contains(err.Error(), "standard conversion changed explicit story structure") {
+		t.Fatalf("convertPRDToJSON() error = %q, want structure drift error", err)
+	}
+
+	after, readErr := os.ReadFile(outPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("failed plan conversion did not restore the previous canonical output")
+	}
+}
+
 func TestGenerateWithEngine_JSONOutputReplacesExistingCanonicalPRD(t *testing.T) {
 	tmpDir := t.TempDir()
 	chdirTo(t, tmpDir)

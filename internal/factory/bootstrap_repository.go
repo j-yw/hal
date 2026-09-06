@@ -16,19 +16,28 @@ import (
 )
 
 const (
-	BootstrapStepCloneRepository  = "clone_repository"
-	BootstrapStepEnsureWorkspace  = "ensure_workspace_root"
-	BootstrapStepCleanEngineLinks = "clean_engine_links"
-	BootstrapStepFetchRepository  = "fetch_repository"
-	BootstrapStepCheckoutBase     = "checkout_base"
-	BootstrapStepCheckLocalRun    = "check_local_run_branch"
-	BootstrapStepCheckRemoteRun   = "check_remote_run_branch"
-	BootstrapStepFetchRunBranch   = "fetch_run_branch"
-	BootstrapStepCheckoutRun      = "checkout_run_branch"
-	BootstrapStepCreateRunBranch  = "create_run_branch"
+	BootstrapStepCloneRepository     = "clone_repository"
+	BootstrapStepEnsureWorkspace     = "ensure_workspace_root"
+	BootstrapStepCheckWorkspaceClean = "check_workspace_clean"
+	BootstrapStepCleanEngineLinks    = "clean_engine_links"
+	BootstrapStepFetchRepository     = "fetch_repository"
+	BootstrapStepCheckoutBase        = "checkout_base"
+	BootstrapStepCheckLocalRun       = "check_local_run_branch"
+	BootstrapStepCheckRemoteRun      = "check_remote_run_branch"
+	BootstrapStepFetchRunBranch      = "fetch_run_branch"
+	BootstrapStepCheckoutRun         = "checkout_run_branch"
+	BootstrapStepCreateRunBranch     = "create_run_branch"
 
-	bootstrapCleanEngineLinksScript = `git clean -fd -- .claude/skills/factory .pi/skills/factory && { git checkout -- .pi/skills/factory/SKILL.md 2>/dev/null || true; }`
+	bootstrapCleanEngineLinksScript      = `git clean -fd -- .claude/skills/factory .pi/skills/factory && { git checkout -- .pi/skills/factory/SKILL.md 2>/dev/null || true; }`
+	bootstrapRequireCleanWorkspaceScript = `set -eu
+dirty_exit=$1
+workspace_status=$(git status --porcelain --untracked-files=all)
+if [ -n "$workspace_status" ]; then
+  exit "$dirty_exit"
+fi`
+	bootstrapWorkspaceDirtyExitCode = 73
 	bootstrapGitHubTokenEnvKey      = "GITHUB_TOKEN"
+	bootstrapGHTokenEnvKey          = "GH_TOKEN"
 	bootstrapGitHubExtraHeaderKey   = "http.https://github.com/.extraheader"
 	bootstrapGitHubURLRewriteKey    = "url.https://github.com/.insteadOf"
 )
@@ -37,6 +46,10 @@ var (
 	errBootstrapRepositoryURLRequired = errors.New("bootstrap repository URL is required")
 	errBootstrapBaseBranchRequired    = errors.New("bootstrap base branch is required")
 	errBootstrapWorkspaceDirRequired  = errors.New("bootstrap workspace dir is required")
+
+	// ErrBootstrapWorkspaceDirty is returned when exact-upstream reconciliation
+	// would overwrite changes in an existing remote workspace.
+	ErrBootstrapWorkspaceDirty = errors.New("bootstrap workspace is dirty")
 )
 
 // BootstrapBranchExistsFunc checks for a local or remote branch without tying
@@ -163,6 +176,14 @@ func runBootstrapRepositoryCommands(ctx context.Context, request BootstrapReques
 		}
 
 		step, commandResult, failure, err := RunBootstrapStep(ctx, deps.stepDeps(request), planned.stepName, planned.command)
+		if err != nil && planned.stepName == BootstrapStepCheckWorkspaceClean && commandResult.ExitCode == bootstrapWorkspaceDirtyExitCode {
+			err = bootstrapWorkspaceDirtyError()
+			failure = &BootstrapFailure{
+				Step:     planned.stepName,
+				Category: BootstrapFailureCategoryRepo,
+				Message:  err.Error(),
+			}
+		}
 		recordBootstrapStepResult(result, request, step, commandResult, failure)
 		if err != nil {
 			result.Failure = failure
@@ -187,6 +208,22 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 
 	commands := make([]bootstrapRepositoryCommand, 0, 2)
 	if exists {
+		if request.Options.ExactUpstream {
+			commands = append(commands, bootstrapRepositoryCommand{
+				stepName: BootstrapStepCheckWorkspaceClean,
+				command: BootstrapCommand{
+					Name: "sh",
+					Args: []string{
+						"-c",
+						bootstrapRequireCleanWorkspaceScript,
+						"hal-bootstrap-clean-check",
+						strconv.Itoa(bootstrapWorkspaceDirtyExitCode),
+					},
+					Dir: repoPath,
+					Env: bootstrapGitEnv(request),
+				},
+			})
+		}
 		commands = append(commands, bootstrapRepositoryCommand{
 			stepName: BootstrapStepCleanEngineLinks,
 			command: BootstrapCommand{
@@ -231,6 +268,11 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	checkoutArgs := []string{"checkout", "-f", baseBranch}
 	if exists {
 		checkoutArgs = []string{"checkout", "-f", "-B", baseBranch, "origin/" + baseBranch}
+		if request.Options.ExactUpstream {
+			checkoutArgs = []string{"checkout", "-B", baseBranch, "origin/" + baseBranch}
+		}
+	} else if request.Options.ExactUpstream {
+		checkoutArgs = []string{"checkout", baseBranch}
 	}
 	commands = append(commands, bootstrapRepositoryCommand{
 		stepName: BootstrapStepCheckoutBase,
@@ -245,6 +287,10 @@ func bootstrapRepositoryCommands(request BootstrapRequest, deps BootstrapReposit
 	return commands, nil
 }
 
+func bootstrapWorkspaceDirtyError() error {
+	return fmt.Errorf("%w: changes were preserved; commit or stash changes in the remote workspace, or reset/remove the workspace before retrying", ErrBootstrapWorkspaceDirty)
+}
+
 func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, deps BootstrapRepositoryDeps, result *BootstrapResult, repoPath string) ([]bootstrapRepositoryCommand, error) {
 	runBranch := strings.TrimSpace(request.RunBranch)
 	if runBranch == "" {
@@ -256,7 +302,7 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 	if err != nil {
 		return nil, fmt.Errorf("check local run branch %q: %w", runBranch, err)
 	}
-	if localExists {
+	if localExists && !request.Options.ExactUpstream {
 		return []bootstrapRepositoryCommand{
 			{
 				stepName: BootstrapStepCheckoutRun,
@@ -275,12 +321,18 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 		return nil, fmt.Errorf("check remote run branch %q: %w", runBranch, err)
 	}
 	if remoteExists {
+		fetchRefspec := runBranch + ":refs/remotes/origin/" + runBranch
+		checkoutArgs := []string{"checkout", "-f", "--track", "origin/" + runBranch}
+		if request.Options.ExactUpstream {
+			fetchRefspec = "+" + fetchRefspec
+			checkoutArgs = []string{"checkout", "-B", runBranch, "origin/" + runBranch}
+		}
 		return []bootstrapRepositoryCommand{
 			{
 				stepName: BootstrapStepFetchRunBranch,
 				command: BootstrapCommand{
 					Name: "git",
-					Args: []string{"fetch", "origin", runBranch + ":refs/remotes/origin/" + runBranch},
+					Args: []string{"fetch", "origin", fetchRefspec},
 					Dir:  repoPath,
 					Env:  bootstrapGitEnv(request),
 				},
@@ -289,7 +341,20 @@ func bootstrapRunBranchCommands(ctx context.Context, request BootstrapRequest, d
 				stepName: BootstrapStepCheckoutRun,
 				command: BootstrapCommand{
 					Name: "git",
-					Args: []string{"checkout", "-f", "--track", "origin/" + runBranch},
+					Args: checkoutArgs,
+					Dir:  repoPath,
+					Env:  bootstrapGitEnv(request),
+				},
+			},
+		}, nil
+	}
+	if localExists {
+		return []bootstrapRepositoryCommand{
+			{
+				stepName: BootstrapStepCheckoutRun,
+				command: BootstrapCommand{
+					Name: "git",
+					Args: []string{"checkout", "-f", runBranch},
 					Dir:  repoPath,
 					Env:  bootstrapGitEnv(request),
 				},
@@ -364,7 +429,7 @@ func bootstrapGitHubAuthConfigsForRequest(request BootstrapRequest) []bootstrapG
 }
 
 func bootstrapGitHubAuthHeaderForRequest(request BootstrapRequest) string {
-	token := strings.TrimSpace(request.Env[bootstrapGitHubTokenEnvKey])
+	token := bootstrapGitHubTokenForRequest(request)
 	if token == "" {
 		return ""
 	}
@@ -373,6 +438,15 @@ func bootstrapGitHubAuthHeaderForRequest(request BootstrapRequest) string {
 		return ""
 	}
 	return bootstrapGitHubAuthHeader(token)
+}
+
+func bootstrapGitHubTokenForRequest(request BootstrapRequest) string {
+	for _, key := range []string{bootstrapGitHubTokenEnvKey, bootstrapGHTokenEnvKey} {
+		if token := strings.TrimSpace(request.Env[key]); token != "" {
+			return token
+		}
+	}
+	return ""
 }
 
 func bootstrapShouldRewriteGitHubSSHForRequest(request BootstrapRequest) bool {

@@ -11,7 +11,7 @@ legacy .hal/sandbox.json state into the global sandbox registry.
 This command is non-interactive and safe to run repeatedly — if migration has
 already completed or there is nothing to migrate, it reports that and exits.
 
-Migration copies sandbox and daytona configuration sections from the local
+Migration copies the sandbox configuration section from the local
 project config to the global path. The local .hal/config.yaml is preserved
 unchanged. When a legacy .hal/sandbox.json exists, the command verifies the
 global registry entry was written successfully and then removes the local state

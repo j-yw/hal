@@ -12,6 +12,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -51,6 +52,12 @@ type factoryTriggerRequest struct {
 	ExecutorMode   string
 	Secrets        []factory.RunSecretInput
 	JSON           bool
+}
+
+type factoryTriggerConfigFlagChanges struct {
+	Base      bool
+	Executor  bool
+	SecretEnv bool
 }
 
 // FactoryTriggerResponse is the machine-readable JSON output for
@@ -135,8 +142,29 @@ func runFactoryTrigger(cmd *cobra.Command, _ []string) error {
 	return suppressFactoryJSONRenderedError(err, req.JSON, countingOut)
 }
 
+func applyFactoryTriggerConfigDefaults(req factoryTriggerRequest, secretEnv []string, changes factoryTriggerConfigFlagChanges, cfg *projectconfig.Config) (factoryTriggerRequest, []string) {
+	if cfg == nil {
+		return req, secretEnv
+	}
+
+	defaults := cfg.Factory
+	if !changes.Base && defaults.Base.Set {
+		req.BaseBranch = defaults.Base.Value
+	}
+	if !changes.Executor && defaults.Executor.Set {
+		req.ExecutorMode = defaults.Executor.Value
+	}
+	if !changes.SecretEnv && defaults.SecretEnv.Set {
+		secretEnv = append([]string(nil), defaults.SecretEnv.Value...)
+	}
+	return req, secretEnv
+}
+
 func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest, error) {
 	secretEnv := append([]string(nil), factoryTriggerSecretEnvFlags...)
+	baseChanged := strings.TrimSpace(factoryTriggerBaseFlag) != ""
+	executorChanged := strings.TrimSpace(factoryTriggerExecutorFlag) != "" && factoryTriggerExecutorFlag != factory.ExecutorModeLocal
+	secretEnvChanged := len(factoryTriggerSecretEnvFlags) > 0
 	req := factoryTriggerRequest{
 		RepoPath:       factoryTriggerRepoFlag,
 		MarkdownPath:   factoryTriggerPRDFlag,
@@ -190,6 +218,7 @@ func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest
 				return factoryTriggerRequest{}, err
 			}
 			req.BaseBranch = value
+			baseChanged = cmd.Flags().Changed("base")
 		}
 		if cmd.Flags().Lookup("executor") != nil {
 			value, err := cmd.Flags().GetString("executor")
@@ -197,6 +226,7 @@ func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest
 				return factoryTriggerRequest{}, err
 			}
 			req.ExecutorMode = value
+			executorChanged = cmd.Flags().Changed("executor")
 		}
 		if cmd.Flags().Lookup("secret-env") != nil {
 			value, err := cmd.Flags().GetStringArray("secret-env")
@@ -204,6 +234,7 @@ func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest
 				return factoryTriggerRequest{}, err
 			}
 			secretEnv = value
+			secretEnvChanged = cmd.Flags().Changed("secret-env")
 		}
 		if cmd.Flags().Lookup("json") != nil {
 			value, err := cmd.Flags().GetBool("json")
@@ -213,6 +244,20 @@ func factoryTriggerRequestFromCommand(cmd *cobra.Command) (factoryTriggerRequest
 			req.JSON = value
 		}
 	}
+
+	cfg := &projectconfig.Config{}
+	if strings.TrimSpace(req.RepoPath) != "" {
+		var err error
+		cfg, err = loadFactoryCommandConfig(req.RepoPath)
+		if err != nil {
+			return factoryTriggerRequest{}, err
+		}
+	}
+	req, secretEnv = applyFactoryTriggerConfigDefaults(req, secretEnv, factoryTriggerConfigFlagChanges{
+		Base:      baseChanged,
+		Executor:  executorChanged,
+		SecretEnv: secretEnvChanged,
+	}, cfg)
 
 	secrets, err := parseFactoryRunSecretEnvFlags(secretEnv)
 	if err != nil {

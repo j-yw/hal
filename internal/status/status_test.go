@@ -408,6 +408,37 @@ func TestGet_UserStoriesKey(t *testing.T) {
 	}
 }
 
+func TestGet_UserStoriesPassesBoolean(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, template.HalDir)
+	os.MkdirAll(halDir, 0755)
+
+	prd := map[string]interface{}{
+		"branchName": "hal/test-feature",
+		"userStories": []map[string]interface{}{
+			{"id": "US-001", "title": "First", "passes": true},
+			{"id": "US-002", "title": "Second", "passes": false},
+		},
+	}
+	data, _ := json.Marshal(prd)
+	os.WriteFile(filepath.Join(halDir, template.PRDFile), data, 0644)
+
+	result := Get(dir)
+
+	if result.Manual == nil {
+		t.Fatal("manual detail should not be nil")
+	}
+	if result.Manual.CompletedStories != 1 {
+		t.Fatalf("completedStories = %d, want 1", result.Manual.CompletedStories)
+	}
+	if result.Manual.NextStory == nil {
+		t.Fatal("nextStory should not be nil")
+	}
+	if result.Manual.NextStory.ID != "US-002" {
+		t.Fatalf("nextStory.id = %q, want %q", result.Manual.NextStory.ID, "US-002")
+	}
+}
+
 func TestStatusResult_DetailFieldsJSONRoundTrip(t *testing.T) {
 	original := StatusResult{
 		ContractVersion: ContractVersion,
