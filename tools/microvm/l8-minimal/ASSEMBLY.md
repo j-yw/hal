@@ -78,6 +78,22 @@ and no-new-privileges. Neither runtime selector changes L5's exact 52-file cache
 validation. The combined cache must supply a separately verified L5-only view;
 shared L7 post-build ownership behavior is not changed by this runner slice.
 
+Podman uses only local operation (`--remote=false`), 15s metadata probes,
+a three-hour container lifetime and a 181-minute outer deadline with TERM and
+a 10s kill grace. The Podman-only sourced helper stores its CID outside all
+container bind mounts and correlates the single full CID with a unique task
+label before bounded exact-ID removal on completion, failure or signal. An
+already absent container is harmless; malformed/multiple IDs, foreign labels
+or uncertain cleanup return failure and retain private staging/CID evidence.
+No global container enumeration or pruning is used. Docker never sources this
+helper, including when it is absent or malformed.
+The Podman command is an owned asynchronous timeout job with an explicit wait,
+so a signal addressed only to the entry script does not wait behind the full
+build deadline. Podman does not use auto-remove: removal also deletes its CID
+file, so exact identity must remain available to the owned cleanup. An admitted
+launch with no complete CID retains evidence and fails closed; a missing CID
+is harmless only before launch admission. Docker retains its original `--rm`.
+
 Tagged fake-CLI tests run the actual entry scripts, covering default Docker,
 explicit Docker/Podman, rootful rejection, wrong local digest, unsupported
 runtime and excessive jobs. These are runner argv tests, not successful builds.

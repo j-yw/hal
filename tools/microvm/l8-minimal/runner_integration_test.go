@@ -18,7 +18,7 @@ import (
 // They never contact a registry, launch a container or compile a guest image.
 func TestMinimalParentBuildersSelectExplicitRootlessRuntime(t *testing.T) {
 	for _, lane := range []string{"l5", "l7"} {
-		for _, scenario := range []string{"default_docker", "explicit_docker", "podman", "rootful", "wrong_digest", "unsupported", "excess_jobs", "run_failure", "run_signal", "script_signal", "precreate_failure", "foreign_label", "malformed_cid", "multiple_cid", "nul_cid", "symlink_cid", "wrong_inspect_id", "unknown_exists", "already_removed", "cleanup_failure", "docker_absent_helper", "docker_malformed_helper", "podman_missing_helper", "podman_malformed_helper"} {
+		for _, scenario := range []string{"default_docker", "explicit_docker", "podman", "rootful", "wrong_digest", "unsupported", "excess_jobs", "run_failure", "run_signal", "script_signal", "script_signal_missing_cid", "precreate_failure", "foreign_label", "malformed_cid", "multiple_cid", "nul_cid", "symlink_cid", "partial_cid", "missing_cid", "wrong_inspect_id", "unknown_exists", "already_removed", "cleanup_failure", "docker_absent_helper", "docker_malformed_helper", "podman_missing_helper", "podman_malformed_helper"} {
 			t.Run(lane+"/"+scenario, func(t *testing.T) {
 				root := t.TempDir()
 				mustRunnerWrite := func(name, data string) {
@@ -90,6 +90,8 @@ run)
  multiple_cid) printf '%s\n' "$cid" >> "$cidfile" ;;
  nul_cid) printf '%s\000' "$cid" > "$cidfile" ;;
  symlink_cid) mv "$cidfile" "$cidfile-foreign"; ln -s "$cidfile-foreign" "$cidfile" ;;
+ partial_cid) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$cidfile" ;;
+ missing_cid|script_signal_missing_cid) rm -- "$cidfile" ;;
  foreign_label) label=foreign ;;
  esac
  printf '%s %s\n' "$cid" "$label" > "$RUNNER_TEST_STATE"
@@ -98,7 +100,7 @@ run)
  case "$RUNNER_TEST_MODE" in
  run_failure) exit 42 ;;
  run_signal) kill -TERM "$PPID"; exit 143 ;;
- script_signal) sleep 4 ;;
+ script_signal|script_signal_missing_cid) sleep 4 ;;
  esac
  ;;
 container)
@@ -145,10 +147,11 @@ esac
 					"RUNNER_TEST_CACHE_LOG=" + cacheLog, "RUNNER_TEST_ROOTLESS=" + rootless, "RUNNER_TEST_DIGEST=" + image,
 					"HAL_" + strings.ToUpper(lane) + "_JOBS=" + jobs, "UNRELATED_SECRET=runner-seeded-secret",
 					"RUNNER_TEST_MODE=" + scenario, "RUNNER_TEST_STATE=" + filepath.Join(root, "container-state"),
+					"runtime_metadata=" + filepath.Join(root, "foreign-metadata"), "runtime_admitted=true", "runtime_waiting=true",
 				}
 				var output []byte
 				var runErr error
-				if scenario == "script_signal" {
+				if strings.HasPrefix(scenario, "script_signal") {
 					var captured bytes.Buffer
 					command.Stdout, command.Stderr = &captured, &captured
 					command.WaitDelay = time.Second
@@ -212,6 +215,21 @@ esac
 					} else if !os.IsNotExist(stateErr) {
 						t.Fatal("owned container leaked after completion/failure/signal")
 					}
+					if scenario == "precreate_failure" {
+						entries, err := os.ReadDir(root)
+						if err != nil {
+							t.Fatal(err)
+						}
+						retained := false
+						for _, e := range entries {
+							if strings.HasPrefix(e.Name(), ".hal-"+lane+"-runtime.") {
+								retained = true
+							}
+						}
+						if !retained {
+							t.Fatal("admitted launch without CID lost evidence")
+						}
+					}
 					if scenario == "run_failure" || scenario == "run_signal" || scenario == "script_signal" || scenario == "podman" {
 						if !strings.Contains(string(calls), " rm --force --ignore "+strings.Repeat("a", 64)) {
 							t.Fatal("owned container not removed by exact ID")
@@ -257,6 +275,9 @@ esac
 					t.Fatal(err)
 				}
 				if scenario == "podman" || scenario == "already_removed" {
+					if strings.Contains(text, "--rm\n") {
+						t.Fatal("Podman auto-remove would erase CID before ownership cleanup")
+					}
 					for _, required := range []string{"--userns=keep-id\n", "--cpus=3\n", "--memory=12g\n", "--pids-limit=512\n", "--security-opt=no-new-privileges\n", "--timeout=10800\n", "--cidfile=", "--label=hal.microvm.build="} {
 						if !strings.Contains(text, required) {
 							t.Errorf("rootless run missing %q", required)
@@ -276,7 +297,7 @@ esac
 					if !strings.Contains(string(calls), "/podman --remote=false info ") || strings.Contains(string(calls), "/docker ") {
 						t.Fatal("missing rootless proof or implicit Docker fallback")
 					}
-				} else if strings.Contains(text, "--userns") || strings.Contains(string(calls), "/podman ") || strings.Contains(string(calls), " info ") {
+				} else if !strings.Contains(text, "--rm\n") || strings.Contains(text, "--userns") || strings.Contains(string(calls), "/podman ") || strings.Contains(string(calls), " info ") {
 					t.Fatal("legacy Docker path changed")
 				}
 				verified, err := os.ReadFile(cacheLog)

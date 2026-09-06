@@ -5,12 +5,16 @@ readonly build_image=registry.gitlab.com/buildroot.org/buildroot/base@sha256:f1e
 readonly L7_MAX_JOBS=64
 
 usage() {
-	echo "usage: build.sh --cache ABSOLUTE_DIRECTORY --output ABSOLUTE_DIRECTORY" >&2
+	echo "usage: build.sh --cache ABSOLUTE_DIRECTORY --output ABSOLUTE_DIRECTORY [--runtime docker|podman]" >&2
 	exit 2
 }
 
 cache=
 output=
+runtime=docker
+runtime_metadata=
+runtime_admitted=false
+runtime_waiting=false
 while (($#)); do
 	case "$1" in
 	--cache)
@@ -23,10 +27,16 @@ while (($#)); do
 		output=$2
 		shift 2
 		;;
+	--runtime)
+		(($# >= 2)) || usage
+		runtime=$2
+		shift 2
+		;;
 	*) usage ;;
 	esac
 done
 [[ "$cache" == /* && "$output" == /* ]] || usage
+[[ "$runtime" == docker || "$runtime" == podman ]] || usage
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
@@ -80,10 +90,16 @@ fi
 
 build_root=$(mktemp -d --tmpdir="$output_parent" .hal-l7-build.XXXXXXXXXX)
 cleanup() {
+	local result=$?
+	if [[ "$runtime" == podman && -n "${runtime_metadata:-}" ]] && ! cleanup_parent_podman; then
+		echo "owned build container cleanup failed; private build evidence retained" >&2
+		exit 1
+	fi
 	if [[ -n "${build_root:-}" && -d "$build_root" ]]; then
 		chmod -R u+w -- "$build_root" 2>/dev/null || true
 		rm -rf -- "$build_root"
 	fi
+	return "$result"
 }
 trap cleanup EXIT
 
@@ -92,6 +108,8 @@ source_tree=tree-$(git -C "$repo_root" rev-parse 'HEAD^{tree}')
 source_date_epoch=$(git -C "$repo_root" show -s --format=%ct HEAD)
 if [[ -n ${HAL_L7_JOBS+x} ]]; then
 	jobs=$HAL_L7_JOBS
+elif [[ "$runtime" == podman ]]; then
+	jobs=3
 else
 	jobs=$(nproc)
 	((jobs <= L7_MAX_JOBS)) || jobs=$L7_MAX_JOBS
@@ -100,7 +118,19 @@ fi
 	echo "HAL_L7_JOBS must be a positive decimal no greater than $L7_MAX_JOBS" >&2
 	exit 1
 }
-local_image=$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$build_image" 2>/dev/null) || {
+runtime_probe=("$runtime")
+runtime_image=(docker image inspect)
+runtime_run=("$runtime")
+runtime_args=()
+runtime_autoremove=(--rm)
+if [[ "$runtime" == podman ]]; then
+	source "$script_dir/../l8-minimal/parent-runtime.sh"
+	prepare_parent_podman l7
+	runtime_image=("${runtime_probe[@]}" image inspect)
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+fi
+local_image=$("${runtime_image[@]}" --format '{{join .RepoDigests "\n"}}' "$build_image" 2>/dev/null) || {
 	echo "pinned L7 build image is not installed locally" >&2
 	exit 1
 }
@@ -109,7 +139,7 @@ grep -Fxq "$build_image" <<<"$local_image" || {
 	exit 1
 }
 
-docker run --rm \
+"${runtime_run[@]}" run "${runtime_autoremove[@]}" "${runtime_args[@]}" \
 	--pull=never \
 	--user="$current_uid:$current_gid" \
 	--platform=linux/amd64 \
