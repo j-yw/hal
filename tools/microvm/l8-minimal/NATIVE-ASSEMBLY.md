@@ -111,7 +111,7 @@ using the same independently selected commit and verified caches, then compare
 those measured receipt fields. No real native build, reproducibility, KVM boot
 or strict readiness is claimed by this implementation submission.
 
-## Declared runtime directory: DESIGN / RED checkpoint
+## Declared runtime directory
 
 Pinned Buildroot 2026.05.1 `fs/common.mk` clears all children of `/run` after
 post-build, `mkusers`, `makedevs`, post-fakeroot scripts and pre-generation hooks,
@@ -121,25 +121,27 @@ The unchanged minimal image inspector requires that directory at mode 0700,
 UID/GID 1000. Runtime init later creates it after mounting `/run` as
 tmpfs; that runtime behavior does not satisfy offline image inspection.
 
-The proposed minimal correction is an explicit trusted canonical assembly
-recipe step, after input validation and before canonical ordering and hashing:
-require an existing ordinary root-owned `/run` directory at mode 0755, then
-construct only the declared empty `/run/agent` tar entry at mode 0700, UID/GID
+The canonicalizer includes an explicit trusted assembly recipe step, after
+input validation and before canonical ordering and hashing: require an existing
+ordinary root-owned `/run` directory at mode 0755, then construct only the
+declared empty `/run/agent` tar entry at mode 0700, UID/GID
 1000 and the selected source epoch when it is absent. An already exact empty
 directory remains unchanged. A missing/unsafe parent, malformed existing entry,
 or any descendant of `/run/agent` must fail; do not silently repair candidate
 metadata or discard candidate contents. No host directory/chown, new source pin,
 or inspector relaxation is needed. This constructs a declared recipe input to
 measurement; it does not interpret candidate data as build or readiness proof.
+The constructed entry counts toward the unchanged 65,534-entry output bound.
 
 `TestCanonicalArchiveConstructsDeclaredRuntimeDirectory` passes a Buildroot-shaped
-tar through the actual canonicalizer. RED currently shows the required measured
+tar through the actual canonicalizer. RED showed the required measured
 entry missing, plus accepted malformed metadata that the recipe must reject.
 It also requires identical canonical bytes for constructed versus already-exact
 directories, preserved input/executable bytes, and no canonical output on
 rejection. These deterministic file/tar tests do not execute Buildroot, containers,
-guest programs, external image tools or privileged operations. Production changes
-remain pending review of this DESIGN / RED checkpoint.
+guest programs, external image tools or privileged operations. GREEN constructs
+the declared directory and rejects malformed layouts before creating output;
+the final image still must pass the unchanged complete ext4 inspector.
 
 ## Acquisition evidence and test boundary
 

@@ -38,7 +38,7 @@ func TestCanonicalArchiveMeasuresAndRejectsUnsafeOutput(t *testing.T) {
 				}
 			}
 			write("./", tar.TypeDir, 0755, 0, "", "")
-			for _, name := range []string{"sbin", "usr", "usr/bin", "usr/lib", "usr/lib/pi"} {
+			for _, name := range []string{"sbin", "usr", "usr/bin", "usr/lib", "usr/lib/pi", "run"} {
 				if scenario == "symlink_parent" && name == "usr/lib/pi" {
 					write("./"+name, tar.TypeSymlink, 0777, 0, "", "/tmp")
 				} else {
@@ -111,12 +111,19 @@ func TestCanonicalArchiveMeasuresAndRejectsUnsafeOutput(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if h.Name == "." || h.Name == "./" || h.Uid != 0 || h.Gid != 0 || h.ModTime.Unix() != 1700000000 || len(h.PAXRecords) != 0 {
+				uid := 0
+				if h.Name == "run/agent" {
+					uid = 1000
+					if h.Typeflag != tar.TypeDir || h.Mode != 0700 || h.Size != 0 {
+						t.Fatal("incorrect declared runtime directory")
+					}
+				}
+				if h.Name == "." || h.Name == "./" || h.Uid != uid || h.Gid != uid || h.ModTime.Unix() != 1700000000 || len(h.PAXRecords) != 0 {
 					t.Fatal("noncanonical output")
 				}
 				seen++
 			}
-			want := 11
+			want := 13
 			if scenario == "long_package_name" {
 				want++
 			}

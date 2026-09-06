@@ -193,6 +193,29 @@ func canonicalize(ctx context.Context, input, output string, epoch int64) (strin
 	if content == 0 || parent.current() != nil || destination.current() != nil || ctx.Err() != nil {
 		return "", pins, errInput
 	}
+	// Buildroot clears /run after its ownership tables. Construct this one
+	// declared empty recipe directory before measurement, never repair an
+	// unsafe parent or overwrite malformed candidate metadata/contents.
+	run := entries["run"].header
+	if run.Typeflag != tar.TypeDir || run.Mode != 0755 || run.Uid != 0 || run.Gid != 0 {
+		return "", pins, errInput
+	}
+	for name := range entries {
+		if strings.HasPrefix(name, "run/agent/") {
+			return "", pins, errInput
+		}
+	}
+	if agent, exists := entries["run/agent"]; exists {
+		h := agent.header
+		if h.Typeflag != tar.TypeDir || h.Mode != 0700 || h.Uid != 1000 || h.Gid != 1000 {
+			return "", pins, errInput
+		}
+	} else {
+		if len(entries) >= 65534 {
+			return "", pins, errInput
+		}
+		entries["run/agent"] = archiveEntry{header: tar.Header{Name: "run/agent", Typeflag: tar.TypeDir, Mode: 0700, Uid: 1000, Gid: 1000, ModTime: time.Unix(epoch, 0).UTC(), Format: tar.FormatGNU}}
+	}
 	names := make([]string, 0, len(entries))
 	for name := range entries {
 		names = append(names, name)
