@@ -4,22 +4,25 @@ package firecrackerhost
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"os"
-	"strconv"
 	"sync"
-
-	"golang.org/x/sys/unix"
 )
 
-// A client can reconnect and request cleanup; only the surviving supervisor's
-// retained coordinator can carry it out. This object has no path-delete,
-// identity-release, replacement-owner, or credential-proof operation.
+// Only the surviving supervisor's retained coordinator can perform cleanup.
+// This client holds no launch, identity-release or replacement-owner authority.
 type jailerRecoveryClient struct {
-	mu                sync.Mutex
-	config            jailerRecoverySupervisorConfig
-	directory         *os.File
-	supervisor        l8RuntimeOwnerProcessObservation
-	closed, committed bool
+	mu                      sync.Mutex
+	expected                jailerRecoveryJob
+	correlation, generation string
+	directory, socket       *os.File
+	ops                     jailerRecoveryReconnectOps
+	supervisor              l8RuntimeOwnerProcessObservation
+	session                 string
+	record                  firecrackerRuntimeOwnerRecordV1
+	closed, committed       bool
+	closeErr                error
 }
 
 func (client *jailerRecoveryClient) close() error {
@@ -29,15 +32,19 @@ func (client *jailerRecoveryClient) close() error {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if client.closed {
-		return nil
+		return client.closeErr
 	}
 	client.closed = true
-	err := client.supervisor.Close()
-	if client.directory != nil && client.directory.Close() != nil {
-		err = errL8RuntimeOwnerInvalid
+	client.closeErr = client.supervisor.Close()
+	if client.socket != nil {
+		client.closeErr = errors.Join(client.closeErr, client.socket.Close())
+		client.socket = nil
 	}
-	client.directory = nil
-	return err
+	if client.directory != nil {
+		client.closeErr = errors.Join(client.closeErr, client.directory.Close())
+		client.directory = nil
+	}
+	return client.closeErr
 }
 
 func (client *jailerRecoveryClient) stopAndCommit(ctx context.Context) error {
@@ -52,69 +59,46 @@ func (client *jailerRecoveryClient) stopAndCommit(ctx context.Context) error {
 	if client.committed {
 		return nil
 	}
-	file, err := openJailerRecoveryRecordFile(int(client.directory.Fd()))
+	if client.socket == nil && client.authenticate(ctx) != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	// Any uncertain exchange ends this one-use session. A later caller must
+	// authenticate again from the current record; missing record is not success.
+	defer func() { _ = client.socket.Close(); client.socket = nil; client.session = "" }()
+	fd := int(client.socket.Fd())
+	record, err := client.readRecord()
+	if err != nil || record != client.record {
+		return errL8RuntimeOwnerInvalid
+	}
+	sequence := uint64(1)
+	switch record.State {
+	case "running", "stopping", "uncertain":
+		body, err := encodeL8RuntimeOwnerControllerRequest(l8RuntimeOwnerControllerRequestV1{ControllerSessionGeneration: client.session})
+		if err != nil {
+			return errL8RuntimeOwnerInvalid
+		}
+		response, err := jailerRecoveryClientExchange(ctx, fd, l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeStopReap, Sequence: sequence, Body: body})
+		if err != nil {
+			return errL8RuntimeOwnerInvalid
+		}
+		absence, err := decodeL8RuntimeOwnerResponse(response.Body)
+		if err != nil || absence.State != l8RuntimeOwnerStateAbsent || absence.AbsenceKind != l8RuntimeOwnerAbsenceKindWait {
+			return errL8RuntimeOwnerInvalid
+		}
+		record, err = client.readRecord()
+		if err != nil || record.State != "absent" || record.ControllerState != "controlled" || record.Revision != absence.RecordRevision || record.AbsenceObservedAtUnixNano != absence.ObservedAtUnixNano {
+			return errL8RuntimeOwnerInvalid
+		}
+		sequence++
+	case "absent", "finalizing", "finalized":
+	default:
+		return errL8RuntimeOwnerInvalid
+	}
+	body, err := encodeL8RuntimeOwnerFinalizeRequest(l8RuntimeOwnerFinalizeRequestV1{ControllerSessionGeneration: client.session, AbsenceRevision: record.AbsenceRevision, ObservedAtUnixNano: record.AbsenceObservedAtUnixNano})
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
-	record, _, _, readErr := readJailerRecoveryRecordFile(file, client.config)
-	_ = file.Close()
-	if readErr != nil || record.SupervisorPID != client.supervisor.PID || record.SupervisorStartTime != client.supervisor.StartTime {
-		return errL8RuntimeOwnerInvalid
-	}
-	actual, err := inspectL8RuntimeOwnerProcess(record.SupervisorPID)
-	defer actual.Close()
-	boot, bootErr := readL8RuntimeOwnerHostBootID()
-	if err != nil || bootErr != nil || boot != record.HostBootID || actual.StartTime != record.SupervisorStartTime {
-		return errL8RuntimeOwnerInvalid
-	}
-	name := l8RuntimeOwnerReconnectPrefix + record.ReconnectListenerIdentity + l8RuntimeOwnerReconnectSuffix
-	var before unix.Stat_t
-	if unix.Fstatat(int(client.directory.Fd()), name, &before, unix.AT_SYMLINK_NOFOLLOW) != nil || before.Mode&unix.S_IFMT != unix.S_IFSOCK || before.Mode&0o777 != 0o600 || before.Uid != client.config.DaemonUID {
-		return errL8RuntimeOwnerInvalid
-	}
-	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return errL8RuntimeOwnerInvalid
-	}
-	defer unix.Close(fd)
-	path := "/proc/self/fd/" + strconv.FormatUint(uint64(client.directory.Fd()), 10) + "/" + name
-	if len(path) >= len(unix.RawSockaddrUnix{}.Path) || ctx.Err() != nil || setL8RuntimeOwnerSocketTimeout(fd, l8RuntimeOwnerHandshakeTimeout) != nil || unix.Connect(fd, &unix.SockaddrUnix{Name: path}) != nil {
-		return errL8RuntimeOwnerInvalid
-	}
-	peer, err := unix.GetsockoptUcred(fd, unix.SOL_SOCKET, unix.SO_PEERCRED)
-	var after unix.Stat_t
-	if err != nil || peer.Uid != client.config.DaemonUID || peer.Pid != int32(record.SupervisorPID) || unix.Fstatat(int(client.directory.Fd()), name, &after, unix.AT_SYMLINK_NOFOLLOW) != nil || before.Dev != after.Dev || before.Ino != after.Ino || before.Mode != after.Mode || before.Uid != after.Uid {
-		return errL8RuntimeOwnerInvalid
-	}
-	body, err := encodeL8RuntimeOwnerHandshake(l8RuntimeOwnerHandshakeV1{SupervisorGeneration: record.SupervisorGeneration, RuntimeGeneration: record.RuntimeGeneration, RecordRevision: record.Revision, ReconnectSecret: record.ReconnectSecret})
-	if err != nil {
-		return errL8RuntimeOwnerInvalid
-	}
-	response, err := jailerRecoveryClientExchange(ctx, fd, l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeHandshake, Body: body})
-	if err != nil {
-		return errL8RuntimeOwnerInvalid
-	}
-	ack, err := decodeL8RuntimeOwnerHandshakeAck(response.Body)
-	if err != nil {
-		return errL8RuntimeOwnerInvalid
-	}
-	body, err = encodeL8RuntimeOwnerControllerRequest(l8RuntimeOwnerControllerRequestV1{ControllerSessionGeneration: ack.ControllerSessionGeneration})
-	if err != nil {
-		return errL8RuntimeOwnerInvalid
-	}
-	response, err = jailerRecoveryClientExchange(ctx, fd, l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeStopReap, Sequence: 1, Body: body})
-	if err != nil {
-		return errL8RuntimeOwnerInvalid
-	}
-	absence, err := decodeL8RuntimeOwnerResponse(response.Body)
-	if err != nil || absence.State != l8RuntimeOwnerStateAbsent || absence.AbsenceKind != l8RuntimeOwnerAbsenceKindWait {
-		return errL8RuntimeOwnerInvalid
-	}
-	body, err = encodeL8RuntimeOwnerFinalizeRequest(l8RuntimeOwnerFinalizeRequestV1{ControllerSessionGeneration: ack.ControllerSessionGeneration, AbsenceRevision: absence.RecordRevision, ObservedAtUnixNano: absence.ObservedAtUnixNano})
-	if err != nil {
-		return errL8RuntimeOwnerInvalid
-	}
-	response, err = jailerRecoveryClientExchange(ctx, fd, l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeFinalize, Sequence: 2, Body: body})
+	response, err := jailerRecoveryClientExchange(ctx, fd, l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeFinalize, Sequence: sequence, Body: body})
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
@@ -122,11 +106,16 @@ func (client *jailerRecoveryClient) stopAndCommit(ctx context.Context) error {
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
-	body, err = encodeL8RuntimeOwnerCommitRequest(l8RuntimeOwnerCommitRequestV1{ControllerSessionGeneration: ack.ControllerSessionGeneration, CommitID: finalized.CommitID, FinalizedRevision: finalized.FinalizedRevision})
+	current, err := client.readRecord()
+	if err != nil || current.State != "finalized" || current.FinalizedCommitID != finalized.CommitID || current.FinalizeTargetRevision != finalized.FinalizedRevision || current.AbsenceRevision != record.AbsenceRevision {
+		return errL8RuntimeOwnerInvalid
+	}
+	body, err = encodeL8RuntimeOwnerCommitRequest(l8RuntimeOwnerCommitRequestV1{ControllerSessionGeneration: client.session, CommitID: finalized.CommitID, FinalizedRevision: finalized.FinalizedRevision})
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
-	if _, err = jailerRecoveryClientExchange(ctx, fd, l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeCommit, Sequence: 3, Body: body}); err != nil {
+	response, err = jailerRecoveryClientExchange(ctx, fd, l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeCommit, Sequence: sequence + 1, Body: body})
+	if err != nil || len(response.Body) != 8 || binary.BigEndian.Uint64(response.Body) != finalized.FinalizedRevision {
 		return errL8RuntimeOwnerInvalid
 	}
 	client.committed = true

@@ -83,6 +83,7 @@ func runL8RuntimeOwnerSupervisorLinux(fds [6]int) error {
 		}
 		// A lost bootstrap reply or uncertain cleanup must not discard this
 		// selected owner's continuously retained coordinator/lease graph.
+		_ = owned.quarantineJailerBootstrap()
 	}
 	if err := owned.serveControllers(owner); err != nil {
 		return errL8RuntimeOwnerInvalid
@@ -521,7 +522,11 @@ func (store *l8RuntimeOwnerLinuxRecordStore) CreateGenesis(ctx context.Context, 
 func (store *l8RuntimeOwnerLinuxRecordStore) Transition(ctx context.Context, expected uint64, next firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, error) {
 	record, _, err := store.withLock(ctx, unix.LOCK_EX, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
 		current, present, readErr := store.readRecord()
-		if readErr != nil || !present || current.Revision != expected || !validL8RuntimeOwnerTransition(current, next) {
+		validTransition := validL8RuntimeOwnerTransition(current, next)
+		if store.selected != nil {
+			validTransition = validJailerRecoveryTransition(current, next)
+		}
+		if readErr != nil || !present || current.Revision != expected || !validTransition {
 			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 		}
 		if store.writeRecord(next) != nil {

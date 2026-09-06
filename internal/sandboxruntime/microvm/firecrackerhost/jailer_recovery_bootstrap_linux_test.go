@@ -8,6 +8,8 @@ import (
 	"os"
 	"slices"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestJailerRecoveryBootstrapFailureRetainsAuthenticatedRetry(t *testing.T) {
@@ -17,7 +19,9 @@ func TestJailerRecoveryBootstrapFailureRetainsAuthenticatedRetry(t *testing.T) {
 			owned, root, identityStore, events := jailerRecoveryRuntimeFixture(t)
 			root.removeErrors = []error{errors.New("owned cleanup incomplete"), nil}
 			if postPID {
-				_ = owned.selected.starter.gate.Close()
+				if err := unix.Shutdown(int(owned.selected.starter.gate.Fd()), unix.SHUT_WR); err != nil {
+					t.Fatal(err)
+				}
 			} else {
 				owned.selected.coordinator.deps.lifecycle.(*coordinatorFakeLifecycle).startErr = errors.New("fake start refused")
 			}

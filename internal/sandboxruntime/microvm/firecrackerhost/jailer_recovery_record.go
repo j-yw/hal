@@ -74,18 +74,57 @@ func jailerRecoveryConfigDigest(config jailerRecoverySupervisorConfig) string {
 }
 
 func jailerRecoveryRecordFromDisk(disk jailerRecoveryDiskRecord, config jailerRecoverySupervisorConfig) (firecrackerRuntimeOwnerRecordV1, error) {
+	if disk.ConfigCorrelation != jailerRecoveryConfigDigest(config) || disk.Reservation != nil && (disk.Reservation.UID != config.Policy.UID || disk.Reservation.GID != config.Policy.GID || disk.Reservation.Config != config.Config.SHA256) {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	return jailerRecoveryCleanupRecordFromDisk(disk, config.Job)
+}
+
+// This decoder grants no resource authority. A fresh daemon uses only the
+// common record to authenticate the same surviving owner, which still holds
+// the complete config and exact leases and validates them before cleanup.
+func decodeJailerRecoveryCleanupRecord(payload []byte, expected jailerRecoveryJob) (firecrackerRuntimeOwnerRecordV1, error) {
+	var disk jailerRecoveryDiskRecord
+	if len(payload) == 0 || len(payload) > l8RuntimeOwnerRecordLimit || json.Unmarshal(payload, &disk) != nil {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	record, err := jailerRecoveryCleanupRecordFromDisk(disk, expected)
+	if err != nil {
+		return record, err
+	}
+	encoded, _ := json.Marshal(record)
+	var all map[string]json.RawMessage
+	_ = json.Unmarshal(encoded, &all)
+	common := make(map[string]json.RawMessage, len(jailerRecoveryOwnerFields))
+	for _, name := range jailerRecoveryOwnerFields {
+		common[name] = all[name]
+	}
+	disk.Owner, _ = json.Marshal(common)
+	canonical, err := json.Marshal(disk)
+	if err != nil || !bytes.Equal(payload, canonical) {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	return record, nil
+}
+
+func jailerRecoveryCleanupRecordFromDisk(disk jailerRecoveryDiskRecord, expected jailerRecoveryJob) (firecrackerRuntimeOwnerRecordV1, error) {
 	var record firecrackerRuntimeOwnerRecordV1
-	if disk.Version != jailerRecoveryRecordVersion || disk.Job != config.Job || disk.ConfigCorrelation != jailerRecoveryConfigDigest(config) || json.Unmarshal(disk.Owner, &record) != nil {
+	for _, id := range []string{expected.SandboxID, expected.ExecutionID, expected.WorkerID, expected.HostID, expected.RuntimeID, expected.RuntimeGeneration} {
+		if !validL8RuntimeOwnerSafeID(id) {
+			return record, errL8RuntimeOwnerInvalid
+		}
+	}
+	if !validStrictJailerRuntimeID(expected.RuntimeID) || disk.Version != jailerRecoveryRecordVersion || disk.Job != expected || !validJailerStagingDigest(disk.ConfigCorrelation) || json.Unmarshal(disk.Owner, &record) != nil {
 		return record, errL8RuntimeOwnerInvalid
 	}
 	record.ContractVersion = jailerRecoveryRecordVersion
 	record.SeedCorrelationDigest = disk.ConfigCorrelation
-	record.SandboxID = config.Job.SandboxID
-	record.ExecutionID = config.Job.ExecutionID
-	record.WorkerID = config.Job.WorkerID
-	record.HostID = config.Job.HostID
-	record.RuntimeID = config.Job.RuntimeID
-	record.RuntimeGeneration = config.Job.RuntimeGeneration
+	record.SandboxID = expected.SandboxID
+	record.ExecutionID = expected.ExecutionID
+	record.WorkerID = expected.WorkerID
+	record.HostID = expected.HostID
+	record.RuntimeID = expected.RuntimeID
+	record.RuntimeGeneration = expected.RuntimeGeneration
 	if record.RuntimeDriver != "" || record.FirecrackerProcessGeneration != "" || record.VsockGeneration != "" || record.NetworkPlanID != "" || record.PolicySnapshotID != "" || record.ProxySessionID != "" || record.ProxyGenerationID != "" || record.TopologyGenerationID != "" || record.RuleGenerationID != "" {
 		return record, errL8RuntimeOwnerInvalid
 	}
@@ -93,8 +132,8 @@ func jailerRecoveryRecordFromDisk(disk jailerRecoveryDiskRecord, config jailerRe
 		return record, errL8RuntimeOwnerInvalid
 	}
 	if disk.Reservation != nil {
-		busy, err := readJailerIdentityRecord(disk.Reservation.payload(), strictJailerIdentitySlot{uid: config.Policy.UID, gid: config.Policy.GID})
-		if err != nil || busy.State != "busy" || busy.RuntimeID != config.Job.RuntimeID || busy.Config != config.Config.SHA256 {
+		busy, err := readJailerIdentityRecord(disk.Reservation.payload(), strictJailerIdentitySlot{uid: disk.Reservation.UID, gid: disk.Reservation.GID})
+		if err != nil || busy.UID == 0 || busy.GID == 0 || busy.State != "busy" || busy.RuntimeID != expected.RuntimeID {
 			return record, errL8RuntimeOwnerInvalid
 		}
 	} else if disk.CleanupCheckpoint || record.FirecrackerPID != 0 {
@@ -104,7 +143,7 @@ func jailerRecoveryRecordFromDisk(disk jailerRecoveryDiskRecord, config jailerRe
 		if record.ControllerState != "none" || record.Revision > 1 {
 			return record, errL8RuntimeOwnerInvalid
 		}
-	} else if record.Revision < 2 {
+	} else if record.Revision < 2 && !(record.Revision == 1 && record.State == "uncertain" && record.ControllerState == "unclaimed" && disk.Reservation != nil) {
 		return record, errL8RuntimeOwnerInvalid
 	}
 	if record.State == "starting" && record.Revision == 0 {
@@ -112,7 +151,12 @@ func jailerRecoveryRecordFromDisk(disk jailerRecoveryDiskRecord, config jailerRe
 			return record, errL8RuntimeOwnerInvalid
 		}
 	} else if record.FirecrackerPID <= 1 || record.FirecrackerStartTime == 0 {
-		return record, errL8RuntimeOwnerInvalid
+		// Zero is only unresolved selected ownership metadata. It is never a
+		// process-absence test: terminal states additionally require the exact
+		// reservation's durable owned-cleanup checkpoint below.
+		if record.FirecrackerPID != 0 || record.FirecrackerStartTime != 0 || disk.Reservation == nil || record.ControllerState == "none" || (record.State != "uncertain" && record.State != "absent" && record.State != "finalizing" && record.State != "finalized") {
+			return record, errL8RuntimeOwnerInvalid
+		}
 	}
 	if record.State == "finalizing" || record.State == "finalized" {
 		if !disk.CleanupCheckpoint || !validL8RuntimeOwnerToken(record.FinalizedCommitID) || record.FinalizeTargetRevision == 0 || record.ControllerState == "none" {

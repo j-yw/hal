@@ -4,7 +4,11 @@ package firecrackerhost
 
 import (
 	"context"
+	"io"
 	"os"
+	"strconv"
+
+	"golang.org/x/sys/unix"
 )
 
 // Observations are private and per-client. Production uses authoritative Linux
@@ -16,6 +20,143 @@ type jailerRecoveryReconnectOps struct {
 	connect   func(*os.File, firecrackerRuntimeOwnerRecordV1) (*os.File, error)
 }
 
-func reconnectJailerRecoverySupervisorWithOps(context.Context, *os.File, jailerRecoveryJob, jailerRecoveryReconnectOps) (*jailerRecoveryClient, error) {
-	return nil, errL8RuntimeOwnerInvalid
+func reconnectJailerRecoverySupervisor(ctx context.Context, directory *os.File, expected jailerRecoveryJob) (*jailerRecoveryClient, error) {
+	return reconnectJailerRecoverySupervisorWithOps(ctx, directory, expected, jailerRecoveryLinuxReconnectOps())
+}
+
+func reconnectJailerRecoverySupervisorWithOps(ctx context.Context, directory *os.File, expected jailerRecoveryJob, ops jailerRecoveryReconnectOps) (*jailerRecoveryClient, error) {
+	if ctx == nil || ctx.Err() != nil || directory == nil || ops.directory == nil || ops.bootID == nil || ops.inspect == nil || ops.connect == nil || ops.directory(directory) != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	retained, err := duplicateJailerRecoveryFile(directory)
+	if err != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	client := &jailerRecoveryClient{expected: expected, directory: retained, ops: ops}
+	if client.authenticate(ctx) != nil {
+		_ = client.close()
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	return client, nil
+}
+
+func jailerRecoveryLinuxReconnectOps() jailerRecoveryReconnectOps {
+	return jailerRecoveryReconnectOps{
+		directory: func(file *os.File) error {
+			if os.Geteuid() != 0 || file == nil || validateL8RuntimeOwnerDirectoryFD(int(file.Fd())) != nil {
+				return errL8RuntimeOwnerInvalid
+			}
+			return nil
+		},
+		bootID:  readL8RuntimeOwnerHostBootID,
+		inspect: inspectL8RuntimeOwnerProcess,
+		connect: connectJailerRecoveryOwner,
+	}
+}
+
+func (client *jailerRecoveryClient) readRecord() (firecrackerRuntimeOwnerRecordV1, error) {
+	if client.ops.directory(client.directory) != nil {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	file, err := openJailerRecoveryRecordFile(int(client.directory.Fd()))
+	if err != nil {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	defer file.Close()
+	payload, err := io.ReadAll(io.NewSectionReader(file, 0, l8RuntimeOwnerRecordLimit+1))
+	if err != nil {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	record, err := decodeJailerRecoveryCleanupRecord(payload, client.expected)
+	if err != nil || client.correlation != "" && record.SeedCorrelationDigest != client.correlation || client.generation != "" && record.SupervisorGeneration != client.generation || client.supervisor.PID != 0 && (record.SupervisorPID != client.supervisor.PID || record.SupervisorStartTime != client.supervisor.StartTime) {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	return record, nil
+}
+
+func (client *jailerRecoveryClient) authenticate(ctx context.Context) error {
+	record, err := client.readRecord()
+	if err != nil || ctx.Err() != nil || record.ControllerState != "unclaimed" {
+		return errL8RuntimeOwnerInvalid
+	}
+	boot, bootErr := client.ops.bootID()
+	actual, inspectErr := client.ops.inspect(record.SupervisorPID)
+	defer actual.Close()
+	if bootErr != nil || inspectErr != nil || boot != record.HostBootID || actual.PID != record.SupervisorPID || actual.StartTime != record.SupervisorStartTime || actual.state == 'Z' {
+		return errL8RuntimeOwnerInvalid
+	}
+	socket, err := client.ops.connect(client.directory, record)
+	if err != nil || socket == nil {
+		if socket != nil {
+			_ = socket.Close()
+		}
+		return errL8RuntimeOwnerInvalid
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = socket.Close()
+		}
+	}()
+	if validateL8RuntimeOwnerSeqpacketFD(int(socket.Fd())) != nil || setL8RuntimeOwnerSocketTimeout(int(socket.Fd()), l8RuntimeOwnerHandshakeTimeout) != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	body, err := encodeL8RuntimeOwnerHandshake(l8RuntimeOwnerHandshakeV1{SupervisorGeneration: record.SupervisorGeneration, RuntimeGeneration: record.RuntimeGeneration, RecordRevision: record.Revision, ReconnectSecret: record.ReconnectSecret})
+	if err != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	response, err := jailerRecoveryClientExchange(ctx, int(socket.Fd()), l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeHandshake, Body: body})
+	if err != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	ack, err := decodeL8RuntimeOwnerHandshakeAck(response.Body)
+	if err != nil || record.Revision == ^uint64(0) || ack.RecordRevision != record.Revision+1 {
+		return errL8RuntimeOwnerInvalid
+	}
+	current, err := client.readRecord()
+	if err != nil || current.Revision != ack.RecordRevision || current.ControllerState != "controlled" || current.HostBootID != record.HostBootID || current.SupervisorGeneration != record.SupervisorGeneration || current.SupervisorPID != record.SupervisorPID || current.SupervisorStartTime != record.SupervisorStartTime || current.SeedCorrelationDigest != record.SeedCorrelationDigest || current.ReconnectListenerIdentity != record.ReconnectListenerIdentity || current.ReconnectSecret == record.ReconnectSecret {
+		return errL8RuntimeOwnerInvalid
+	}
+	if ctx.Err() != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	if client.supervisor.Close() != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	client.supervisor = actual
+	actual.pidfdOwned = false
+	client.correlation, client.generation = current.SeedCorrelationDigest, current.SupervisorGeneration
+	client.socket, client.session, client.record = socket, ack.ControllerSessionGeneration, current
+	keep = true
+	return nil
+}
+
+func connectJailerRecoveryOwner(directory *os.File, record firecrackerRuntimeOwnerRecordV1) (*os.File, error) {
+	name := l8RuntimeOwnerReconnectPrefix + record.ReconnectListenerIdentity + l8RuntimeOwnerReconnectSuffix
+	var before unix.Stat_t
+	if unix.Fstatat(int(directory.Fd()), name, &before, unix.AT_SYMLINK_NOFOLLOW) != nil || before.Mode&unix.S_IFMT != unix.S_IFSOCK || before.Mode&0o777 != 0o600 || before.Uid != 0 {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	file := os.NewFile(uintptr(fd), "jailer-owner-reconnect")
+	keep := false
+	defer func() {
+		if !keep {
+			_ = file.Close()
+		}
+	}()
+	path := "/proc/self/fd/" + strconv.FormatUint(uint64(directory.Fd()), 10) + "/" + name
+	if len(path) >= len(unix.RawSockaddrUnix{}.Path) || setL8RuntimeOwnerSocketTimeout(fd, l8RuntimeOwnerHandshakeTimeout) != nil || unix.Connect(fd, &unix.SockaddrUnix{Name: path}) != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	peer, err := unix.GetsockoptUcred(fd, unix.SOL_SOCKET, unix.SO_PEERCRED)
+	var after unix.Stat_t
+	if err != nil || peer.Uid != 0 || peer.Pid != int32(record.SupervisorPID) || unix.Fstatat(int(directory.Fd()), name, &after, unix.AT_SYMLINK_NOFOLLOW) != nil || before.Dev != after.Dev || before.Ino != after.Ino || before.Mode != after.Mode || before.Uid != after.Uid {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	keep = true
+	return file, nil
 }

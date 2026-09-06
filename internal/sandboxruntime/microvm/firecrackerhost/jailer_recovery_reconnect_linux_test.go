@@ -3,10 +3,14 @@
 package firecrackerhost
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -22,6 +26,7 @@ type jailerRecoveryWireFixture struct {
 	ops        jailerRecoveryReconnectOps
 	operations []uint16
 	dropCommit bool
+	lastDone   <-chan struct{}
 }
 
 func newJailerRecoveryWireFixture(t *testing.T) *jailerRecoveryWireFixture {
@@ -51,12 +56,24 @@ func newJailerRecoveryWireFixture(t *testing.T) *jailerRecoveryWireFixture {
 			}
 			file := os.NewFile(uintptr(sockets[0]), "fresh-client-wire")
 			done := make(chan struct{})
+			f.mu.Lock()
+			f.lastDone = done
+			f.mu.Unlock()
 			go func() { defer close(done); defer unix.Close(sockets[1]); f.serve(sockets[1]) }()
 			t.Cleanup(func() { _ = file.Close(); <-done })
 			return file, nil
 		},
 	}
 	return f
+}
+
+func (f *jailerRecoveryWireFixture) waitConnection() {
+	f.mu.Lock()
+	done := f.lastDone
+	f.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 func (f *jailerRecoveryWireFixture) serve(fd int) {
@@ -132,7 +149,6 @@ func TestJailerRecoveryFreshClientResumesFinalizingAndFinalized(t *testing.T) {
 			if state == "finalizing" {
 				f.owner.opts.CloseNamespaces = func() error { return errors.New("fixture finalization interrupted") }
 			}
-			first := f.fresh(t)
 			if state == "finalized" {
 				f.mu.Lock()
 				f.dropCommit = true
@@ -143,10 +159,12 @@ func TestJailerRecoveryFreshClientResumesFinalizingAndFinalized(t *testing.T) {
 			if state == "finalized" {
 				f.owner.opts.Store = &jailerRecoveryRejectCommitStore{l8RuntimeOwnerRecordStore: f.owned.store}
 			}
+			first := f.fresh(t)
 			if err := first.stopAndCommit(context.Background()); err == nil {
 				t.Fatal("interruption fixture reported success")
 			}
 			_ = first.close()
+			f.waitConnection()
 			f.owner.opts.CloseNamespaces = f.owned.closeNamespaces
 			f.owner.opts.Store = f.owned.store
 			f.mu.Lock()
@@ -183,6 +201,7 @@ func TestJailerRecoveryMissingRecordAndLostCommitAckStayUnresolved(t *testing.T)
 		t.Fatal("lost commit reply inferred success")
 	}
 	_ = client.close()
+	f.waitConnection()
 	fd, err := unix.FcntlInt(uintptr(f.owned.store.directoryFD), unix.F_DUPFD_CLOEXEC, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -191,5 +210,123 @@ func TestJailerRecoveryMissingRecordAndLostCommitAckStayUnresolved(t *testing.T)
 	defer directory.Close()
 	if next, err := reconnectJailerRecoverySupervisorWithOps(context.Background(), directory, f.owned.selected.config.Job, f.ops); err == nil || next != nil {
 		t.Fatal("missing record became completed recovery")
+	}
+}
+
+func TestJailerRecoveryFreshClientRejectsUntrustedOrStaleInputs(t *testing.T) {
+	for _, name := range []string{"job", "runtime_generation", "directory", "closed_directory", "boot", "pid", "start_time", "zombie", "missing_process", "socket_peer", "nil_socket", "canceled"} {
+		t.Run(name, func(t *testing.T) {
+			f := newJailerRecoveryWireFixture(t)
+			fd, err := unix.FcntlInt(uintptr(f.owned.store.directoryFD), unix.F_DUPFD_CLOEXEC, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			directory := os.NewFile(uintptr(fd), "fresh-fixture-directory")
+			defer directory.Close()
+			expected := f.owned.selected.config.Job
+			ops := f.ops
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch name {
+			case "job":
+				expected.ExecutionID = "wrong-job"
+			case "runtime_generation":
+				expected.RuntimeGeneration = "wrong-generation"
+			case "directory":
+				ops.directory = func(*os.File) error { return errors.New("untrusted directory") }
+			case "closed_directory":
+				_ = directory.Close()
+			case "boot":
+				ops.bootID = func() (string, error) { return "00000000-0000-0000-0000-000000000099", nil }
+			case "pid", "start_time", "zombie", "missing_process":
+				ops.inspect = func(pid uint32) (l8RuntimeOwnerProcessObservation, error) {
+					actual, _ := f.ops.inspect(pid)
+					switch name {
+					case "pid":
+						actual.PID++
+					case "start_time":
+						actual.StartTime++
+					case "zombie":
+						actual.state = 'Z'
+					case "missing_process":
+						return actual, errors.New("gone")
+					}
+					return actual, nil
+				}
+			case "socket_peer":
+				ops.connect = func(*os.File, firecrackerRuntimeOwnerRecordV1) (*os.File, error) {
+					return nil, errors.New("wrong peer/socket identity")
+				}
+			case "nil_socket":
+				ops.connect = func(*os.File, firecrackerRuntimeOwnerRecordV1) (*os.File, error) { return nil, nil }
+			case "canceled":
+				cancel()
+			}
+			client, err := reconnectJailerRecoverySupervisorWithOps(ctx, directory, expected, ops)
+			if client != nil {
+				_ = client.close()
+			}
+			if err == nil || client != nil {
+				t.Fatal("untrusted fresh reconnect accepted")
+			}
+			if f.owned.store.selected.terminal || f.owned.selected.coordinator.generation == nil {
+				t.Fatal("rejected reconnect changed resource ownership")
+			}
+		})
+	}
+}
+
+func TestJailerRecoveryCleanupRecordRejectsMalformedAuthority(t *testing.T) {
+	f := newJailerRecoveryWireFixture(t)
+	file, err := openJailerRecoveryRecordFile(f.owned.store.directoryFD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := io.ReadAll(file)
+	_ = file.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := f.owned.selected.config.Job
+	if _, err := decodeJailerRecoveryCleanupRecord(payload, expected); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"version", "unknown", "alias", "duplicate", "null", "digest", "reservation", "uid", "config", "checkpoint", "legacy_owner", "oversize"} {
+		t.Run(name, func(t *testing.T) {
+			var disk jailerRecoveryDiskRecord
+			_ = json.Unmarshal(payload, &disk)
+			switch name {
+			case "version":
+				disk.Version = "firecracker-runtime-owner-v1"
+			case "digest":
+				disk.ConfigCorrelation = "untrusted"
+			case "reservation":
+				disk.Reservation = nil
+			case "uid":
+				disk.Reservation.UID = 0
+			case "config":
+				disk.Reservation.Config = "bad"
+			case "checkpoint":
+				disk.Owner = []byte(strings.Replace(string(disk.Owner), `"state":"running"`, `"state":"absent"`, 1))
+			case "legacy_owner":
+				disk.Owner = []byte(strings.Replace(string(disk.Owner), `{`, `{"vsockGeneration":"invented",`, 1))
+			}
+			bad, _ := json.Marshal(disk)
+			switch name {
+			case "unknown":
+				bad = append([]byte(`{"unexpected":0,`), bad[1:]...)
+			case "alias":
+				bad = []byte(strings.Replace(string(bad), `"version"`, `"Version"`, 1))
+			case "duplicate":
+				bad = append([]byte(`{"version":"duplicate",`), bad[1:]...)
+			case "null":
+				bad = []byte(strings.Replace(string(bad), `"cleanupCheckpoint":false`, `"cleanupCheckpoint":null`, 1))
+			case "oversize":
+				bad = bytes.Repeat([]byte(" "), l8RuntimeOwnerRecordLimit+1)
+			}
+			if _, err := decodeJailerRecoveryCleanupRecord(bad, expected); err == nil {
+				t.Fatal("malformed selected record accepted")
+			}
+		})
 	}
 }
