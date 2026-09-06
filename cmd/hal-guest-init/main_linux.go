@@ -29,10 +29,6 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
-func loadL7NetworkBootConfig() (l7NetworkBootConfig, bool, error) {
-	return guestnetwork.LoadLinuxBootConfig(context.Background())
-}
-
 func parseL7NetworkBootConfig(commandLine string) (l7NetworkBootConfig, bool, error) {
 	return guestnetwork.ParseBootCommandLine(commandLine)
 }

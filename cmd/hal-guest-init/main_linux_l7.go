@@ -42,6 +42,9 @@ func runGuestInitEntry(arguments []string, requireNetwork bool, deps guestInitEn
 	if err != nil {
 		return 127
 	}
+	if _, _, err := minimalcontrol.ParseBootCommandLine(commandLine); err != nil {
+		return 127
+	}
 	network, present, err := parseL7NetworkBootConfig(commandLine)
 	if err != nil || (requireNetwork && !present) {
 		return 127
