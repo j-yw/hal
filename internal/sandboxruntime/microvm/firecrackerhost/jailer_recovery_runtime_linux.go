@@ -108,7 +108,7 @@ func newJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorCo
 	owned.genesis = firecrackerRuntimeOwnerRecordV1{ContractVersion: jailerRecoveryRecordVersion, State: "starting", ControllerState: "none", HostBootID: bootID, SeedCorrelationDigest: jailerRecoveryConfigDigest(config), SupervisorGeneration: generation, SupervisorPID: supervisor.PID, SupervisorStartTime: supervisor.StartTime, ReconnectListenerIdentity: listenerIdentity, ReconnectSecret: secret, SandboxID: j.SandboxID, ExecutionID: j.ExecutionID, WorkerID: j.WorkerID, HostID: j.HostID, RuntimeID: j.RuntimeID, RuntimeGeneration: j.RuntimeGeneration}
 	runner, err := newStrictJailerNamespaceRunner(strictJailerNamespaceRunnerOptions{namespace: owned, starter: selected.starter})
 	if err == nil {
-		selected.lifecycle, err = newStrictJailerLifecycle(runner)
+		selected.lifecycle, err = newJailerRecoveryLifecycle(runner)
 	}
 	if err != nil {
 		_ = unix.Close(listenerFD)
@@ -119,6 +119,10 @@ func newJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorCo
 	selected.coordinator = newStrictJailerCoordinator(selected.lifecycle, newStrictJailerIdentityAuthority(strictJailerIdentitySlot{directory: policy.IdentityDirectory, uid: policy.UID, gid: policy.GID}), owned.store.recoveryAuthority())
 	keep = true
 	return owned, nil
+}
+
+func newJailerRecoveryLifecycle(runner *strictJailerNamespaceRunner) (*strictJailerLifecycle, error) {
+	return newStrictJailerLifecycle(runner)
 }
 
 func (selected *jailerRecoveryRuntime) request() (strictJailerCoordinatorRequest, error) {
