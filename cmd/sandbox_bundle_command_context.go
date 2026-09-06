@@ -84,7 +84,10 @@ func prepareSandboxCommandContextRuntime(ctx context.Context, prep sandboxexec.P
 	if err != nil {
 		return sandboxworkspace.MaterializationOperation{}, fmt.Errorf("initialize sandbox bundle command context: %w", err)
 	}
-	if result != nil && result.ExitCode != 0 {
+	if result == nil {
+		return sandboxworkspace.MaterializationOperation{}, fmt.Errorf("initialize sandbox bundle command context: execution result is missing")
+	}
+	if result.ExitCode != 0 {
 		return sandboxworkspace.MaterializationOperation{}, fmt.Errorf("initialize sandbox bundle command context: hal init exited with status %d", result.ExitCode)
 	}
 
@@ -123,8 +126,12 @@ func removeSandboxCommandContextFile(ctx context.Context, prep sandboxexec.Prepa
 		Stdout: io.Discard,
 		Stderr: io.Discard,
 	})
-	if err == nil && result != nil && result.ExitCode != 0 {
-		err = fmt.Errorf("reset exited with status %d", result.ExitCode)
+	if err == nil {
+		if result == nil {
+			err = fmt.Errorf("reset execution result is missing")
+		} else if result.ExitCode != 0 {
+			err = fmt.Errorf("reset exited with status %d", result.ExitCode)
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("reset sandbox command context %q: %w", name, err)
@@ -164,8 +171,12 @@ func copySandboxBundleCommandContextFile(ctx context.Context, prep sandboxexec.P
 		Stdout: io.Discard,
 		Stderr: io.Discard,
 	})
-	if err == nil && result != nil && result.ExitCode != 0 {
-		err = fmt.Errorf("install exited with status %d", result.ExitCode)
+	if err == nil {
+		if result == nil {
+			err = fmt.Errorf("install execution result is missing")
+		} else if result.ExitCode != 0 {
+			err = fmt.Errorf("install exited with status %d", result.ExitCode)
+		}
 	}
 	if err != nil {
 		_, _ = prep.Driver.Exec(context.WithoutCancel(ctx), sandboxruntime.ExecRequest{
