@@ -39,6 +39,7 @@ type strictJailerCoordinatorRequest struct {
 	config     jailerStagingResourceInput
 	support    []jailerStagingResourceInput
 	enablePCI  bool
+	minimalL7  *minimalL7ConfigExpectation
 }
 
 type strictJailerCoordinatorError struct {
