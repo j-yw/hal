@@ -116,6 +116,12 @@ rm)
 esac
 `)
 				}
+				mustRunnerWrite(filepath.Join(bin, "timeout"), `#!/bin/sh
+if [ "${6-}" = run ]; then
+ printf '%s\n' "$1" "$2" "$3" > "$RUNNER_TEST_RUN_LOG.outer"
+fi
+exec /usr/bin/timeout "$@"
+`)
 				const digest = "registry.gitlab.com/buildroot.org/buildroot/base@sha256:f1e7f009dad6b6f44bf5fcb4b0b89c9228e42f9fe689142774b1db802d4c93c6"
 				rootless, image, jobs := "true", digest, "3"
 				runtime := "podman"
@@ -275,6 +281,10 @@ esac
 					t.Fatal(err)
 				}
 				if scenario == "podman" || scenario == "already_removed" {
+					outer, err := os.ReadFile(runLog + ".outer")
+					if err != nil || string(outer) != "--signal=TERM\n--kill-after=10s\n181m\n" {
+						t.Fatalf("legacy outer budget changed: %q err=%v", outer, err)
+					}
 					if strings.Contains(text, "--rm\n") {
 						t.Fatal("Podman auto-remove would erase CID before ownership cleanup")
 					}

@@ -35,10 +35,16 @@ type assemblyReceipt struct {
 	GuestCredentialControlVerified               bool
 }
 
+const (
+	nativeAssemblyTimeout   = 190 * time.Minute
+	nativeAssemblyWaitDelay = 90 * time.Second
+	nativeAssemblyLogBytes  = 32 << 20
+)
+
 func main() {
 	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(signalCtx, 190*time.Minute)
+	ctx, cancel := context.WithTimeout(signalCtx, nativeAssemblyTimeout)
 	defer cancel()
 	if err := assemble(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -187,8 +193,8 @@ func assemble(ctx context.Context, args []string, out, logs io.Writer) (retErr e
 	command.Cancel = func() error { return command.Process.Signal(syscall.SIGTERM) }
 	// Allow the existing owned runner's bounded TERM/kill and exact-CID probes
 	// to finish before an unresponsive shell is forcibly stopped.
-	command.WaitDelay = 90 * time.Second
-	boundedLog := &logWriter{dest: logs, remaining: 32 << 20}
+	command.WaitDelay = nativeAssemblyWaitDelay
+	boundedLog := &logWriter{dest: logs, remaining: nativeAssemblyLogBytes}
 	command.Stdout = boundedLog
 	command.Stderr = boundedLog
 	if command.Run() != nil {

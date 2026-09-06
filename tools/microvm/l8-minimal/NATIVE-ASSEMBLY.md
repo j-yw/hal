@@ -119,6 +119,76 @@ using the same independently selected commit and verified caches, then compare
 those measured receipt fields. No real native build, reproducibility, KVM boot
 or strict readiness is claimed by this implementation submission.
 
+## Native build budget correction: DESIGN/RED
+
+The second actual build selected source `04d6bb11` and failed without a receipt.
+Its task-scoped runtime events recorded start at Unix 1788706175 and death at
+1788716976: 10,801 seconds against the current 10,800-second container limit.
+The retained log reached target Node/V8 task 3021/3555 immediately before death;
+the required source-built host Node had not begun. No fatal compiler or OOM
+diagnostic was found. The timing strongly identifies the configured runtime
+timeout; event exit -1 alone is not a definitive termination-reason code.
+Task-count completion is not a weighted estimate of complete build time.
+
+The proposed correction is finite and selected only for `l8-minimal`:
+
+| Boundary | Minimal native | Existing L5/L7 |
+| --- | --- | --- |
+| Podman runtime limit | 28,800 seconds | 10,800 seconds, unchanged |
+| Outer runner | 481 minutes; TERM then existing 10-second kill grace | 181 minutes; unchanged grace |
+| Go assembler context | 490 minutes | Not applicable |
+| Go child cleanup wait | 90 seconds, unchanged | Not applicable |
+| Retained runtime diagnostics | 64 MiB, then drain/discard | Not applicable |
+
+The assembler deadline covers source/cache preparation, runtime, inspection and
+publication, not only compilation. The runner's one-minute margin and the
+assembler's further margin retain bounded cleanup opportunity; user cancellation
+may still terminate any stage earlier. The entrypoint's separate existing
+five-minute offline host-helper compilation bound remains unchanged. Eight
+hours is a conservative ceiling for both Node source builds, not a measured
+completion guarantee or authority to accept incomplete output.
+
+Keep three compiler jobs/CPUs, 12GiB memory, 512 PIDs, exact-CID/label cleanup,
+no-pull/no-network behavior, source hashes, builder digest and cache inventory
+unchanged. Do not add environment or CLI timeout overrides, increase parallelism,
+resume a failed stage, or switch to downloaded Node binaries. Current diagnostics
+are capped at 32 MiB and silently drained beyond the cap; this did not terminate
+build 2. Its 23,841,923-byte log motivates 64 MiB visibility for the remaining
+target and host builds without making logging unbounded.
+
+This checkpoint changes no budget. It extracts the existing Go literals into
+named constants used by the actual assembler and commits behavioral RED tests:
+
+- Tagged `TestMinimalNativeAssemblerRequiresCommittedOfflineInputs` executes
+  the real assembler and runner with local Git and fake runtime CLIs. It requires
+  the actual 28,800-second/481-minute arguments and unchanged resource limits.
+  `simulated_timeout` substitutes outer status 124 only after the fake runtime
+  writes its owned CID; no image compilation or multi-hour wait occurs. It must
+  preserve scoped cleanup and private staging, reject runtime-printed candidate
+  JSON, and leave stdout empty and the publication path absent.
+- The existing L5/L7 runner suite additionally captures its actual outer 181m
+  argument; all previous CID, ownership, cancellation and default-route
+  assertions remain intact.
+- `TestNativeAssemblyFiniteBudgets` checks the assembler deadline, unchanged
+  cleanup wait and nested finite budget ordering. The log tests exercise the
+  actual writer through the configured limit plus excess using a reused 16KiB
+  buffer/counting destination, requiring exactly 64MiB retained and continued
+  draining after the cap, without allocating a giant log.
+
+Focused RED selectors are `TestNativeAssembly(FiniteBudgets|Log)` in the
+assembler package and `TestMinimalNativeAssemblerRequiresCommittedOfflineInputs`
+with subcases `valid_runner_failure`, `fake_success_no_output`, `signal_entrypoint`
+and `simulated_timeout` under `microvm_assets_integration`. The L5/L7 `podman`
+and `already_removed` subcases are unchanged-behavior controls. GREEN requires
+review of this frozen checkpoint before the smallest budget-only correction,
+followed by whole default/tagged tool tests, race and vet.
+
+Neither this regression nor the later budget fix constitutes an image build.
+Final acceptance still requires two independently clean builds of the same
+reviewed final source, including the accepted guest changes, with identical
+measured output pins. Retain the failed original stage as evidence; it cannot
+count as a clean reproducibility run or supply a synthesized receipt.
+
 ## Declared runtime directory
 
 Pinned Buildroot 2026.05.1 `fs/common.mk` clears all children of `/run` after

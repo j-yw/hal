@@ -43,7 +43,7 @@ func TestMinimalNativeAssemblerRequiresCommittedOfflineInputs(t *testing.T) {
 	if _, err := os.Stat(entry); err != nil {
 		t.Fatalf("actual native assembler entrypoint is absent: %v", err)
 	}
-	for _, scenario := range []string{"valid_runner_failure", "missing_native", "altered_native", "extra_native", "native_symlink", "missing_lock", "duplicate_native_record", "unknown_native_field", "native_traversal", "modified_lock", "replaced_tree", "wrong_revision", "caller_tree", "caller_receipt", "fake_success_no_output", "signal_entrypoint"} {
+	for _, scenario := range []string{"valid_runner_failure", "missing_native", "altered_native", "extra_native", "native_symlink", "missing_lock", "duplicate_native_record", "unknown_native_field", "native_traversal", "modified_lock", "replaced_tree", "wrong_revision", "caller_tree", "caller_receipt", "fake_success_no_output", "signal_entrypoint", "simulated_timeout"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.Chmod(root, 0700); err != nil {
@@ -239,9 +239,23 @@ func TestMinimalNativeAssemblerRequiresCommittedOfflineInputs(t *testing.T) {
 				args = append(args, "--receipt", forgery)
 			}
 			runExit := "74"
-			if scenario == "fake_success_no_output" {
+			if scenario == "fake_success_no_output" || scenario == "simulated_timeout" {
 				runExit = "0"
 			}
+			// Capture the actual runner's outer budget. Only the timeout case
+			// substitutes status 124, after the fake runtime has created its
+			// exact owned CID. No wall-clock multi-hour wait is performed.
+			write(filepath.Join(bin, "timeout"), []byte(`#!/bin/sh
+if [ "${6-}" = run ]; then
+ printf '%s\n' "$1" "$2" "$3" > '`+filepath.Join(root, "outer-budget")+`'
+ if [ '`+scenario+`' = simulated_timeout ]; then
+  /usr/bin/timeout "$@" || exit 98
+  printf '124\n' > '`+filepath.Join(root, "timeout-status")+`'
+  exit 124
+ fi
+fi
+exec /usr/bin/timeout "$@"
+`), 0700)
 			write(filepath.Join(bin, "podman"), []byte(`#!/bin/sh
 if [ "$1" = --remote=false ]; then shift; fi
 case "$1" in
@@ -270,7 +284,9 @@ container)
  inspect) cat '`+filepath.Join(root, "runtime-state")+`' ;;
  *) exit 93 ;;
  esac ;;
-rm) rm -- '`+filepath.Join(root, "runtime-state")+`' ;;
+rm)
+ printf '%s\n' "$@" > '`+filepath.Join(root, "cleanup-args")+`'
+ rm -- '`+filepath.Join(root, "runtime-state")+`' ;;
 *) exit 92 ;;
 esac
 `), 0700)
@@ -335,7 +351,7 @@ esac
 				t.Fatal("offline route invoked forbidden acquisition/runtime fallback")
 			}
 			called, readErr := os.ReadFile(runLog)
-			if scenario == "valid_runner_failure" || scenario == "fake_success_no_output" || scenario == "signal_entrypoint" {
+			if scenario == "valid_runner_failure" || scenario == "fake_success_no_output" || scenario == "signal_entrypoint" || scenario == "simulated_timeout" {
 				if readErr != nil {
 					t.Fatalf("valid selected fixture never reached bounded offline runner: %v stderr=%s", readErr, stderr.String())
 				}
@@ -344,11 +360,37 @@ esac
 						t.Fatalf("missing offline runner argument %s: %s", want, called)
 					}
 				}
+				for _, want := range []string{"--timeout=28800\n", "--cpus=3\n", "--memory=12g\n", "--pids-limit=512\n", "--security-opt=no-new-privileges\n"} {
+					if !strings.Contains(string(called), want) {
+						t.Errorf("actual minimal runner missing %q", want)
+					}
+				}
+				outer, err := os.ReadFile(filepath.Join(root, "outer-budget"))
+				if err != nil || string(outer) != "--signal=TERM\n--kill-after=10s\n481m\n" {
+					t.Errorf("actual outer budget = %q, err=%v; want 481m with unchanged TERM/10s grace", outer, err)
+				}
 				if strings.Contains(string(called), "fixture-must-not-reach-build") {
 					t.Fatal("host environment leaked to build")
 				}
 				if scenario == "fake_success_no_output" && !strings.Contains(stderr.String(), "actual output measurement rejected") {
 					t.Fatalf("fake success must reach output measurement, not fail earlier cleanup: %s", stderr.String())
+				}
+				if scenario == "simulated_timeout" {
+					status, err := os.ReadFile(filepath.Join(root, "timeout-status"))
+					if err != nil || string(status) != "124\n" || !strings.Contains(stderr.String(), "offline runtime rejected") {
+						t.Fatalf("timeout fixture did not reach actual runtime rejection: status=%q err=%v stderr=%s", status, err, stderr.String())
+					}
+					cleanup, err := os.ReadFile(filepath.Join(root, "cleanup-args"))
+					if err != nil || string(cleanup) != "rm\n--force\n--ignore\n"+strings.Repeat("a", 64)+"\n" {
+						t.Fatalf("timeout lost exact owned cleanup: args=%q err=%v", cleanup, err)
+					}
+					if _, err := os.Stat(filepath.Join(root, "runtime-state")); !os.IsNotExist(err) {
+						t.Fatalf("timeout left fake owned runtime: %v", err)
+					}
+					stages, err := filepath.Glob(filepath.Join(root, ".native-assembly-*"))
+					if err != nil || len(stages) != 1 {
+						t.Fatalf("timeout did not retain exactly one private stage: %v %v", stages, err)
+					}
 				}
 			} else if !os.IsNotExist(readErr) {
 				t.Fatalf("invalid source/cache/authority reached runner: %s (%v)", called, readErr)
