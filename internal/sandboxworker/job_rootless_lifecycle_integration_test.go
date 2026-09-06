@@ -23,8 +23,11 @@ func TestWorkerJobPodmanIntegrationCapacityFailureAndCancellation(t *testing.T) 
 	if image == "" {
 		t.Skip("HAL_PODMAN_TEST_IMAGE is unset")
 	}
-	if err := exec.Command("podman", "image", "exists", image).Run(); err != nil {
-		t.Fatalf("required local Podman image is unavailable: %v", err)
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	probeErr := exec.CommandContext(probeCtx, "podman", "image", "exists", image).Run()
+	probeCancel()
+	if probeErr != nil {
+		t.Fatalf("required local Podman image is unavailable: %v", probeErr)
 	}
 	runner := rootlesspodman.DefaultCommandRunner{}
 	driver := rootlesspodman.New(rootlesspodman.Options{
