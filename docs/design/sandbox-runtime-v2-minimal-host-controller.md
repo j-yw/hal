@@ -48,6 +48,15 @@ Paths in this section are under `internal/sandboxruntime/microvm/`.
   `lifecycle.manager`, `session` and `coordinator.generation.process`
   (`jailer_recovery_runtime_linux.go:18`, `jailer_coordinator.go:123`). These are
   the post-release authority, never a reconstructed PID or path from the daemon.
+- That `serveBootstrap` currently passes `context.Background()` to the FSM;
+  `jailer_recovery_runtime_linux.go:165`, `startChild`, independently replaces
+  it with a background containment-budget context. The starter's `release`
+  (`jailer_recovery_starter_linux.go:106`) has no cancellation/deadline check.
+  A channel monitor alone therefore cannot prevent a canceled selected launch.
+- `HandleController` holds `owner.mu` while StopReap calls `reinspectAbsence`
+  and `ContainChild` (`l8_runtime_owner_supervisor.go:964,1044,1160`). The selected
+  `contain` also holds `selected.mu` throughout containment. Neither callback is
+  a safe location to close/join a controller that may need those same locks.
 - `firecrackerhost/minimal_control_transport.go:66`, `Open`, is one-shot and
   enforces retained strict owner, private parent/socket, peer and manager
   currentness. Baseline owns the additive private
@@ -224,11 +233,33 @@ body and the actual observed supervisor/config/job correlation in the selected
 producer. Start no guest handshake while owner/store/coordinator locks are held.
 The selected bootstrap branch transfers the reader role to an original-channel
 EOF monitor after consuming BootstrapStart and before launch; there are never
-two readers on that endpoint. It captures admission start at the actual gate
-release. Only after the revision-2 reply is sent does it release one owned
-controller task. Failure
-to send that reply cancels admission and invokes existing owned containment;
+two readers on that endpoint. Only after the revision-2 reply is sent does it
+release one owned controller task. Failure to send that reply cancels admission
+and invokes existing owned containment;
 it never drops the reconnect client or surviving coordinator.
+
+For this eight-role branch only, create one owned cancellation context before
+prelaunch allocations; original-channel EOF/error, reservation cancellation and
+owner loss cancel it. Derive preparation operations from that context and the
+same absolute preparation deadline. Pass it through selected bootstrap/FSM store
+operations, coordinator preparation and gated child creation: do not replace it
+with Background or a fresh independent 30-second budget in selected `startChild`.
+Keep cleanup's independent bounded context and retained owner even after launch
+cancellation. Returning the immediate bootstrap reply must not cancel the owned
+context; successful readiness ends only its separate admission timer.
+
+The selected release wrapper needs an immediate pre-release latch/deadline
+barrier after the durable revision-1 transition and immediately before the
+existing gate send. Serialize observed cancellation against release admission,
+check the absolute deadline with half-open semantics, and refuse the send when
+either has already won. Do not wait for owner.mu to publish cancellation. Capture
+a conservative release timestamp immediately BEFORE the admitted send, never
+after the send or revision-2 reply; bound the send by the remaining preparation
+budget and make cancellation interrupt its I/O. Cancellation after send admission
+is not proof that no byte reached the child: contain the exact owned process and
+retain uncertain checkpoints. The monitor cannot promise observation of physical
+EOF before it has actually received it. Legacy six/seven startup and release
+remain unchanged; this is an explicit selected-only lifecycle seam requiring REDs.
 
 The main supervisor goroutine enters the existing `serveControllers` loop while
 the controller task runs. Cleanup reconnects must remain usable during slow
@@ -287,7 +318,9 @@ at admission and readiness publication. Construct exactly one
 No serialized PID, recovered handle, v1 bridge session or guest-provided generation
 may enter that constructor.
 
-Let `D = min(preparationDeadline, actualGateReleaseTime + 15s)`. Call baseline's
+Let `D = min(preparationDeadline, preReleaseBarrierTime + 15s)`, using the
+conservative timestamp immediately before the actual gate-send attempt, not a
+later success observation. Call baseline's
 `OpenWhenAvailable(ownerCtx, D)` once. `ownerCtx` belongs to this surviving launch,
 not the initiating CLI and not a short-lived admission context canceled when
 Open returns. Only the connector owns permitted pre-ACK retries. First canonical
@@ -355,8 +388,18 @@ returned nil after a partial read. Secret seed copying never uses generic framin
 Keep one small per-launch controller latch/task inside the existing selected
 runtime. Do not hold owner/store/coordinator/selected mutexes across network I/O,
 deadline waits, goroutine joins or controller closure. A reader reports loss to
-the lifecycle task; it never calls a Close that joins itself. Idempotent terminal
-handling follows this order:
+the lifecycle task; it never calls a Close that joins itself.
+
+The shutdown/join portion below must run at the selected cleanup dispatch
+boundary BEFORE entering `HandleController` for cleanup or acquiring owner.mu,
+and before any selected containment lock. Never put it inside `ContainChild`,
+`selected.contain`, or a mutex-held FSM callback. Preserve authentication and
+packet/session/sequence checks when admitting cleanup intent; any necessary
+private admission split needs its own RED and source-owner review, not a second
+permissive protocol validator. Loss-driven cleanup uses the same outside-lock
+shutdown barrier before entering the existing cleanup FSM. An in-progress
+shutdown may be joined there, but no join may wait on itself or hold these locks.
+Idempotent terminal handling follows this order:
 
 1. Atomically mark readiness unavailable, cancel further admission and close the
    public loss latch. Close/shutdown original bootstrap I/O and guest stream to
@@ -373,6 +416,10 @@ handling follows this order:
    locks; preserve exact process/cgroup/staging/UID ownership and cleanup
    checkpoints. Concurrent cleanup reconnects converge through that existing
    idempotent owner, never a second kill/reap or release authority.
+   The unchanged cleanup FSM may still hold owner.mu during its existing
+   containment callback: controller shutdown has already finished before that
+   FSM entry. This design does not relocate joins into that callback or claim
+   existing containment itself is lock-free.
 5. Keep the reconnect service/record while cleanup or terminal acknowledgment
    is uncertain. Existing StopReap/Finalize/Commit and exact terminal ACK/record
    retirement remain authoritative. Local controller termination does not retire
@@ -417,6 +464,11 @@ Required dependency-ordered behavior REDs before implementation:
    real session crypto; exactly one authenticated exchange reaches readiness.
    Missing route/early dispatch failure must not be reported as later-negative
    coverage. Nil success, a stale Inspect reply or adjacent fabricated JSON fails.
+   Separately pause the actual selected path after child armed and at durable
+   revision 1: observe original-channel EOF/cancel or exact preparation expiry,
+   resume, and require zero gate releases plus retained same-owner cleanup. Test
+   cancellation during preparation, the pre-release race, and uncertain send;
+   no background-context reset or late release-time sampling may extend budget.
 4. Same original channel and tuple are required for adoption. EOF before reply,
    between reply/ready, immediately after ready, duplicate/truncated/extra event,
    ancillary rights, wrong supervisor/config/digest/process and producer death
@@ -429,6 +481,10 @@ Required dependency-ordered behavior REDs before implementation:
 6. Cleanup races/readiness publication/terminal retry preserve successor canaries
    and existing Jailer uncertainty/terminal checkpoint behavior. Separate actual
    L7 terminal correlation tests are needed before whole-provider cleanup claims.
+   Block `WriteApplication` while it holds the session mutex, concurrently enter
+   actual selected StopReap dispatch and trigger controller loss; require stream
+   closure and all joins BEFORE mutex-held FSM containment, bounded completion
+   without watchdog rescue, no self-join, and one retained cleanup authority.
 
 Source-owner approval is required for the selected config/FD decoder, producer,
 runtime and close-order changes; the sealed L7 projection validation seam; the
