@@ -153,6 +153,16 @@ type readinessRequest struct {
 	RequestID       string `json:"requestId"`
 }
 
+// EncodeReadinessRequest is unavailable until the shared host codec is implemented.
+func (binding Binding) EncodeReadinessRequest(requestID string, sessionID [32]byte) ([]byte, error) {
+	return nil, ErrUnavailable
+}
+
+// ValidateReadinessResponse is unavailable until the shared host codec is implemented.
+func (binding Binding) ValidateReadinessResponse(payload []byte, requestID string, sessionID [32]byte) error {
+	return ErrUnavailable
+}
+
 func (binding Binding) decodeReadiness(payload []byte, sessionID [32]byte) (readinessRequest, error) {
 	var request readinessRequest
 	if !boundedJSON(payload) || json.Unmarshal(payload, &request) != nil {
