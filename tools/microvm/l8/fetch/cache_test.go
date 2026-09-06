@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -137,6 +139,79 @@ func TestCachePublishesExactVerifiedSetOrPreservesPriorState(t *testing.T) {
 						t.Fatal("repaired existing cache without authority")
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestCacheStageReplacementNeverTouchesForeignEntries(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success_body", true: "failed_body"}[corrupt], func(t *testing.T) {
+			parent := t.TempDir()
+			if err := os.Chmod(parent, 0700); err != nil {
+				t.Fatal(err)
+			}
+			l5 := filepath.Join(parent, "l5")
+			if err := os.Mkdir(l5, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(l5, "base.tar"), []byte("base"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			l5locks := map[string]lockedFile{"base.tar": testPin("base.tar", "base")}
+			wrap := `{"lockfileVersion":3,"packages":{"":{"name":"@earendil-works/pi-coding-agent","version":"0.82.1"},"node_modules/pkg":{"version":"1.2.3"}}}`
+			archive := fixtureArchive(t, []*tar.Header{{Name: "package/npm-shrinkwrap.json", Mode: 0644, Size: int64(len(wrap)), Typeflag: tar.TypeReg}}, []string{wrap})
+			payloads := map[string][]byte{nodeFile: []byte("node"), piFile: archive, shrinkwrapFile: []byte(wrap), "pkg-1.2.3.tgz": []byte("package")}
+			l8locks := map[string]lockedFile{}
+			for name, data := range payloads {
+				l8locks[name] = testPin(name, string(data))
+			}
+			var original, moved string
+			client := newHTTPClient(fakeTransport(func(r *http.Request) (*http.Response, error) {
+				if original == "" {
+					entries, err := os.ReadDir(parent)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, entry := range entries {
+						if strings.HasPrefix(entry.Name(), ".hal-l8-cache-") {
+							original = filepath.Join(parent, entry.Name())
+						}
+					}
+					if original == "" {
+						t.Fatal("owned stage not found")
+					}
+					moved = original + "-moved"
+					if err := os.Rename(original, moved); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Mkdir(original, 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(original, nodeFile), []byte("foreign"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				data := payloads[filepath.Base(r.URL.Path)]
+				if corrupt {
+					data = []byte("fail")
+				}
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data)), Header: make(http.Header), ContentLength: int64(len(data)), Request: r}, nil
+			}))
+			if err := acquireCache(context.Background(), filepath.Join(parent, "cache"), l5, l5locks, l8locks, client); err == nil {
+				t.Fatal("replaced stage published")
+			}
+			foreign, err := os.ReadFile(filepath.Join(original, nodeFile))
+			if err != nil || string(foreign) != "foreign" {
+				t.Fatalf("foreign file modified/removed: %q %v", foreign, err)
+			}
+			entries, err := os.ReadDir(original)
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("foreign directory received writes: %v %v", entries, err)
+			}
+			owned, err := os.ReadDir(moved)
+			if err != nil || len(owned) != 0 {
+				t.Fatalf("owned entries not cleaned through retained directory: %v %v", owned, err)
 			}
 		})
 	}
