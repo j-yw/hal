@@ -40,11 +40,19 @@ func TestWorkerJobPodmanIntegrationCapacityFailureAndCancellation(t *testing.T) 
 		t.Fatalf("create rootless target: %v", err)
 	}
 	cleanupTarget := *target
+	var serviceCloseDone chan struct{}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cleanupCancel()
 		if err := driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget}); err != nil {
 			t.Errorf("delete owned rootless target: %v", err)
+		}
+		if serviceCloseDone != nil {
+			select {
+			case <-serviceCloseDone:
+			case <-time.After(10 * time.Second):
+				t.Error("worker jobs did not stop after deleting the owned target")
+			}
 		}
 	})
 	target, err = driver.Start(ctx, sandboxruntime.LifecycleRequest{Target: *target})
@@ -74,10 +82,21 @@ func TestWorkerJobPodmanIntegrationCapacityFailureAndCancellation(t *testing.T) 
 		t.Fatal(err)
 	}
 	serveDone := make(chan error, 1)
+	serviceCloseDone = make(chan struct{})
 	go func() { serveDone <- server.ListenAndServe(daemonCtx) }()
 	t.Cleanup(func() {
 		daemonCancel()
-		service.Close()
+		// A regression in the cancellation path under test must not prevent
+		// the earlier target-deletion cleanup from running.
+		go func() {
+			service.Close()
+			close(serviceCloseDone)
+		}()
+		select {
+		case <-serviceCloseDone:
+		case <-time.After(10 * time.Second):
+			t.Error("worker jobs did not stop before target deletion")
+		}
 		select {
 		case err := <-serveDone:
 			if err != nil && !errors.Is(err, context.Canceled) {
