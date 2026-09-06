@@ -615,7 +615,7 @@ func generateFactorySandboxRuntimeRecoveryArtifacts(ctx context.Context, record 
 	if strings.TrimSpace(script) == "" {
 		return nil
 	}
-	_, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
+	result, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
 		Target: sandboxRuntimeTargetFromState(target),
 		Args:   []string{"sh", "-c", script},
 		Stdout: io.Discard,
@@ -623,6 +623,9 @@ func generateFactorySandboxRuntimeRecoveryArtifacts(ctx context.Context, record 
 	})
 	if err != nil {
 		return err
+	}
+	if result == nil || result.ExitCode != 0 {
+		return errors.New("sandbox recovery artifact generation did not complete successfully")
 	}
 	if remoteOutput != nil {
 		return remoteOutput.appendExecutorEvent(factory.EventTypeArtifactSync, "Sandbox recovery artifacts generated", map[string]any{

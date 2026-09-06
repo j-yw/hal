@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -20,7 +21,18 @@ import (
 func TestFactoryFinalizationRecoveryWorkerRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	socketPath := filepath.Join(t.TempDir(), "worker.sock")
+	// Unix sockets have a short pathname limit; do not inherit a long TMPDIR
+	// or the full test name. MkdirTemp creates a private, task-owned directory.
+	socketDir, err := os.MkdirTemp("/tmp", "hal-ff-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(socketDir); err != nil {
+			t.Errorf("remove worker fixture directory: %v", err)
+		}
+	})
+	socketPath := filepath.Join(socketDir, "worker.sock")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatal(err)
