@@ -20,8 +20,14 @@ prepare_parent_podman() {
 	runtime_label=${runtime_metadata##*/}
 	runtime_run=(run_parent_podman)
 	runtime_autoremove=()
+	local runtime_limit=10800
+	runtime_outer_limit=181m
+	if [[ "$lane" == l8-minimal ]]; then
+		runtime_limit=28800
+		runtime_outer_limit=481m
+	fi
 	runtime_args=(--userns=keep-id --cpus=3 --memory=12g --pids-limit=512
-		--security-opt=no-new-privileges --timeout=10800
+		--security-opt=no-new-privileges "--timeout=$runtime_limit"
 		"--cidfile=$runtime_cidfile" "--label=hal.microvm.build=$runtime_label")
 }
 
@@ -29,7 +35,7 @@ run_parent_podman() {
 	# These two entry scripts own exactly one asynchronous shell job. Waiting
 	# explicitly lets a signal to build.sh alone interrupt wait immediately.
 	runtime_admitted=true
-	timeout --signal=TERM --kill-after=10s 181m podman --remote=false "$@" &
+	timeout --signal=TERM --kill-after=10s "$runtime_outer_limit" podman --remote=false "$@" &
 	runtime_pid=$!
 	runtime_waiting=true
 	local result=0

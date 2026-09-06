@@ -36,9 +36,9 @@ type assemblyReceipt struct {
 }
 
 const (
-	nativeAssemblyTimeout   = 190 * time.Minute
+	nativeAssemblyTimeout   = 490 * time.Minute
 	nativeAssemblyWaitDelay = 90 * time.Second
-	nativeAssemblyLogBytes  = 32 << 20
+	nativeAssemblyLogBytes  = 64 << 20
 )
 
 func main() {
