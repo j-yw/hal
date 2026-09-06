@@ -122,6 +122,37 @@ func TestSandboxdImageJobAttestationRejectsWrongDriver(t *testing.T) {
 	}
 }
 
+func TestSandboxdImageJobAttestationFlagContract(t *testing.T) {
+	cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{})
+	flag := cmd.Flags().Lookup("image-job-execution-supported")
+	if flag == nil || flag.Value.Type() != "bool" || flag.DefValue != "false" {
+		t.Fatalf("image attestation flag = %#v, want default-off boolean", flag)
+	}
+	for _, want := range []string{"operator attestation", "does not verify", "strengthen security"} {
+		if !strings.Contains(flag.Usage, want) {
+			t.Errorf("flag help does not explain %q: %s", want, flag.Usage)
+		}
+	}
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--image-job-execution-supported=invalid"}, "invalid argument"},
+		{[]string{"--image-job-execution-supported", "--image", " "}, "--image is required"},
+	} {
+		cmd, _, _ := newTestSandboxdCommand(sandboxdDeps{
+			rootlessPodmanAvailable: func(context.Context, sandboxdRootlessPodmanConfig) error {
+				t.Fatal("invalid image attestation reached runtime availability check")
+				return nil
+			},
+		})
+		cmd.SetArgs(test.args)
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("Execute(%q) = %v, want %q", test.args, err, test.want)
+		}
+	}
+}
+
 type sandboxdImageJobDriver struct{ *rootlesspodman.Driver }
 
 func (sandboxdImageJobDriver) Exec(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {

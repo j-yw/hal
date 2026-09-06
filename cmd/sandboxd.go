@@ -47,15 +47,16 @@ type sandboxdDeps struct {
 }
 
 type sandboxdFlags struct {
-	socketPath    string
-	jobStateDir   string
-	workerID      string
-	drivers       []string
-	podmanPath    string
-	podmanImage   string
-	microVM       sandboxdMicroVMFlags
-	maxConcurrent int
-	json          bool
+	socketPath                       string
+	jobStateDir                      string
+	workerID                         string
+	drivers                          []string
+	podmanPath                       string
+	podmanImage                      string
+	podmanImageJobExecutionSupported bool
+	microVM                          sandboxdMicroVMFlags
+	maxConcurrent                    int
+	json                             bool
 }
 
 type sandboxdMicroVMFlags struct {
@@ -90,21 +91,23 @@ type sandboxdMicroVMConfig struct {
 }
 
 type sandboxdRootlessPodmanConfig struct {
-	PodmanPath string
-	Image      string
+	PodmanPath            string
+	Image                 string
+	JobExecutionSupported bool
 }
 
 type sandboxdRequest struct {
-	SocketPath    string
-	JobStateDir   string
-	WorkerID      string
-	Drivers       []string
-	PodmanPath    string
-	PodmanImage   string
-	MicroVM       sandboxdMicroVMConfig
-	MaxConcurrent int
-	JSON          bool
-	defaultSocket bool
+	SocketPath                       string
+	JobStateDir                      string
+	WorkerID                         string
+	Drivers                          []string
+	PodmanPath                       string
+	PodmanImage                      string
+	PodmanImageJobExecutionSupported bool
+	MicroVM                          sandboxdMicroVMConfig
+	MaxConcurrent                    int
+	JSON                             bool
+	defaultSocket                    bool
 }
 
 type sandboxdStartedOutput struct {
@@ -131,10 +134,16 @@ func newSandboxdCommand(deps sandboxdDeps) *cobra.Command {
 The daemon serves the sandboxworker-v1 protocol over a local Unix socket. The
 command only parses flags, wires worker service/server dependencies, registers
 selected runtime drivers, and reports startup or serve errors. Existing
-hal sandbox subcommands continue to manage durable sandbox records separately.`,
+hal sandbox subcommands continue to manage durable sandbox records separately.
+
+Custom rootless Podman images do not accept daemon-owned jobs unless the operator
+passes --image-job-execution-supported to attest the image has the required shell
+and process-supervision utilities. This is not image verification and does not
+upgrade container isolation, network enforcement, or credential protection.`,
 		Example: `  hal sandboxd
   hal sandboxd --socket /tmp/hal-sandboxd.sock
-  hal sandboxd --driver rootless_podman --json`,
+  hal sandboxd --driver rootless_podman --json
+  hal sandboxd --driver rootless_podman --image localhost/hal-agent:custom --image-job-execution-supported`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSandboxdCommand(cmd, args, flags, deps)
 		},
@@ -145,6 +154,7 @@ hal sandbox subcommands continue to manage durable sandbox records separately.`,
 	cmd.Flags().StringSliceVar(&flags.drivers, "driver", flags.drivers, "runtime driver to register with the worker daemon")
 	cmd.Flags().StringVar(&flags.podmanPath, "podman", flags.podmanPath, "podman executable for the rootless_podman driver")
 	cmd.Flags().StringVar(&flags.podmanImage, "image", flags.podmanImage, "container image for the rootless_podman driver")
+	cmd.Flags().BoolVar(&flags.podmanImageJobExecutionSupported, "image-job-execution-supported", false, "operator attestation that the rootless_podman image supports daemon-owned jobs; does not verify the image or strengthen security")
 	registerSandboxdMicroVMFlags(cmd, &flags, deps)
 	cmd.Flags().IntVar(&flags.maxConcurrent, "max-concurrent", flags.maxConcurrent, "maximum concurrent sandboxes reported by daemon capacity")
 	cmd.Flags().BoolVar(&flags.json, "json", flags.json, "Output machine-readable daemon startup status")
@@ -241,11 +251,12 @@ func defaultSandboxdRootlessPodmanAvailable(ctx context.Context, config sandboxd
 func defaultSandboxdRootlessPodmanDriver(config sandboxdRootlessPodmanConfig) sandboxruntime.Driver {
 	runner := rootlesspodman.DefaultCommandRunner{}
 	return rootlesspodman.New(rootlesspodman.Options{
-		LifecycleRunner: runner,
-		ExecRunner:      runner,
-		CopyRunner:      runner,
-		PodmanPath:      config.PodmanPath,
-		Image:           config.Image,
+		LifecycleRunner:       runner,
+		ExecRunner:            runner,
+		CopyRunner:            runner,
+		PodmanPath:            config.PodmanPath,
+		Image:                 config.Image,
+		JobExecutionSupported: config.JobExecutionSupported,
 	})
 }
 
@@ -277,16 +288,17 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	jobStateDirExplicit := false
 	socketExplicit := false
 	req := sandboxdRequest{
-		SocketPath:    flags.socketPath,
-		JobStateDir:   flags.jobStateDir,
-		WorkerID:      flags.workerID,
-		Drivers:       cloneSandboxdStringSlice(flags.drivers),
-		PodmanPath:    flags.podmanPath,
-		PodmanImage:   flags.podmanImage,
-		MicroVM:       sandboxdMicroVMConfigFromFlags(flags.microVM, deps),
-		MaxConcurrent: flags.maxConcurrent,
-		JSON:          flags.json,
-		defaultSocket: cmd == nil,
+		SocketPath:                       flags.socketPath,
+		JobStateDir:                      flags.jobStateDir,
+		WorkerID:                         flags.workerID,
+		Drivers:                          cloneSandboxdStringSlice(flags.drivers),
+		PodmanPath:                       flags.podmanPath,
+		PodmanImage:                      flags.podmanImage,
+		PodmanImageJobExecutionSupported: flags.podmanImageJobExecutionSupported,
+		MicroVM:                          sandboxdMicroVMConfigFromFlags(flags.microVM, deps),
+		MaxConcurrent:                    flags.maxConcurrent,
+		JSON:                             flags.json,
+		defaultSocket:                    cmd == nil,
 	}
 	if cmd != nil {
 		var err error
@@ -309,6 +321,9 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 			return sandboxdRequest{}, err
 		}
 		if req.PodmanImage, err = cmd.Flags().GetString("image"); err != nil {
+			return sandboxdRequest{}, err
+		}
+		if req.PodmanImageJobExecutionSupported, err = cmd.Flags().GetBool("image-job-execution-supported"); err != nil {
 			return sandboxdRequest{}, err
 		}
 		req.MicroVM, err = sandboxdMicroVMConfigFromCommand(cmd, flags.microVM, deps)
@@ -364,6 +379,10 @@ func sandboxdRequestFromCommand(cmd *cobra.Command, flags sandboxdFlags, deps sa
 	}
 	if sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverRootlessPodman) && req.PodmanImage == "" {
 		return sandboxdRequest{}, fmt.Errorf("sandboxd --image is required for --driver rootless_podman")
+	}
+	if (req.PodmanImageJobExecutionSupported || (cmd != nil && cmd.Flags().Changed("image-job-execution-supported"))) &&
+		!sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverRootlessPodman) {
+		return sandboxdRequest{}, fmt.Errorf("sandboxd --image-job-execution-supported requires --driver rootless_podman")
 	}
 	if sandboxdDriverRequested(req.Drivers, sandboxruntime.DriverMicroVM) {
 		if missing := sandboxdMissingMicroVMConfigFlags(req.MicroVM); len(missing) > 0 {
@@ -488,7 +507,7 @@ func sandboxdDriverRegistry(ctx context.Context, req sandboxdRequest, deps sandb
 			if seen[driverID] {
 				return nil, nil, nil, fmt.Errorf("sandboxd driver %q is registered more than once", driverID)
 			}
-			config := sandboxdRootlessPodmanConfig{PodmanPath: req.PodmanPath, Image: req.PodmanImage}
+			config := sandboxdRootlessPodmanConfig{PodmanPath: req.PodmanPath, Image: req.PodmanImage, JobExecutionSupported: req.PodmanImageJobExecutionSupported}
 			if err := deps.rootlessPodmanAvailable(ctx, config); err != nil {
 				return nil, nil, nil, sandboxdRuntimeUnavailableError{driverID: driverID, err: err}
 			}

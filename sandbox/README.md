@@ -9,14 +9,14 @@ a registered worker host, local Podman, Docker, or GitHub Codespaces.
 |------|---------|---------|
 | **Go** | 1.25.7 | Build hal and Go projects |
 | **Node.js** | 22.x | Runtime for JS-based CLI tools |
-| **gh** | latest | GitHub CLI (authenticated via GITHUB_TOKEN) |
-| **Claude Code** | latest | AI coding assistant |
-| **Pi** | latest | Coding agent harness |
-| **Codex** | latest | OpenAI Codex CLI |
+| **gh** | repository-selected (distro fallback) | GitHub CLI (authenticated via GITHUB_TOKEN) |
+| **Claude Code** | 2.1.207 | AI coding assistant |
+| **Pi** | 0.85.0 | Coding agent harness |
+| **Codex** | 0.144.1 | OpenAI Codex CLI |
 | **hal** | built from source | This project |
-| **tmux** | latest | Terminal multiplexer (keep sessions alive) |
-| **ripgrep** | latest | Fast search |
-| **vim** | latest | Editor |
+| **tmux** | distro package | Terminal multiplexer (keep sessions alive) |
+| **ripgrep** | distro package | Fast search |
+| **vim** | distro package | Editor |
 | Claude agents & skills | from sandbox/claude/ | Pre-configured Claude Code agents |
 
 ## Quick Start
@@ -101,22 +101,28 @@ cp sandbox/.env.example sandbox/.env
    tmux a -t work       # reattach after reconnect
    ```
 
-## Version Freshness
+## Version Defaults
 
-AI CLI tools install the latest npm release by default when a sandbox is created.
-Pin versions with env vars only when reproducibility is more important than model
-compatibility:
+AI CLI tools use the exact versions in the table above, not the latest npm release.
+Pi 0.85.0 matches the host version exercised in the native Linux rootless game
+smoke, including its xAI OAuth provider. Other agent pins are unchanged. Override
+versions explicitly with environment variables for direct bootstrap:
 
 ```bash
-GO_VERSION=1.25.7 NODE_MAJOR=22 CODEX_VERSION=0.142.2 ./sandbox/setup.sh
+PI_CODING_AGENT_VERSION=0.85.0 ./sandbox/setup.sh
 ```
 
-The Dockerfile passes these as build args but delegates installation to `setup.sh` — **one source of truth**.
+For image builds, use `--build-arg PI_CODING_AGENT_VERSION=0.85.0` (or the
+corresponding variable for another tool). The Dockerfile passes its build-argument
+defaults to `setup.sh`; deterministic Go tests keep both sets of defaults aligned.
+Node is pinned only to major 22, and OS packages are repository-selected, so the
+complete image is not a fully locked dependency snapshot. `/test.sh` reports tool
+versions and smoke-tests availability; it does not enforce exact version pins.
 
 ## Updating Tools
 
-1. For VPS: re-run `setup.sh` to install the latest AI CLIs, or pass explicit version env vars to pin
-2. For Docker or Podman: rebuild the image after changing `setup.sh`.
+1. For VPS: re-run `setup.sh` to install the selected defaults, or pass explicit version environment variables.
+2. For Docker or Podman: rebuild with explicit build arguments, or update the defaults in both `setup.sh` and `Dockerfile` and their regression test.
 
 ## Updating Claude Agents & Skills
 
@@ -140,5 +146,5 @@ claude/           ← Claude Code settings, agents, skills
 .env.example      ← Secrets template
 ```
 
-`setup.sh` is the single source of truth. The Dockerfile calls it internally.
-Both paths produce the exact same environment.
+`setup.sh` owns the shared installation logic. The Dockerfile calls it internally
+with matching version defaults; container and VPS runtime setup still differ.

@@ -48,6 +48,25 @@ Remote bootstrap downloads use bounded retries for transient connection and TLS
 failures. A persistent registry or package-source failure still stops the image
 build without disabling certificate verification.
 
+The lab builds its own `localhost/hal-agent:hal-lab` image (override the tag with
+`HAL_SANDBOX_LAB_IMAGE`) and starts the daemon with
+`--image-job-execution-supported`. This is an operator attestation that the custom
+image contains the shell and process-supervision utilities needed by daemon-owned
+jobs, not a verification of image contents or toolchain identity. Do not alias a
+custom image to the provisioned default tag to obtain job support. For an
+independently prepared compatible image, use the supported option explicitly:
+
+```sh
+hal sandboxd --driver rootless_podman --image localhost/hal-agent:custom \
+  --image-job-execution-supported
+```
+
+The image must already exist locally. Without attestation, custom images retain
+ordinary lifecycle/exec/copy support but daemon-owned job submission is denied.
+The provisioned default image retains its existing job support. Attestation does
+not add strict network enforcement, credential isolation, or VM isolation:
+rootless jobs remain the lower-isolation container compatibility lane.
+
 When host TUN/DNS routing cannot reach registries directly, set separate proxy
 URLs instead of disabling TLS. `HAL_SANDBOX_LAB_HOST_PROXY` is used only while
 the host downloads the Podman machine image. `HAL_SANDBOX_LAB_GUEST_PROXY` is
