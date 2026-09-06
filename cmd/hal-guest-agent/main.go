@@ -25,6 +25,26 @@ func main() {
 }
 
 func run() error {
+	return runGuestAgentEntry(context.Background(), guestAgentEntryDependencies{
+		runLegacy: runLegacyGuestAgent,
+	})
+}
+
+// This private seam makes the actual entrypoint's selection observable without
+// binding a socket. At the bootstrap RED checkpoint it deliberately preserves
+// the existing legacy-only behavior; boot loading and minimal selection are
+// not implemented or enabled by these dependencies.
+type guestAgentEntryDependencies struct {
+	readBootCommandLine func(context.Context) (string, error)
+	runLegacy           func() error
+	runMinimal          func(context.Context, string) error
+}
+
+func runGuestAgentEntry(_ context.Context, dependencies guestAgentEntryDependencies) error {
+	return dependencies.runLegacy()
+}
+
+func runLegacyGuestAgent() error {
 	listener, err := vsock.ListenLinux()
 	if err != nil {
 		return err
