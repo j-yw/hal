@@ -77,7 +77,7 @@ func Publish(ctx context.Context, req PublishRequest) (receipt Receipt, retErr e
 	runtime := assetbuild.L8RuntimeFacts{NodeVersion: "22.22.0", NodeSHA256: req.Pins.NodeSHA256, PiPackage: "@earendil-works/pi-coding-agent", PiVersion: "0.82.1", PiLauncherSHA256: req.Pins.PiLauncherSHA256, PiDependencyTreeSHA256: assetbuild.L8MinimalDependencyTreeSHA256(req.Sources)}
 	sources := assetbuild.L8MinimalSourceLock{SchemaVersion: assetbuild.L8MinimalSourceLockSchemaV1, ImageProfile: assetbuild.ImageProfileL8MinimalCredentials, SourceRevision: req.SourceRevision, ParentL7: parentFacts, Runtime: runtime, Sources: append([]assetbuild.L8LockedSource(nil), req.Sources...)}
 	phase = "source inventory"
-	if err := assetbuild.ValidateL8SourceLock(assetbuild.L8SourceLock{SchemaVersion: assetbuild.L8SourceLockSchemaVersionV1, CatalogVersion: assetbuild.L8SourceLockCatalogVersionV1, ImageProfile: assetbuild.ImageProfileL8ProductionCredentials, ParentL7: parentFacts, Runtime: runtime, Sources: sources.Sources}); err != nil {
+	if err := assetbuild.ValidateL8MinimalSourceLock(sources); err != nil {
 		return receipt, errImage
 	}
 	work, err := os.MkdirTemp("", "hal-minimal-sources-")

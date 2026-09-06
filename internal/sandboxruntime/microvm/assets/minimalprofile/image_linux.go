@@ -465,7 +465,9 @@ func runTool(ctx context.Context, epoch, limit int64, name string, args ...strin
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TZ=UTC", "MKE2FS_CONFIG=/dev/null", "SOURCE_DATE_EPOCH=" + strconv.FormatInt(epoch, 10), "E2FSPROGS_FAKE_TIME=" + strconv.FormatInt(epoch, 10)}
+	// CommandContext resolves the executable before the explicit child
+	// environment is assigned. Child tools need no inherited environment.
+	cmd.Env = []string{"LC_ALL=C", "TZ=UTC", "MKE2FS_CONFIG=/dev/null", "SOURCE_DATE_EPOCH=" + strconv.FormatInt(epoch, 10), "E2FSPROGS_FAKE_TIME=" + strconv.FormatInt(epoch, 10)}
 	out := &boundedBuffer{limit: limit}
 	stderr := &boundedBuffer{limit: 1 << 20}
 	cmd.Stdout = out
@@ -480,7 +482,7 @@ func debugTool(ctx context.Context, epoch int64, image string, args ...string) (
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "debugfs", append(args, image)...)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TZ=UTC", "E2FSPROGS_FAKE_TIME=" + strconv.FormatInt(epoch, 10)}
+	cmd.Env = []string{"LC_ALL=C", "TZ=UTC", "E2FSPROGS_FAKE_TIME=" + strconv.FormatInt(epoch, 10)}
 	out := &boundedBuffer{limit: maxContent}
 	stderr := &boundedBuffer{limit: 1 << 20}
 	cmd.Stdout = out
@@ -498,7 +500,7 @@ func checkImageTools(ctx context.Context) error {
 	for _, name := range []string{"mke2fs", "debugfs", "e2fsck"} {
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		cmd := exec.CommandContext(probeCtx, name, "-V")
-		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}
+		cmd.Env = []string{"LC_ALL=C"}
 		out := &boundedBuffer{limit: 4096}
 		cmd.Stdout = out
 		cmd.Stderr = out

@@ -133,7 +133,7 @@ func ValidateL8MinimalDocuments(m L8MinimalDistributionManifest, p L8MinimalProv
 			return fail()
 		}
 	}
-	if err := validateMinimalSources(s); err != nil {
+	if err := ValidateL8MinimalSourceLock(s); err != nil {
 		return err
 	}
 	if len(i.Executables) != 4 {
@@ -153,7 +153,13 @@ func ValidateL8MinimalDocuments(m L8MinimalDistributionManifest, p L8MinimalProv
 	return nil
 }
 
-func validateMinimalSources(lock L8MinimalSourceLock) error {
+// ValidateL8MinimalSourceLock validates the minimal source metadata envelope
+// and its complete pinned inventory. Callers still must measure source bytes;
+// this pure validation does not issue an image profile or runtime authority.
+func ValidateL8MinimalSourceLock(lock L8MinimalSourceLock) error {
+	if lock.SchemaVersion != L8MinimalSourceLockSchemaV1 || lock.ImageProfile != ImageProfileL8MinimalCredentials || !validHex(lock.SourceRevision, 40) {
+		return l8ValidationError(L8ValidationCodeCorrelationMismatch, "minimalProfile", -1)
+	}
 	// Reuse the exact offline inventory validator, not the legacy image or
 	// process-policy validator. This conversion never issues a legacy profile.
 	return ValidateL8SourceLock(L8SourceLock{SchemaVersion: L8SourceLockSchemaVersionV1, CatalogVersion: L8SourceLockCatalogVersionV1, ImageProfile: ImageProfileL8ProductionCredentials, ParentL7: lock.ParentL7, Runtime: lock.Runtime, Sources: lock.Sources})
