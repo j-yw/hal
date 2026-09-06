@@ -221,6 +221,13 @@ func TestRunFactorySandboxRemoteVerificationUsesWorkerRuntime(t *testing.T) {
 	driver := fakeFactorySandboxRuntimeDriver{
 		id: sandboxruntime.DriverRootlessPodman,
 		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if len(req.Args) != 3 || req.Args[1] != "-c" || !strings.Contains(req.Args[2], "exec hal 'verify' '--json'") || strings.Contains(req.Args[2], "$HOME/.local/bin/hal") {
+				t.Errorf("worker verification did not select the image Hal without a login shell")
+				return &sandboxruntime.ExecResult{ExitCode: 127}, errors.New("image has no per-user Hal installation")
+			}
+			if req.Target.Runtime.RuntimeID != target.Runtime.RuntimeID {
+				t.Fatal("verification lost exact runtime identity")
+			}
 			gotEnv = req.Env
 			if err := json.NewEncoder(req.Stdout).Encode(verify.Result{
 				SchemaVersion: verify.SchemaVersion,
@@ -271,6 +278,10 @@ func TestPublishFactoryRunWithSandboxRunnerUsesWorkerRuntime(t *testing.T) {
 	driver := fakeFactorySandboxRuntimeDriver{
 		id: sandboxruntime.DriverRootlessPodman,
 		execFn: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
+			if len(req.Args) != 3 || req.Args[1] != "-c" || !strings.Contains(req.Args[2], "exec hal 'factory' '_publish-branch'") || strings.Contains(req.Args[2], "$HOME/.local/bin/hal") {
+				t.Errorf("worker publish did not select the image Hal without a login shell")
+				return &sandboxruntime.ExecResult{ExitCode: 127}, errors.New("image has no per-user Hal installation")
+			}
 			gotEnv = req.Env
 			if err := json.NewEncoder(req.Stdout).Encode(factorySandboxPublishResult{
 				ContractVersion: "factory-publish-branch-v1",
