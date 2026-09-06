@@ -3,11 +3,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -16,7 +18,7 @@ import (
 // They never contact a registry, launch a container or compile a guest image.
 func TestMinimalParentBuildersSelectExplicitRootlessRuntime(t *testing.T) {
 	for _, lane := range []string{"l5", "l7"} {
-		for _, scenario := range []string{"default_docker", "explicit_docker", "podman", "rootful", "wrong_digest", "unsupported", "excess_jobs", "run_failure", "run_signal", "precreate_failure", "foreign_label", "malformed_cid", "multiple_cid", "cleanup_failure", "docker_absent_helper", "docker_malformed_helper", "podman_missing_helper", "podman_malformed_helper"} {
+		for _, scenario := range []string{"default_docker", "explicit_docker", "podman", "rootful", "wrong_digest", "unsupported", "excess_jobs", "run_failure", "run_signal", "script_signal", "precreate_failure", "foreign_label", "malformed_cid", "multiple_cid", "nul_cid", "symlink_cid", "wrong_inspect_id", "unknown_exists", "already_removed", "cleanup_failure", "docker_absent_helper", "docker_malformed_helper", "podman_missing_helper", "podman_malformed_helper"} {
 			t.Run(lane+"/"+scenario, func(t *testing.T) {
 				root := t.TempDir()
 				mustRunnerWrite := func(name, data string) {
@@ -86,17 +88,22 @@ run)
  case "$RUNNER_TEST_MODE" in
  malformed_cid) printf 'invalid\n' > "$cidfile" ;;
  multiple_cid) printf '%s\n' "$cid" >> "$cidfile" ;;
+ nul_cid) printf '%s\000' "$cid" > "$cidfile" ;;
+ symlink_cid) mv "$cidfile" "$cidfile-foreign"; ln -s "$cidfile-foreign" "$cidfile" ;;
  foreign_label) label=foreign ;;
  esac
  printf '%s %s\n' "$cid" "$label" > "$RUNNER_TEST_STATE"
+ [ "$RUNNER_TEST_MODE" != wrong_inspect_id ] || printf 'wrong-id %s\n' "$label" > "$RUNNER_TEST_STATE"
+ [ "$RUNNER_TEST_MODE" != already_removed ] || rm -- "$RUNNER_TEST_STATE"
  case "$RUNNER_TEST_MODE" in
  run_failure) exit 42 ;;
  run_signal) kill -TERM "$PPID"; exit 143 ;;
+ script_signal) sleep 4 ;;
  esac
  ;;
 container)
  case "$2" in
- exists) test -f "$RUNNER_TEST_STATE" ;;
+ exists) [ "$RUNNER_TEST_MODE" != unknown_exists ] || exit 125; test -f "$RUNNER_TEST_STATE" ;;
  inspect) cat "$RUNNER_TEST_STATE" ;;
  *) exit 94 ;;
  esac ;;
@@ -139,15 +146,48 @@ esac
 					"HAL_" + strings.ToUpper(lane) + "_JOBS=" + jobs, "UNRELATED_SECRET=runner-seeded-secret",
 					"RUNNER_TEST_MODE=" + scenario, "RUNNER_TEST_STATE=" + filepath.Join(root, "container-state"),
 				}
-				output, runErr := command.CombinedOutput()
-				valid := scenario == "default_docker" || scenario == "explicit_docker" || scenario == "podman" || strings.HasPrefix(scenario, "docker_")
-				started := scenario == "podman" || scenario == "run_failure" || scenario == "run_signal" || scenario == "precreate_failure" || scenario == "foreign_label" || scenario == "malformed_cid" || scenario == "multiple_cid" || scenario == "cleanup_failure"
+				var output []byte
+				var runErr error
+				if scenario == "script_signal" {
+					var captured bytes.Buffer
+					command.Stdout, command.Stderr = &captured, &captured
+					command.WaitDelay = time.Second
+					if err := command.Start(); err != nil {
+						t.Fatal(err)
+					}
+					deadline := time.Now().Add(3 * time.Second)
+					for {
+						if _, err := os.Stat(filepath.Join(root, "container-state")); err == nil {
+							break
+						}
+						if time.Now().After(deadline) {
+							_ = command.Process.Kill()
+							_ = command.Wait()
+							t.Fatal("blocked runtime did not start")
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+					start := time.Now()
+					// Signal only build.sh, not its child or process group.
+					if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+						t.Fatal(err)
+					}
+					runErr = command.Wait()
+					output = captured.Bytes()
+					if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+						t.Fatalf("script-only TERM deferred cleanup for %v", elapsed)
+					}
+				} else {
+					output, runErr = command.CombinedOutput()
+				}
+				valid := scenario == "default_docker" || scenario == "explicit_docker" || scenario == "podman" || scenario == "already_removed" || strings.HasPrefix(scenario, "docker_")
+				uncertain := scenario == "foreign_label" || strings.HasSuffix(scenario, "_cid") || scenario == "cleanup_failure" || scenario == "wrong_inspect_id" || scenario == "unknown_exists"
+				started := scenario == "podman" || scenario == "run_failure" || scenario == "run_signal" || scenario == "script_signal" || scenario == "precreate_failure" || scenario == "already_removed" || uncertain
 				if started {
 					calls, err := os.ReadFile(callLog)
 					if err != nil {
 						t.Fatal(err)
 					}
-					uncertain := scenario == "foreign_label" || scenario == "malformed_cid" || scenario == "multiple_cid" || scenario == "cleanup_failure"
 					_, stateErr := os.Stat(filepath.Join(root, "container-state"))
 					if uncertain {
 						if stateErr != nil {
@@ -172,7 +212,7 @@ esac
 					} else if !os.IsNotExist(stateErr) {
 						t.Fatal("owned container leaked after completion/failure/signal")
 					}
-					if scenario == "run_failure" || scenario == "run_signal" || scenario == "podman" {
+					if scenario == "run_failure" || scenario == "run_signal" || scenario == "script_signal" || scenario == "podman" {
 						if !strings.Contains(string(calls), " rm --force --ignore "+strings.Repeat("a", 64)) {
 							t.Fatal("owned container not removed by exact ID")
 						}
@@ -184,6 +224,15 @@ esac
 					}
 					if _, err := os.Stat(runLog); !started && !os.IsNotExist(err) {
 						t.Fatal("unsafe runner reached container launch")
+					}
+					if scenario == "run_failure" || scenario == "run_signal" || scenario == "script_signal" {
+						want := 42
+						if scenario == "run_signal" || scenario == "script_signal" {
+							want = 143
+						}
+						if exit, ok := runErr.(*exec.ExitError); !ok || exit.ExitCode() != want {
+							t.Fatalf("lost run exit identity: %v, want %d", runErr, want)
+						}
 					}
 					return
 				}
@@ -207,10 +256,21 @@ esac
 				if err != nil {
 					t.Fatal(err)
 				}
-				if scenario == "podman" {
+				if scenario == "podman" || scenario == "already_removed" {
 					for _, required := range []string{"--userns=keep-id\n", "--cpus=3\n", "--memory=12g\n", "--pids-limit=512\n", "--security-opt=no-new-privileges\n", "--timeout=10800\n", "--cidfile=", "--label=hal.microvm.build="} {
 						if !strings.Contains(text, required) {
 							t.Errorf("rootless run missing %q", required)
+						}
+					}
+					for _, arg := range strings.Split(text, "\n") {
+						if strings.HasPrefix(arg, "--cidfile=") {
+							cid := strings.TrimPrefix(arg, "--cidfile=")
+							if !strings.HasPrefix(filepath.Dir(cid), filepath.Join(root, ".hal-"+lane+"-runtime.")) {
+								t.Fatal("CID metadata is not independently private")
+							}
+							if strings.Contains(text, "src="+filepath.Dir(cid)+",") {
+								t.Fatal("CID metadata was guest-mounted")
+							}
 						}
 					}
 					if !strings.Contains(string(calls), "/podman --remote=false info ") || strings.Contains(string(calls), "/docker ") {
