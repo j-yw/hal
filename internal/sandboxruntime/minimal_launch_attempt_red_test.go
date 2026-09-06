@@ -88,6 +88,50 @@ func TestMinimalLaunchBindingAttemptsProviderOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestMinimalLaunchBindingRechecksCancellationAfterUnlockedBarrier(t *testing.T) {
+	binding, selection, reservation, provider := minimalLaunchAttemptFixture(t)
+	barrier := func() error {
+		if !reservation.mu.TryLock() {
+			t.Fatal("barrier ran under reservation mutex")
+		}
+		reservation.mu.Unlock()
+		if !selection.mu.TryLock() {
+			t.Fatal("barrier ran under selection mutex")
+		}
+		selection.mu.Unlock()
+		reservation.Revoke()
+		return nil
+	}
+	owner, err := binding.Start(reservation, selection, barrier)
+	if owner != nil || !errors.Is(err, ErrMinimalLaunchUnavailable) || provider.calls.Load() != 0 {
+		t.Fatal("canceled final barrier entered provider")
+	}
+}
+
+func TestMinimalLaunchAttemptExpiryDoesNotExpireConfiguredScope(t *testing.T) {
+	_, selection, _, _ := minimalLaunchAttemptFixture(t)
+	requestKey := "request-v2-" + strings.Repeat("b", 64)
+	if expired, err := selection.Reserve(context.Background(), context.Background(), "expired-job", "expired-generation", requestKey, time.Now().Add(-time.Hour)); err == nil || expired != nil {
+		t.Fatal("expired per-attempt reservation was issued")
+	}
+	fresh, err := selection.Reserve(context.Background(), context.Background(), "fresh-job", "fresh-generation", requestKey, time.Now().Add(time.Minute))
+	if err != nil || fresh == nil {
+		t.Fatal("attempt expiry expired reusable constructor scope")
+	}
+	t.Cleanup(fresh.Revoke)
+	selection.authorizer.Close()
+	if fresh.Context().Err() == nil {
+		select {
+		case <-fresh.Context().Done():
+		case <-time.After(time.Second):
+			t.Fatal("scope revocation did not cancel live grant")
+		}
+	}
+	if revoked, err := selection.Reserve(context.Background(), context.Background(), "revoked-job", "revoked-generation", requestKey, time.Now().Add(time.Minute)); err == nil || revoked != nil {
+		t.Fatal("revoked service scope issued another grant")
+	}
+}
+
 type minimalLaunchAttemptProvider struct {
 	identity MinimalLaunchSelectionIdentity
 	calls    atomic.Int32

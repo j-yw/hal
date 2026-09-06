@@ -478,3 +478,78 @@ not implemented phase-specific minimal recovery. The later selected decoder and
 identity checks must precede cleanup-only recovery, and validated `reserved`
 records need their separate no-dispatch terminal handling before this worker
 slice can be integrated as complete.
+
+## Reachable dispatch checkpoint (partial implementation)
+
+The selected service now consumes the constructor scope and exact principal/
+provider pairing, resolves current provider inputs, and allocates separate random
+worker-job, job-generation and internal launch-grant IDs under the existing
+manager lock. The existing request's admission-grant references remain unchanged
+credential intent, not issued credential permission. `PreparationTimeout` is
+required, positive and at most five minutes; validation precedes directory
+mutation. It limits each reservation, not worker uptime or scope reuse, and
+cannot enlarge the independent Jailer staging/control budgets in a later provider.
+
+The same store retains an `os.Root`, an independently nofollow-opened directory
+file, and the original manager lock. Construction compares both directory
+handles and the actual held lock inode. All selected writes/readback use relative
+single-component names in that retained root; public root replacement, lock
+replacement, unsafe ownership/mode, or closed authority fails admission. No
+replacement directory is adopted. The original six-field private JSON remains
+byte-identical when the optional fourteen-field `minimalLaunch` record is absent.
+
+The manager publishes and independently reads back `reserved` revision 1, then
+`dispatching` revision 2, before arming the opaque live reservation. Every write,
+sync, canonical decode, inode/currentness or readback error poisons admission and
+retains uncertain ownership. Initial publication is exclusive. An attempted
+rename permanently relinquishes cleanup authority over its old temporary name;
+no deferred name-based removal may delete a successor. Failed private temporary
+entries are deliberately left quarantined. The success path removes only the
+still-owned linked temporary entry after checking its exact retained inode.
+
+`MinimalLaunchProviderBinding.Start` consumes a separate at-most-once attempt
+latch before callbacks, without preclaiming the provider's `ClaimLaunch` contract.
+After final provider currentness, the exact service-manager-entry callback checks
+original directory/lock authority and rereads the exact durable dispatch bytes.
+A missing/failed/panicking barrier rejects; cancellation is rechecked afterwards.
+No provider or barrier callback runs while holding reservation/selection mutexes,
+and no provider call runs under the worker manager mutex. The manager's barrier
+itself serializes its bounded store readback under that bookkeeping mutex.
+
+Preparation is canceled and joined before selected Close releases directory and
+state-lock handles. Client disconnection after durable acceptance does not revoke
+the manager-owned reservation. Nil, typed-nil, partial-error, mismatched or
+unclaimed owner results never establish success or terminal cleanup; partial
+handles are retained before error interpretation. A nominal fake owner only
+exercises bookkeeping: this checkpoint still returns unavailable at the initial
+dispatch completion boundary, with no credential/workload result consumer.
+
+The original REDs reproduced unavailable service dispatch, blocked uncanceled
+currentness, replacement-root publication, consumed-temp successor deletion,
+ignored final barriers and repeated unclaimed provider attempts. Additional
+ordinary-file/fake controls cover post-rename and directory-sync uncertainty,
+changed/symlinked readback, original-handle closure, duplicate/conflicting
+submissions, occupied runtime across a different runtime generation, partial
+owners, client disconnection and 24 jobs using one scope. Attempt expiry is
+separate from scope revocation; no hour-long live uptime test is claimed.
+
+Focused commands for this checkpoint:
+
+```sh
+go test -p 2 -race -count=3 ./internal/sandboxruntime ./internal/sandboxworker -run '^TestMinimalLaunch'
+go test -p 2 -count=1 ./internal/sandboxworker -run '^TestL8WorkerV2(SourceGuard|PrivateDurableIdentitySurvivesRestartRoundTrip)'
+```
+
+Source guards enroll the selected files as audited roots, pin the exact
+constructor/dispatch/retained-store compositions and bound their typed callbacks,
+entropy, decoder and nofollow flags. Adversarial tests retain rejection of foreign
+root/lock/provider/callback provenance, reordered or omitted durable publication,
+unbounded decoding and private-schema drift. These checks are not live enforcement.
+
+Remaining coupled work is explicit: the real minimal provider/controller,
+phase-specific no-dispatch reserved recovery, cleanup-only reconnect to the
+surviving owner, explicit cancellation and exact terminal receipt handling.
+Every nonempty selected startup currently quarantines without legacy recovery
+callbacks. Neither missing owner nor age nor a queued state permits relaunch or
+terminal release. This checkpoint does not complete the worker lane or establish
+VM boot, guest credential authorization, strict readiness or prepared-host proof.
