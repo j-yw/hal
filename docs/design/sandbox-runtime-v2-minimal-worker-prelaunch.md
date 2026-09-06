@@ -9,12 +9,14 @@ authoritative. Names below are proposed, not implemented APIs or evidence of a
 runnable worker path. This document changes no protocol, store, launch,
 credential, default-selection, or recovery behavior.
 
-The next implementation should add one preparation permission and one durable
-reservation phase to the existing authenticated L8 service and job manager.
-It must not introduce another manager, job store, scheduler, policy engine,
-daemon, or credential registry. A permission authorizes preparing one selected
-VM; it never authorizes reading a secret, activating credentials, executing a
-workload, or advertising strict readiness.
+This revision replaces the exact per-job grant rows proposed in `7b63b7b2`.
+Pre-enumerating execution/submission/runtime generations would require repeated
+worker reconstruction and is not a production authorization model.
+
+Add one preparation permission and durable reservation phase to the existing L8
+service/manager, not another manager, store, scheduler, policy engine or daemon.
+Permission authorizes preparing one VM, never credential access, workload
+execution or strict readiness.
 
 ## Source constraints
 
@@ -54,74 +56,80 @@ hardware:
 
 All source paths above are under `internal/` unless otherwise stated.
 
-## Permission: fixed policy, terminal revocation
+## Permission: configured scope, per-request issuance
 
-Recommend constructor-frozen exact grant rows with an irreversible revocation
-latch per row. Immutable rows alone provide expiry but cannot provide in-process
-revocation. A mutable grant registry with add/update/renew, persistence or remote
-administration is unnecessary for the initial prepared-host use case.
+Recommend a constructor-owned `MinimalLaunchAuthorizer` with an immutable local
+scope and one terminal close latch. It evaluates each new authenticated request;
+it does not look up a pre-registered job or provide a remote grant-administration
+API. The existing service and manager retain all per-job state.
 
-The trusted host composition supplies `MinimalLaunchPolicy` to an optional
-`MinimalLaunch` member of `L8DurableServiceOptions`. Its constructor receives the
-same principal authority and a bounded list of `MinimalLaunchGrant` registrations
-(`NewMinimalLaunchPolicy(authority, grants)`). Service construction checks this
-authority is its exact principal issuer. An empty list is a valid deny-all policy
-for cleanup-only operation, not implicit unrestricted permission.
-It defensively copies them and rejects duplicate grant IDs, zero revisions,
-ambiguous matches, invalid bounds and invalid identifiers. Initial maximum: 16
-rows, selected as a small explicit bound rather than unlimited cardinality.
+Trusted composition supplies the same `AuthenticatedWorkerPrincipalAuthority`,
+configured allowed principal IDs, worker/host identity, runtime driver `microvm`,
+and allowed template/workspace/network-policy scope. Each scope entry has a safe
+policy ID and positive revision identifying that exact configuration. Scope is
+explicit, with no wildcard-by-omission. Reject ambiguous/invalid configuration;
+an empty scope is deny-all. Do not impose an invented job-count or worker-uptime
+limit. Ordinary configuration/input bounds are not a deployment quota.
 
-Each immutable row contains:
+Scope entries identify durable policies, not the ephemeral IDs of their future
+instances. For example, one approved template/workspace/network policy can admit
+new executions A and B with distinct submissions, runtime generations and plans.
+The resolved instance of each policy still has to match its configured scope.
 
-| Group | Exact values |
+| Input | Source and meaning |
 | --- | --- |
-| Principal | Principal ID plus the constructor-owned principal authority; matching strings from another authority are insufficient |
-| Permission | Grant ID, positive revision, `NotBefore`, `ExpiresAt` |
-| Job intent | Sandbox ID, execution ID, submission ID, plan ID |
-| Selection | Worker ID, host ID, runtime driver `microvm`, runtime ID and runtime generation |
-| Input policies | Template policy ID and workspace policy ID |
+| Principal | Exact authenticated service-issued object, checked against configured principal scope; equal visible IDs from another authority fail |
+| Host and runtime selection | Current handle resolved by the constructor-injected concrete provider from its trusted host/runtime configuration and retained verified inputs, never from request metadata alone |
+| Template/workspace/network policy | Independently resolved actual policy identities/fingerprints, checked against immutable configured scope; request labels are selection hints |
+| Execution, submission, plan and command intent | Validated caller correlation plus full existing request fingerprint; does not grant authority and need not be pre-enumerated |
+| WorkerJobID and JobGeneration | Fresh manager allocation, made once under its existing lock and bound before durable reservation |
+| LaunchGrantID | Fresh internal authorizer output for that exact reservation; never copied from request `AdmissionGrantID` |
 
-All guest-bound IDs use the minimal protocol's 1–64 byte syntax. Reject, never
-truncate, broader worker IDs. Registration has no JSON decoder and is a trusted
-composition input, not a new worker operation. Grant fields in `JobStartRequestV2`
-select a registered row; they cannot create or edit it. The row's host/runtime
-tuple is independently supplied by trusted host composition, not copied from a
-caller runtime descriptor. Matching that row is permission, not proof of live
-host state; the provider must still validate its actual prepared-host inputs.
-The complete validated request fingerprint still binds argv, workspace and
-credential intent for duplicate/conflict detection; this permission does not
-authorize those credential bindings.
+`Authorize(ownerContext, principal, validatedIntent, selection, allocatedJob)`
+checks those sources. `validatedIntent` contains the safe request correlation
+IDs and full existing request fingerprint, not raw argv/environment/inputs.
+It returns a private one-shot grant bound to the full resolved tuple,
+the exact request fingerprint, policy ID/revision, WorkerJobID and JobGeneration.
+The authorizer is a small local exact-match/checking object, not a second policy
+engine: it does not resolve registries, schedule hosts, register secrets or
+interpret arbitrary rules. Same scope can issue successive grants without
+restart or refresh. Capacity remains enforced by the existing manager/host and
+Jailer resource owners, not by the number of previously issued grants.
 
-Use a half-open admission interval `[NotBefore, ExpiresAt)`, with an explicit
-finite maximum grant lifetime of one hour. Capture real production time at each
-admission check; tests inject the private clock. Once expiry or revocation is
-observed, that row is permanently unavailable in that policy instance, including
-after a backwards clock adjustment. Restart does not reconstruct permissions
-from job files: trusted composition must explicitly supply policy again.
+The request's credential `AdmissionGrantID`, revision and bindings remain
+credential-intent correlation. They cannot select or issue launch permission.
+Their presence in a request fingerprint or later public boot binding does not
+authorize credential access; the later credential authorizer must independently
+approve them. Keep the new internal launch grant in a distinct namespace/schema.
 
-The trusted holder may call `Revoke(grantID, revision)` or `Close()` on the policy.
-These only close matching terminal latches; they cannot increase a revision,
-alter scope or re-enable a row. Revoke is idempotent for an exact row and errors
-on unknown/mismatched identity. No public CLI, worker opcode or refresh service is
-added. Replacing the constructor policy is an explicit administrative action,
-not automatic expiry renewal. These latches are service-lifetime revocation,
-not durable policy revocation. On restart, trusted composition must omit a revoked
-grant; reinstalling the original permissive
-rows would reauthorize other, unreserved work and is not safe revocation recovery.
-The operational owner must persist its policy decision outside this slice and
-supply the current snapshot. This design adds no hidden policy file or database
-and does not claim an in-memory bit survives a crash. Existing reservation
-tombstones independently prevent reusing already accepted submissions.
+All guest-bound IDs retain the minimal protocol's 1–64 byte syntax; reject rather
+than truncate broader values. Scope and authorizer handles are trusted local
+constructor inputs, with no worker JSON construction path. Service construction
+checks the authorizer uses its exact principal issuer and configured provider.
 
-Admission checks the exact principal object and row before allocating a job, and
-again immediately before authorizing provider dispatch. A per-reservation
-one-shot claim and revocation serialize under policy/manager ownership; use one
-documented lock order (manager then policy), with no provider call under either
-lock. Revocation after that claim means cancellation plus exact owned cleanup,
-not proof that the provider never ran. Expiry is a launch-admission deadline,
-not a new credential/session lifetime. Explicit revocation also cancels an
-in-flight preparation; later active-job revocation must converge on the same
-job owner's cancellation path, not a second cleanup worker.
+### Lifetime and revocation
+
+A grant lasts only for one live reservation's bounded, service-owned preparation
+attempt. Use the concrete provider's explicit preparation budget and cancellation,
+not a deployment-wide expiry. Selected start already uses a bounded context in
+`jailerRecoveryRuntime.startChild`; the adapter must pass/compose its preparation
+deadline rather than reset it at each stage. Expiry retires the grant permanently,
+without changing credential/session lifetime or authorizing a new attempt.
+
+Per-job revocation uses the existing authenticated cancellation route and that
+reservation's terminal latch; do not add a grant-ID cancellation API. Closing the
+authorizer disables all further issuance and revokes its outstanding preparation
+grants through the same owners. It has no add/update/renew method. Admission and
+claim check revocation using manager-then-authorizer lock order; no provider call
+occurs under either lock. Revocation after claim requests exact owned cleanup,
+not proof the provider never ran.
+
+This close latch is service-lifetime revocation, not durable policy revocation.
+For durable policy withdrawal, trusted composition must continue excluding the
+principal/scope on restart; installing the old permissive configuration would
+authorize new submissions. This slice adds no policy database and does not
+pretend the latch survives restart. Existing durable cancellation/tombstones
+independently stop old submissions. Restart creates no grants for stored jobs.
 
 ## Proposed API and actual consumer
 
@@ -130,11 +138,13 @@ constructor-only and explicitly selects the minimal path for that service:
 
 ```text
 L8DurableServiceOptions.MinimalLaunch
-  Policy: exact-authority MinimalLaunchPolicy
+  Authorizer: constructor-owned MinimalLaunchAuthorizer
   Provider: MinimalJobRuntimeProvider
 
 MinimalJobRuntimeProvider
-  StartMinimalJob(ownerContext, reservation, validatedRequest)
+  ResolveMinimalSelection(requestContext, selectionHints)
+      -> retainedSelection, error
+  StartMinimalJob(ownerContext, reservation, retainedSelection, validatedRequest)
       -> ownedJob, error
   RecoverMinimalJob(cleanupContext, recoveryIdentity)
       -> cleanupOnlyOwnedJob, error
@@ -142,15 +152,30 @@ MinimalJobRuntimeProvider
 
 These narrow neutral types belong in `sandboxruntime`; concrete selected-provider
 code belongs in `firecrackerhost`. Worker production code must not import the
-concrete runtime. `reservation` is an opaque, nonserializable, owner-checked handle
-whose copies share one launch claim. Its proposed `ClaimLaunch(ctx)` method
-validates the exact live manager reservation in `dispatching`, current policy
-and cancellation, then consumes that claim before returning a copied safe tuple
-and revocation signal. Later currentness checks do not consume a second claim.
-Its owner is the existing job manager, not a new global token registry. A
-deserialized tuple is never an operational permit.
-`validatedRequest` is a bounded defensive copy of existing request input, not a
-second durable copy of argv, environment, stdin or workspace bytes.
+concrete runtime. `ResolveMinimalSelection` is a read-only preflight: no VM,
+namespace, cgroup, identity-slot allocation or asset-lease consumption. It resolves
+the already configured trusted host, policy bindings and verified image/input
+objects, and returns an opaque handle owned by that same provider. Descriptor
+strings, copied handles from another provider, closed or stale input ownership
+cannot substitute. Any temporary read handles are closed on conflict/failure.
+
+The concrete adapter reuses the trusted host policy/verified distribution in
+`jailer_recovery_producer_linux.go` and independently resolved template/workspace/
+network policy bindings. It does not require already-created job namespaces or
+future L10 workspace proof: permission to prepare those resources precedes their
+creation. Runtime/plan generations identify the selected host-owned attempt;
+they are never invented evidence that preparation succeeded. The provider must
+perform and correlate actual preparation after claim. Missing trusted selection
+fails unavailable; a new metadata-only `trusted: true` object is not a resolver.
+This actual resolver/consumer pair is required, not an API already implemented.
+
+`reservation` is opaque/nonserializable; copies share one `ClaimLaunch(ctx)`.
+Claim checks the exact live manager entry in `dispatching`, issued grant and
+cancellation, then returns a copied safe tuple and revocation signal. Later
+currentness checks cannot claim again. The provider revalidates selection before
+claim and at pre-allocation/prelaunch barriers; changed input is not permitted.
+The existing manager owns it; deserialization cannot create permission.
+`validatedRequest` is a bounded defensive copy, not new durable raw input.
 
 The owned result must retain cleanup even on partial start or readiness failure.
 It exposes cancellation/terminal notification and exact bounded finalization;
@@ -162,9 +187,9 @@ The concrete receipt shape is a coupled follow-up to the selected owner adapter,
 not permission to reuse a historical credential cleanup receipt.
 
 `NewL8DurableService` keeps its current branch unchanged when `MinimalLaunch` is
-absent. When present, require a nonnil policy and non-typed-nil provider with both
-start and cleanup-only recovery support, and reject a simultaneously configured
-legacy binder. Do not choose a route from request-controlled profile strings.
+absent. When present, require a nonnil authorizer and non-typed-nil provider with
+selection/start and cleanup-only recovery, and reject a simultaneous legacy
+binder. Request-controlled profile strings cannot choose the route.
 `NewL8Service` and ordinary `Service` remain unchanged/default-off.
 
 The selected `HandleAuthenticatedRequest` sequence is:
@@ -176,19 +201,24 @@ The selected `HandleAuthenticatedRequest` sequence is:
    exact `(principal, daemonGeneration, submissionId)` in the manager's state map.
    A different full request fingerprint conflicts even when the legacy computed
    submission key changed. Preserve the old helper/key behavior for old records.
-2. Validate the registered launch permission, independently configured selection
-   and provider availability. Missing policy or missing complete minimal provider
-   fails before ID allocation, store mutation or launch. In particular, do not
-   install a fake complete seed or the legacy helper-based provider as fallback.
+2. Check authorizer scope and complete provider availability, then call the
+   read-only selection resolver. Validate exact principal/scope/selection and
+   request correlation. Missing scope, trusted selection or complete minimal
+   provider fails before ID allocation, store mutation or launch. Never install
+   a fake complete seed or the legacy helper-based provider as fallback.
 3. Under the existing manager mutex/state lock, recheck duplicate/conflict,
    allocate `WorkerJobID` with `newOpaqueJobID`, allocate a separate random
-   `JobGeneration`, and publish the exact `reserved` record. Persist once before
-   any provider call. Job generation is not activation generation. Also reject
+   `JobGeneration`, issue the exact reservation-bound launch grant through the
+   local authorizer with the finite owned preparation context, and publish the
+   exact `reserved` record. Check request cancellation before durable acceptance;
+   the owned context does not inherit client-disconnect cancellation afterwards.
+   Persist once before any provider launch call. Job generation is not activation
+   generation. Reject
    another nonterminal reservation for the exact worker/host/driver/runtime ID,
    even if a different request supplies a new runtime generation or grant. Reuse
    after another submission requires that earlier reservation's validated
    terminal cleanup; do not rely only on the later Jailer busy-slot rejection.
-4. Retain the live reservation in that manager. Recheck permission/cancellation,
+4. Retain the live reservation in that manager. Recheck grant/cancellation,
    durably publish `dispatching`, mark that live entry dispatched and call the
    provider exactly once. Provider calls `ClaimLaunch` before its first host
    allocation and observes its revocation/cancellation latch at subsequent launch
@@ -221,8 +251,11 @@ unknown-field allowance. Keep the existing 64 KiB total record bound.
 
 The new member contains `contractVersion`, positive `revision`, `phase`,
 `jobGeneration`, `sandboxId`, `executionId`, `submissionId`, `runtimeGeneration`,
-`grantId`, `grantRevision`, `grantNotBefore`, `grantExpiresAt`, and a canonical
-safe policy-correlation digest. Other exact tuple members remain in the existing
+`launchGrantId`, `launchPolicyId`, `launchPolicyRevision`, `preparationStartedAt`,
+`preparationDeadline`, and a canonical safe selection/policy-correlation digest.
+The deadline is diagnostic/rejection metadata; it never revives authority on
+restart. Original credential grant ID/revision stay in `CredentialIntent` and
+are not equated with these launch fields. Other tuple members remain in existing
 JobV2/principal/credential-intent fields and are cross-validated. A bounded
 optional `ownerCorrelation` holds only the supervisor config digest and owner
 generation after actual publication; it is not a path, PID authority or handle.
@@ -271,8 +304,8 @@ seed schema or insert a fictional helper generation to make this possible.
   and directory sync. The current `Lstat`/open loader alone is insufficient for
   this new launch barrier. A mismatch is poison, not repaired by rereading until
   expected bytes return. Require this for both reserved and dispatching writes.
-- Only fully durable, verified `dispatching` authorizes provider entry. A crash
-  before that commit cannot be followed by a provider call; a crash afterwards
+- Only fully durable, verified `dispatching` authorizes provider launch entry.
+  A crash before that commit cannot be followed by a launch; a crash afterwards
   is conservatively possibly launched, even if the process had not yet entered it.
 - Startup handles this discriminator before credential recovery and the generic
   queued-job interruption loop. `reserved` can become interrupted/no-dispatch
@@ -303,21 +336,27 @@ that first worker slice.
 
 Meaningful compiling REDs must cover:
 
-1. Same authority/principal exact allow; wrong authority with equal visible IDs;
-   missing/typed-nil dependencies; every mismatched grant/selection/policy field;
-   malformed rows, duplicates, zero revision and 64-byte boundary violations.
-2. Exact NotBefore/ExpiresAt boundaries, observed-expiry clock rollback, revoke
-   before reservation and dispatch, revoke racing dispatch, repeat revoke and
-   no ability to revive a closed policy or claim via a copied permit. Restart
-   with a trusted snapshot excluding a revoked row must still deny it; explicitly
-   demonstrate that revocation persistence is not supplied by the old live latch.
+1. Same authority/principal and in-scope selection allow; wrong authority with
+   equal visible IDs; missing/typed-nil dependencies; every substituted scope,
+   selection and issued-grant field; invalid scope/revision/64-byte identifiers.
+   Selection from the wrong provider, closed/replaced inputs, permission based
+   only on matching request policy labels, and resolver mutation all fail.
+   Forged request credential grant IDs confer no launch permission. A valid
+   launch grant does not cause credential-source resolution or authorization.
+2. Successive distinct run/auto/factory-shaped requests are independently issued
+   grants by one unchanged authorizer, including after one hour of worker uptime
+   and after more than 16 completed jobs. Job identifiers need no pre-registration.
+   Preparation-deadline expiry, cancellation before/after claim, authorizer close,
+   copied-grant replay and observed-expiry clock rollback all remain fail-closed.
+   Restart with withdrawn scope still denies new work; the old live latch is not
+   claimed as durable revocation evidence.
 3. Concurrent identical submissions allocate one pair of IDs and enter provider
    once; differing request fingerprints conflict, including changes that alter
    the legacy submission key. A new submission cannot bypass occupied runtime
    identity by changing grant/generation. Cancellation and provider panic cannot
    make a second attempt. RNG failure and ID collision launch nothing.
 4. Write, sync, rename, directory-sync and exact-readback failures at both durable
-   boundaries; failure after rename preserves poison. Assert zero provider calls
+   boundaries; failure after rename preserves poison. Assert zero provider launches
    unless the dispatch barrier completed, not merely an error return.
 5. Restart from every phase; same/different daemon identity; absent or malformed
    owner record; replay and failed terminal commit. No startup test may call start.
@@ -347,6 +386,16 @@ stream generations are added only after launch from the original supervisor's
 manager and raw minimal stream, then authenticated with unchanged
 `session.NewControllerHandshake`.
 
+The existing minimal binding fields `admissionGrantId` and `admissionRevision`
+remain the validated credential-intent references from the authenticated request.
+They bind requested intent only: neither prelaunch issuance nor authenticated
+minimal readiness proves a postlaunch credential grant exists. The later actual
+credential authorizer must validate/register those references after complete
+runtime correlation, preserving existing request/seed equality. Do not substitute
+`launchGrantId` or `launchPolicyRevision` into those fields. If a later selected
+credential contract cannot preserve that meaning, it requires an explicit schema
+decision; this design does not silently rename the legacy semantics.
+
 Use a distinct selected config version and eighth `minimal-controller-key` FD,
 with a fixed sealed 32-byte Ed25519 seed and exact public-key correlation. Keep
 the existing seven-role and legacy six-role paths unchanged. Never derive the
@@ -359,14 +408,12 @@ NIC composition have separate owners; this design does not change them.
 
 ## Decisions requiring supervisor approval
 
-- Accept fixed constructor rows plus irreversible per-row revocation, maximum
-  16 rows and one-hour admission lifetime, rather than live grant registration.
-  Repeated unattended workloads needing new tuples will need an explicitly
-  authorized configuration/registration handoff; this design does not pretend
-  the initial immutable table solves dynamic provisioning. The operational input
-  is a trusted current policy snapshot that continues excluding revoked grants
-  after restart, alongside the same principal authority binding and selected
-  prepared-host tuple; worker job JSON cannot regenerate that input.
+- Accept a constructor-owned per-request authorizer over configured durable
+  scope, with independently resolved current selection and separate internal
+  launch grants. Operational inputs are the current allowed principal/host/policy
+  configuration, actual selected-provider dependencies and its existing bounded
+  preparation budget. New job IDs need no configuration update. Durable scope
+  withdrawal must still be reflected in trusted configuration after restart.
 - Accept the initial existing daemon-generation restriction and fail-closed
   startup when cleanup support is unavailable, rather than a new migration or
   recovery service. A fresh cleanup-only client to the surviving owner remains
