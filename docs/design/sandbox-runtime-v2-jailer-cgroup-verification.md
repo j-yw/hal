@@ -7,7 +7,9 @@ child is bound to runtime ID and the measured Firecracker config. The anchor's
 entire nofollow chain must be root-owned and not group/other writable; the anchor
 and child must be cgroup-v2 domain directories with cpu/memory/pids already
 enabled at the anchor. Retained FD identity and independent limit readback are
-required before launch and throughout cleanup.
+required before launch. Cleanup rechecks retained identity and domain, then
+requires descendant-empty evidence before releasing resources; changed limits
+must not prevent killing the owned cgroup.
 
 Accepted bounds: CPU period 1,000..1,000,000 microseconds; quota
 1,000..1,024,000,000 microseconds, at most 1,024 periods; memory 1 MiB..1 TiB;
