@@ -20,6 +20,7 @@ type jailerRecoveryStarter struct {
 	gate                      *os.File
 	observation               l8RuntimeOwnerProcessObservation
 	started, released, closed bool
+	closeErr                  error
 }
 
 func (starter *jailerRecoveryStarter) startStrictJailerNamespaceProcess(ctx context.Context, request strictJailerNamespaceProcessStartRequest) (process HostProcess, resultErr error) {
@@ -119,7 +120,7 @@ func (starter *jailerRecoveryStarter) close() error {
 	starter.mu.Lock()
 	defer starter.mu.Unlock()
 	if starter.closed {
-		return nil
+		return starter.closeErr
 	}
 	starter.closed = true
 	failed := starter.observation.Close() != nil
@@ -128,7 +129,7 @@ func (starter *jailerRecoveryStarter) close() error {
 		starter.gate = nil
 	}
 	if failed {
-		return errL8RuntimeOwnerInvalid
+		starter.closeErr = errL8RuntimeOwnerInvalid
 	}
-	return nil
+	return starter.closeErr
 }

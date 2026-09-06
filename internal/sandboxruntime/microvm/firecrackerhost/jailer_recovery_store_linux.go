@@ -41,17 +41,46 @@ func (store *l8RuntimeOwnerLinuxRecordStore) readRecord() (firecrackerRuntimeOwn
 		return firecrackerRuntimeOwnerRecordV1{}, false, nil
 	}
 	if err != nil {
+		selected.poisoned = true
 		return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 	}
 	defer file.Close()
 	if selected.file == nil || !sameJailerRecoveryFile(file, selected.file) {
+		selected.poisoned = true
 		return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 	}
 	record, busy, terminal, err := readJailerRecoveryRecordFile(file, selected.config)
 	if err != nil || record != selected.record || !equalJailerRecoveryBusy(busy, selected.busy) || terminal != selected.terminal || record.HostBootID != store.bootID {
+		selected.poisoned = true
 		return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 	}
 	return record, true, nil
+}
+
+// Called under the existing store lock after exact record validation. A failed
+// unlink/sync/readback remains uncertain. Once committed, later handle closure
+// cannot rewrite the directory or affect a successor record.
+func (store *l8RuntimeOwnerLinuxRecordStore) retireSelectedRecord() error {
+	s := store.selected
+	if s == nil || s.file == nil || s.poisoned || s.retired {
+		return errL8RuntimeOwnerInvalid
+	}
+	if unix.Unlinkat(store.directoryFD, l8RuntimeOwnerRecordName, 0) != nil || unix.Fsync(store.directoryFD) != nil {
+		s.poisoned = true
+		return errL8RuntimeOwnerInvalid
+	}
+	var stat unix.Stat_t
+	if !errors.Is(unix.Fstatat(store.directoryFD, l8RuntimeOwnerRecordName, &stat, unix.AT_SYMLINK_NOFOLLOW), unix.ENOENT) || unix.Fstat(int(s.file.Fd()), &stat) != nil || stat.Nlink != 0 {
+		s.poisoned = true
+		return errL8RuntimeOwnerInvalid
+	}
+	s.retired = true
+	file := s.file
+	s.file = nil
+	if file.Close() != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	return nil
 }
 
 func (store *l8RuntimeOwnerLinuxRecordStore) writeRecord(record firecrackerRuntimeOwnerRecordV1) error {

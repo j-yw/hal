@@ -558,7 +558,13 @@ func (store *l8RuntimeOwnerLinuxRecordStore) RetireFinalized(ctx context.Context
 func (store *l8RuntimeOwnerLinuxRecordStore) retire(ctx context.Context, accept func(firecrackerRuntimeOwnerRecordV1) bool) error {
 	_, _, err := store.withLock(ctx, unix.LOCK_EX, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
 		record, present, readErr := store.readRecord()
-		if readErr != nil || !present || accept == nil || !accept(record) || unix.Unlinkat(store.directoryFD, l8RuntimeOwnerRecordName, 0) != nil || unix.Fsync(store.directoryFD) != nil {
+		if readErr != nil || !present || accept == nil || !accept(record) {
+			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
+		}
+		if store.selected != nil {
+			return record, false, store.retireSelectedRecord()
+		}
+		if unix.Unlinkat(store.directoryFD, l8RuntimeOwnerRecordName, 0) != nil || unix.Fsync(store.directoryFD) != nil {
 			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 		}
 		return record, false, nil
