@@ -19,6 +19,7 @@ type L8Service struct {
 	daemonGeneration   string
 	principalAuthority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
 	jobs               *jobManagerV2
+	minimalLaunch      *L8MinimalLaunchOptions
 	liveMu             sync.Mutex
 	live               map[string]*l8LiveJobCredential
 	closed             bool
@@ -45,6 +46,14 @@ type L8DurableServiceOptions struct {
 	// fails closed. A missing provider retains ErrL8RecoveryDependency when
 	// durable credential ownership is present.
 	RecoveryProvider sandboxruntime.JobCredentialRuntimeRecoveryProvider
+	// MinimalLaunch explicitly selects the separate prelaunch reservation path.
+	// Its admission remains unavailable until the durable boundary is implemented.
+	MinimalLaunch *L8MinimalLaunchOptions
+}
+
+type L8MinimalLaunchOptions struct {
+	Authorizer *sandboxruntime.MinimalLaunchAuthorizer
+	Provider   *sandboxruntime.MinimalLaunchProviderBinding
 }
 
 // L8AuthenticatedServerOptions attaches one durable L8 service to the
@@ -70,8 +79,20 @@ func NewL8Service(binder *sandboxruntime.JobCredentialRuntimeBinder) (*L8Service
 func NewL8DurableService(options L8DurableServiceOptions) (*L8Service, error) {
 	workerID := strings.TrimSpace(options.WorkerID)
 	daemonGeneration := strings.TrimSpace(options.DaemonGeneration)
-	if !validWorkerV2SafeID(workerID) || !validWorkerV2SafeID(daemonGeneration) || options.Binder == nil || options.PrincipalAuthority == nil {
+	if !validWorkerV2SafeID(workerID) || !validWorkerV2SafeID(daemonGeneration) || options.PrincipalAuthority == nil {
 		return nil, ErrL8ServiceUnavailable
+	}
+	var minimalLaunch *L8MinimalLaunchOptions
+	if options.MinimalLaunch == nil {
+		if options.Binder == nil {
+			return nil, ErrL8ServiceUnavailable
+		}
+	} else {
+		if options.Binder != nil || !options.MinimalLaunch.Authorizer.MatchesDependencies(options.PrincipalAuthority, options.MinimalLaunch.Provider) {
+			return nil, ErrL8ServiceUnavailable
+		}
+		copied := *options.MinimalLaunch
+		minimalLaunch = &copied
 	}
 	if options.RecoveryProvider != nil && sandboxruntime.JobCredentialRuntimeInterfaceNil(options.RecoveryProvider) {
 		return nil, ErrL8ServiceUnavailable
@@ -86,6 +107,7 @@ func NewL8DurableService(options L8DurableServiceOptions) (*L8Service, error) {
 	return &L8Service{
 		binder: options.Binder, workerID: workerID, daemonGeneration: daemonGeneration,
 		principalAuthority: options.PrincipalAuthority, jobs: jobs, live: make(map[string]*l8LiveJobCredential),
+		minimalLaunch: minimalLaunch,
 	}, nil
 }
 
@@ -180,7 +202,7 @@ func (service *L8Service) HandlesAuthenticatedRequest(request Request) bool {
 // HandleAuthenticatedRequest accepts a principal only from the authenticated
 // transport method boundary. Request JSON has no principal input.
 func (service *L8Service) HandleAuthenticatedRequest(ctx context.Context, principal sandboxruntime.AuthenticatedWorkerPrincipal, request Request) Response {
-	if service == nil || service.binder == nil || service.jobs == nil || service.principalAuthority == nil {
+	if service == nil || (service.binder == nil && service.minimalLaunch == nil) || service.jobs == nil || service.principalAuthority == nil {
 		return l8ServiceFailureResponse(request)
 	}
 	principalID, ok := l8AuthenticatedPrincipalIdentity(service.principalAuthority, principal)
@@ -189,6 +211,11 @@ func (service *L8Service) HandleAuthenticatedRequest(ctx context.Context, princi
 	}
 	if response, ok := contextErrorResponse(ctx, request); ok {
 		return response
+	}
+	if service.minimalLaunch != nil {
+		// Compiling RED boundary: no reservation issuer or durable dispatch yet.
+		// Never fall back to a complete credential seed or call a provider here.
+		return l8ServiceFailureResponse(request)
 	}
 	if request.Operation == OperationJobCancelV2 {
 		return service.handleAuthenticatedJobCancelV2(ctx, principalID, request)

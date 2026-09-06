@@ -2,12 +2,13 @@
 
 ## Status and scope
 
-Design only, based on `f448cad67541537420116798fca942d6f64fe5b1` for issue #99.
+Approved design and initial compiling RED, based on
+`f448cad67541537420116798fca942d6f64fe5b1` for issue #99.
 The [Linux completion architecture](sandbox-runtime-v2-linux-completion-architecture.md)
 and [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) remain
-authoritative. Names below are proposed, not implemented APIs or evidence of a
-runnable worker path. This document changes no protocol, store, launch,
-credential, default-selection, or recovery behavior.
+authoritative. The initial declarations described below are not an implemented
+admission path or evidence of a runnable worker. No protocol, store, launch,
+credential, default-selection, or recovery behavior is enabled.
 
 This revision replaces the exact per-job grant rows proposed in `7b63b7b2`.
 Pre-enumerating execution/submission/runtime generations would require repeated
@@ -421,6 +422,50 @@ NIC composition have separate owners; this design does not change them.
 - Approve the coupled selected-path store readback and private schema expansion
   before GREEN. Merely adding a policy gate would leave the durable launch gap.
 
-This documentation-only checkpoint is verified by source inspection and
-`git diff --check`. No behavior test, VM boot, credential activation, prepared-
-Linux acceptance, strict-default readiness or full restart recovery is claimed.
+## First compiling RED checkpoint
+
+The first split introduces only neutral provider/selection/identity declarations,
+constructor-owned scope/dependency pairing, and the separate optional selected
+route on the existing `L8Service`. The actual manager/store/state lock are created;
+the selected handler then returns unavailable. `MinimalLaunchReservation` cannot
+be issued or claimed. There is no grant issuance, durable minimal schema,
+selection dispatch, actual provider, or fabricated complete credential seed.
+The neutral owned-result/receipt declarations do not validate cleanup and must
+not be treated as proof-producing APIs. Full bounded request handoff and provider
+ownership validation remain part of the coupled implementation, not these
+declarations.
+
+`TestMinimalLaunchDispatchRequiresDurableReservationBeforeProviderEntry` drives
+the real selected service with a valid existing worker request and the exact
+issued principal. It fails because provider entry is zero, rather than failing
+to compile or construct the service. Its fake provider is required, once reached,
+to independently read the actual job file at entry and check `dispatching`,
+distinct allocated job/generation/launch IDs, exact policy/request correlation,
+unchanged credential intent, and absent legacy credential ownership. It then
+returns an uncertain error without launching anything; the record must remain.
+The independent ordinary-file observation is not an fsync/readback-fault proof.
+
+At this initial unavailable boundary the provider's claim, disk assertions, and
+uncertain-result assertions are **unexecuted**, not independently reproduced
+defects. Targeted duplicate/conflict/runtime occupancy, readback/fault injection,
+restart/cancellation, and repeated-scope lifetime tests will follow when their
+real behavior boundary is reachable. In particular, this checkpoint does not
+claim that more than 16 jobs or long-lived issuance has been exercised.
+
+The passing adjacent controls exercise exact principal rejection, constructor
+dependency pairing (including a different provider and lookalike issuer),
+cancellation, and existing default/legacy worker behavior. All fixtures are local
+ordinary files and fakes; no runtime, command, network, or credential resolution
+is performed by the new tests.
+
+Focused commands (the first intentionally fails until GREEN):
+
+```sh
+go test -p 2 -count=1 ./internal/sandboxworker -run '^TestMinimalLaunchDispatch'
+go test -p 2 -count=1 ./internal/sandboxworker -run '^(TestL8Service|TestNewL8Service|TestL8D6Worker|TestL8WorkerV2SourceGuards|TestL8WorkerV2SourceGuardAllows)'
+```
+
+No VM boot, credential activation, prepared-Linux acceptance, strict-default
+readiness or full restart recovery is claimed. GREEN requires supervisor review
+of this fixed RED, then the real coupled authorizer/manager/durable dispatch
+boundary; merely removing the unavailable return is not sufficient.
