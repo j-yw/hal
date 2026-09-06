@@ -11,18 +11,23 @@ execution and the `verify-v1` result have been validated.
 
 - Legacy provider execution retains its existing command. A nil execution
   error means exit 0; an actual typed exit 4 is accepted only with `status=fail`.
-  Unknown errors, cancellation, other exits, and contradictory results fail.
+  A single wrapped typed process exit remains valid; joined errors are rejected
+  because another arm may be a transport or write failure. Unknown errors,
+  caller cancellation, other exits, and contradictory results fail.
 - Worker execution cannot classify every `driver_failed` error as an ordinary
   failed check: the adapter also uses that error for other failures. A small
   command-local shell wrapper therefore waits for Hal, appends exactly one
   terminal `HAL_FACTORY_VERIFY_EXIT=<code>` line, and succeeds only after that
   write. It creates no status file and changes no public or durable schema.
 - The worker route requires a non-nil outer execution result, exit 0, no
-  execution error, bounded untruncated output, exactly one JSON object and one
+  execution error, at most 1 MiB of untruncated output, one JSON object and one
   terminal footer. The reported Hal exit must be 0 for pass/warn or 4 for fail.
   Missing, interrupted, duplicated, early or trailing-garbage footers fail.
 - The shared parser checks the version, status, known field types and aggregate
-  check facts. Unknown additive JSON fields remain compatible. Errors contain
+  check facts. Top-level, summary and check objects reject duplicate/case-alias
+  keys; counts and required/status facts must be present and correctly typed.
+  Empty check arrays remain valid, but null arrays do not. Unknown additive
+  JSON fields remain compatible. Errors contain
   fixed safe text while preserving original error identity where available.
 - A legitimate failed verification remains a valid result: existing required
   versus advisory factory policy decides whether it blocks the run.
@@ -48,6 +53,7 @@ will use isolated repositories and remain explicitly tagged.
 ```sh
 go test -p 2 ./cmd -run 'TestFactoryVerificationSafety' -count=1
 go test -p 2 -race ./cmd -run 'TestFactoryVerificationSafety' -count=3
+go test -p 2 -tags=integration ./cmd -run 'TestFactoryVerificationSafety' -count=1
 go vet -p 2 ./cmd
 git diff --check
 ```

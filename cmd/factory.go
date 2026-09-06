@@ -2189,14 +2189,16 @@ func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Stor
 	if target == nil {
 		return nil, record, fmt.Errorf("load sandbox %q for verification: not found", sandboxName)
 	}
-	args, err := factorySandboxVerifyArgsForImage(record, selectedWorkerRootlessSandboxState(target))
+	workerRuntime := factorySandboxUsesWorkerRuntime(target)
+	args, err := factorySandboxVerifyArgs(record, selectedWorkerRootlessSandboxState(target), workerRuntime)
 	if err != nil {
 		return nil, record, err
 	}
-	var out bytes.Buffer
+	var out factoryVerificationOutput
 	var provider sandbox.Provider
 	var execErr error
-	if factorySandboxUsesWorkerRuntime(target) {
+	exitCode := 0
+	if workerRuntime {
 		if deps.resolveSandboxRuntime == nil {
 			return nil, record, fmt.Errorf("sandbox verification requires runtime resolver")
 		}
@@ -2212,8 +2214,11 @@ func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Stor
 			Stdout: &out,
 			Stderr: io.Discard,
 		})
-		if execErr == nil && execResult != nil && execResult.ExitCode != 0 {
-			execErr = fmt.Errorf("sandbox runtime command exited with status %d", execResult.ExitCode)
+		if execErr != nil {
+			return nil, record, factoryVerificationExecutionError(execErr)
+		}
+		if execResult == nil || execResult.ExitCode != 0 {
+			return nil, record, factoryVerificationExecutionError(nil)
 		}
 	} else {
 		provider, err = deps.resolveProvider(dir, target.Provider)
@@ -2221,13 +2226,37 @@ func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Stor
 			return nil, record, fmt.Errorf("resolve sandbox provider %q for verification: %w", target.Provider, err)
 		}
 		execErr = deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), args, factorySandboxResolvedSecretEnv(resolvedSecrets), &out)
+		exitCode = factoryVerificationProviderExitCode(execErr)
+		if execErr != nil && exitCode != ExitCodeExpectedNonZero {
+			return nil, record, factoryVerificationExecutionError(execErr)
+		}
 	}
-	result, parseErr := parseFactorySandboxVerifyResult(out.Bytes())
+	if ctx != nil && ctx.Err() != nil {
+		return nil, record, factoryVerificationExecutionError(errors.Join(execErr, ctx.Err()))
+	}
+	if out.truncated {
+		return nil, record, factoryVerificationExecutionError(execErr)
+	}
+	payload := out.buffer.Bytes()
+	if workerRuntime {
+		payload, exitCode, err = parseFactorySandboxWorkerVerifyCompletion(payload)
+		if err != nil {
+			return nil, record, err
+		}
+	}
+	result, parseErr := parseFactorySandboxVerifyResult(payload)
 	if parseErr != nil {
 		if execErr != nil {
-			return nil, record, fmt.Errorf("remote verify command failed (%w) and output was not valid verify JSON: %v", execErr, parseErr)
+			return nil, record, factoryVerificationExecutionError(errors.Join(execErr, parseErr))
 		}
 		return nil, record, parseErr
+	}
+	expectedExit := 0
+	if result.Status == verify.StatusFail {
+		expectedExit = ExitCodeExpectedNonZero
+	}
+	if exitCode != expectedExit {
+		return nil, record, factoryVerificationExecutionError(execErr)
 	}
 	if err := collectAndStoreFactorySandboxVerificationArtifacts(ctx, store, dir, record, result.Artifacts, target, provider, deps, redactor); err != nil {
 		return nil, record, err
@@ -2254,11 +2283,22 @@ func factorySandboxRemoteVerifyArgs(record factory.RunRecord) ([]string, error) 
 }
 
 func factorySandboxVerifyArgsForImage(record factory.RunRecord, imageHal bool) ([]string, error) {
+	return factorySandboxVerifyArgs(record, imageHal, false)
+}
+
+func factorySandboxVerifyArgs(record factory.RunRecord, imageHal, workerCompletion bool) ([]string, error) {
 	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 	if workspaceDir == "" {
 		return nil, errFactorySandboxWorkspaceRequired
 	}
-	verifyScript := "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxHalScriptWithEnv([]string{"verify", "--json"}, nil, imageHal) + " 2>/tmp/hal-factory-verify-stderr"
+	verifyScript := "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxHalScriptWithEnv([]string{"verify", "--json"}, nil, imageHal)
+	if workerCompletion {
+		// Worker stderr is already discarded by the exec request; do not create
+		// a remote stderr/status sidecar merely to establish completion.
+		verifyScript = factorySandboxWorkerVerifyCompletionScript(verifyScript)
+	} else {
+		verifyScript += " 2>/tmp/hal-factory-verify-stderr"
+	}
 	shellFlag := "-lc"
 	if imageHal {
 		// Keep the attested image PATH, not a login profile's replacement.
@@ -2268,15 +2308,7 @@ func factorySandboxVerifyArgsForImage(record factory.RunRecord, imageHal bool) (
 }
 
 func parseFactorySandboxVerifyResult(data []byte) (*verify.Result, error) {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 {
-		return nil, fmt.Errorf("parse remote sandbox verify JSON: empty output")
-	}
-	var result verify.Result
-	if err := json.Unmarshal(trimmed, &result); err != nil {
-		return nil, fmt.Errorf("parse remote sandbox verify JSON: %w", err)
-	}
-	return &result, nil
+	return validateFactorySandboxVerifyJSON(data)
 }
 
 func collectAndStoreFactorySandboxVerificationArtifacts(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, artifacts []verify.ArtifactReference, target *sandbox.SandboxState, provider sandbox.Provider, deps factoryRunDeps, redactor factory.RunSecretRedactor) error {

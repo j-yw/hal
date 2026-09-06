@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -33,6 +34,8 @@ func TestFactoryVerificationSafetyRejectsUnprovenExecution(t *testing.T) {
 		{name: "provider exit127 with pass JSON", output: pass, execErr: factoryVerificationSafetyExit(127)},
 		{name: "provider exit0 contradicts fail", output: fail},
 		{name: "provider cancelled with pass JSON", output: pass, execErr: context.Canceled},
+		{name: "provider joined exit4 and transport", output: fail, execErr: errors.Join(factoryVerificationSafetyExit(4), transportErr)},
+		{name: "provider wrapped joined exit4 and transport", output: fail, execErr: fmt.Errorf("wrapped: %w", errors.Join(factoryVerificationSafetyExit(4), transportErr))},
 		{name: "worker transport with pass JSON", worker: true, output: pass, result: &sandboxruntime.ExecResult{}, execErr: transportErr},
 		{name: "worker missing result", worker: true, output: pass},
 		{name: "worker exit4 plus transport is not a check failure", worker: true, output: fail, result: &sandboxruntime.ExecResult{ExitCode: 4}, execErr: transportErr},
@@ -44,10 +47,27 @@ func TestFactoryVerificationSafetyRejectsUnprovenExecution(t *testing.T) {
 		{name: "worker exit4 contradicts pass", worker: true, output: pass + "\nHAL_FACTORY_VERIFY_EXIT=4\n", result: &sandboxruntime.ExecResult{}},
 		{name: "worker exit0 contradicts fail", worker: true, output: fail + "\nHAL_FACTORY_VERIFY_EXIT=0\n", result: &sandboxruntime.ExecResult{}},
 		{name: "worker unknown exit", worker: true, output: pass + "\nHAL_FACTORY_VERIFY_EXIT=127\n", result: &sandboxruntime.ExecResult{}},
+		{name: "worker outer failure with complete output", worker: true, output: pass + "\nHAL_FACTORY_VERIFY_EXIT=0\n", result: &sandboxruntime.ExecResult{ExitCode: 4}},
+		{name: "worker bounded output overflow", worker: true, output: pass + strings.Repeat(" ", factoryVerificationOutputLimit) + "\nHAL_FACTORY_VERIFY_EXIT=0\n", result: &sandboxruntime.ExecResult{}},
+		{name: "provider bounded output overflow", output: pass + strings.Repeat(" ", factoryVerificationOutputLimit)},
 		{name: "null JSON", output: "null"},
 		{name: "empty object", output: "{}"},
 		{name: "wrong version", output: strings.Replace(pass, "verify-v1", "verify-v0", 1)},
 		{name: "unknown status", output: strings.Replace(pass, `"status":"pass"`, `"status":"unknown"`, 1)},
+		{name: "summary contradicts checks", output: strings.Replace(pass, `"passed":1`, `"passed":0`, 1)},
+		{name: "required failed check contradicts pass", output: strings.Replace(fail, `"status":"fail"`, `"status":"pass"`, 1)},
+		{name: "duplicate status", output: strings.Replace(pass, `"status":"pass"`, `"status":"fail","status":"pass"`, 1)},
+		{name: "case alias status", output: strings.Replace(pass, `"status":"pass"`, `"status":"fail","Status":"pass"`, 1)},
+		{name: "duplicate summary count", output: strings.Replace(pass, `"passed":1`, `"passed":0,"passed":1`, 1)},
+		{name: "case alias summary count", output: strings.Replace(pass, `"passed":1`, `"passed":0,"Passed":1`, 1)},
+		{name: "duplicate check status", output: strings.Replace(pass, `"status":"pass","required"`, `"status":"fail","status":"pass","required"`, 1)},
+		{name: "case alias check status", output: strings.Replace(pass, `"status":"pass","required"`, `"status":"fail","Status":"pass","required"`, 1)},
+		{name: "duplicate check requirement", output: strings.Replace(pass, `"required":true`, `"required":false,"required":true`, 1)},
+		{name: "case alias check requirement", output: strings.Replace(pass, `"required":true`, `"required":false,"Required":true`, 1)},
+		{name: "null check requirement", output: strings.Replace(pass, `"required":true`, `"required":null`, 1)},
+		{name: "missing check requirement", output: strings.Replace(pass, `"required":true,`, ``, 1)},
+		{name: "null summary count", output: strings.Replace(pass, `"failed":0`, `"failed":null`, 1)},
+		{name: "null checks", output: `{"schemaVersion":"verify-v1","status":"pass","summary":{},"checks":null}`},
 		{name: "multiple documents", output: pass + pass},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,6 +93,96 @@ func TestFactoryVerificationSafetyRejectsUnprovenExecution(t *testing.T) {
 	}
 }
 
+func TestFactoryVerificationSafetyPreservesEmptyChecksAndAdditiveFields(t *testing.T) {
+	data, err := json.Marshal(verify.Result{SchemaVersion: verify.SchemaVersion, Status: verify.StatusPass, Checks: []verify.CheckResult{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"total":0`, `"total":0,"futureCount":42`, 1))
+	result, err := parseFactorySandboxVerifyResult(data)
+	if err != nil || result == nil || result.Checks == nil || result.Summary.Total != 0 {
+		t.Fatalf("valid empty checks rejected: result=%v error=%v", result, err)
+	}
+	if _, err := parseFactorySandboxVerifyResult([]byte(strings.Replace(string(data), `"checks":[]`, `"checks":null`, 1))); err == nil {
+		t.Fatal("null checks accepted with otherwise valid empty result")
+	}
+	data = []byte(strings.Replace(factoryVerificationSafetyPayload(t, verify.StatusPass), `"required":true`, `"required":true,"futureCheck":{"allowed":true}`, 1))
+	if _, err := parseFactorySandboxVerifyResult(data); err != nil {
+		t.Fatalf("additive check fields rejected: %v", err)
+	}
+}
+
+func TestFactoryVerificationSafetyPreservesCompletedPolicyResults(t *testing.T) {
+	for _, worker := range []bool{false, true} {
+		for _, status := range []string{verify.StatusPass, verify.StatusWarn, verify.StatusFail} {
+			for _, required := range []bool{false, true} {
+				t.Run(fmt.Sprintf("worker=%t/status=%s/required=%t", worker, status, required), func(t *testing.T) {
+					var result verify.Result
+					if err := json.Unmarshal([]byte(factoryVerificationSafetyPayload(t, status)), &result); err != nil {
+						t.Fatal(err)
+					}
+					result.Artifacts = nil
+					data, err := json.Marshal(result)
+					if err != nil {
+						t.Fatal(err)
+					}
+					// Additive public fields remain compatible with verify-v1.
+					output := strings.TrimSuffix(string(data), "}") + `,"futureField":{"allowed":true}}`
+					code := 0
+					var execErr error
+					if status == verify.StatusFail {
+						code = 4
+						execErr = fmt.Errorf("wrapped exit: %w", factoryVerificationSafetyExit(4))
+					}
+					if worker {
+						output += fmt.Sprintf("\nHAL_FACTORY_VERIFY_EXIT=%d\n", code)
+						execErr = nil
+					}
+					store, record, deps, copies := factoryVerificationSafetyFixture(t, worker, output, &sandboxruntime.ExecResult{}, execErr)
+					deps.now = func() time.Time { return time.Date(2026, 9, 6, 1, 0, 0, 0, time.UTC) }
+					policy := factory.DefaultFactoryPolicy()
+					policy.VerificationRequired = required
+					_, _, err = recordFactoryRunVerification(context.Background(), store, record, ".", deps, policy, nil, factory.RunSecretRedactor{})
+					if wantErr := required && status == verify.StatusFail; (err != nil) != wantErr {
+						t.Fatalf("verification policy error=%v, want failure=%t", err, wantErr)
+					}
+					stored, err := store.LoadRun(record.RunID)
+					if err != nil || stored.Verification == nil || stored.Verification.Summary != result.Summary || *copies != 0 {
+						t.Fatalf("completed verification facts not preserved: error=%v", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestFactoryVerificationSafetyRejectsCancelledCallerAfterCompletion(t *testing.T) {
+	for _, worker := range []bool{false, true} {
+		for _, status := range []string{verify.StatusPass, verify.StatusFail} {
+			t.Run(fmt.Sprintf("worker=%t/status=%s", worker, status), func(t *testing.T) {
+				output := factoryVerificationSafetyPayload(t, status)
+				var execErr error
+				code := 0
+				if status == verify.StatusFail {
+					code = 4
+					execErr = factoryVerificationSafetyExit(4)
+				}
+				if worker {
+					output += fmt.Sprintf("\nHAL_FACTORY_VERIFY_EXIT=%d\n", code)
+					execErr = nil
+				}
+				store, record, deps, copies := factoryVerificationSafetyFixture(t, worker, output, &sandboxruntime.ExecResult{}, execErr)
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				result, _, err := runFactorySandboxRemoteVerification(ctx, store, ".", record, deps, nil, factory.RunSecretRedactor{})
+				if !errors.Is(err, context.Canceled) || result != nil || *copies != 0 {
+					t.Fatalf("cancelled caller accepted completed output: result=%v err=%v", result != nil, err)
+				}
+			})
+		}
+	}
+}
+
 func factoryVerificationSafetyPayload(t *testing.T, status string) string {
 	t.Helper()
 	result := verify.Result{
@@ -85,6 +195,12 @@ func factoryVerificationSafetyPayload(t *testing.T, status string) string {
 		result.Summary = verify.Summary{Total: 1, Failed: 1}
 		result.Checks[0].Status = verify.CheckStatusFail
 		result.Checks[0].ExitCode = 1
+	} else if status == verify.StatusWarn {
+		result.Summary = verify.Summary{Total: 1, Failed: 1, Warnings: 1}
+		result.Checks[0].Required = false
+		result.Checks[0].Status = verify.CheckStatusFail
+		result.Checks[0].ExitCode = 1
+		result.Warnings = []verify.Warning{{CheckID: "required-check", Status: verify.CheckStatusFail}}
 	}
 	data, err := json.Marshal(result)
 	if err != nil {

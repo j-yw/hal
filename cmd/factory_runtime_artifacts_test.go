@@ -233,7 +233,14 @@ func TestRunFactorySandboxRemoteVerificationUsesWorkerRuntime(t *testing.T) {
 				SchemaVersion: verify.SchemaVersion,
 				Status:        verify.StatusPass,
 				Summary:       verify.Summary{Total: 1, Passed: 1},
+				Checks:        []verify.CheckResult{{ID: "worker-check", Status: verify.CheckStatusPass, Required: true}},
 			}); err != nil {
+				return nil, err
+			}
+			if !strings.Contains(req.Args[2], "HAL_FACTORY_VERIFY_EXIT=") {
+				t.Fatal("worker verification omitted completion framing")
+			}
+			if _, err := io.WriteString(req.Stdout, "\nHAL_FACTORY_VERIFY_EXIT=0\n"); err != nil {
 				return nil, err
 			}
 			return &sandboxruntime.ExecResult{}, nil

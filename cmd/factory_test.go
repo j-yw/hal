@@ -6373,7 +6373,7 @@ func TestRunFactoryRunWithDepsPreservesDeferredSandboxWhenVerificationFails(t *t
 			if _, err := out.Write(append(data, '\n')); err != nil {
 				t.Fatalf("write remote verify JSON error: %v", err)
 			}
-			return errors.New("remote verify exited 1")
+			return factoryVerificationSafetyExit(ExitCodeExpectedNonZero)
 		},
 		cleanupSandbox: func(context.Context, factorySandboxCleanupRequest) error {
 			cleanupCalls++
@@ -6610,7 +6610,7 @@ func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(
 				if _, err := out.Write(append(data, '\n')); err != nil {
 					t.Fatalf("write remote verify JSON error: %v", err)
 				}
-				return errors.New("remote verify exited 1")
+				return factoryVerificationSafetyExit(ExitCodeExpectedNonZero)
 			}
 			if isFactorySandboxArtifactCopyArgs(args, factorySandboxRemoteWorkspaceDir(factory.RunRecord{RepoRemote: "git@github.com:jywlabs/hal.git"}), ".hal/auto-state.json") {
 				return errors.New("copy sandbox artifact failed")

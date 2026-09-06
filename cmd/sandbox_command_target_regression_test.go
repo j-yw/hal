@@ -671,7 +671,7 @@ func TestFactorySandboxDefaultCommandKeepsWorkerRouteInactiveInRecord(t *testing
 			return fakeFactorySandboxProvider{}, nil
 		},
 		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, out io.Writer) error {
-			_, _ = io.WriteString(out, `{"schemaVersion":"verify-v1","status":"pass","summary":{"total":0},"checks":[]}`+"\n")
+			_, _ = io.WriteString(out, `{"schemaVersion":"verify-v1","status":"pass","summary":{"total":0,"passed":0,"failed":0,"timedOut":0,"missing":0,"skipped":0,"warnings":0},"checks":[]}`+"\n")
 			return nil
 		},
 		statusSnapshot: func(string) (factorySnapshotArtifact, error) {
