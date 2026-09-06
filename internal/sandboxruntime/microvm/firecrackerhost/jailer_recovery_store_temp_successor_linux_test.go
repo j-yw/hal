@@ -248,3 +248,61 @@ func TestJailerRecoveryStorePublicationDefaultsAndIncompleteOperations(t *testin
 		})
 	}
 }
+
+func TestJailerRecoveryStorePublicationReportedRenameErrorPreservesSuccessor(t *testing.T) {
+	for _, replacing := range []bool{false, true} {
+		name := "genesis-noreplace"
+		if replacing {
+			name = "existing-record-rename"
+		}
+		t.Run(name, func(t *testing.T) {
+			store, record := newJailerRecoveryPublicationFixture(t)
+			ctx := context.Background()
+			if replacing {
+				if _, err := store.CreateGenesis(ctx, record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var source string
+			var expected unix.Stat_t
+			var canary *os.File
+			renames, syncs := 0, 0
+			store.selected.publication = &jailerRecoveryRecordPublicationOps{
+				rename: func(fd int, temporary string, replaceExisting bool) error {
+					renames++
+					if fd != store.directoryFD || replaceExisting != replacing {
+						t.Fatal("changed publication operation")
+					}
+					if err := renameJailerRecoveryRecord(fd, temporary, replaceExisting); err != nil {
+						t.Fatal(err)
+					}
+					source = temporary
+					canary = jailerRecoveryPublicationCanary(t, fd, temporary)
+					if unix.Fstat(int(canary.Fd()), &expected) != nil {
+						t.Fatal("stat successor")
+					}
+					// The caller cannot treat a reported publication error as
+					// evidence that the original name is still owned.
+					return unix.EIO
+				},
+				syncDirectory: func(int) error { syncs++; return unix.EIO },
+			}
+			var err error
+			if replacing {
+				_, _, err = store.withLock(ctx, unix.LOCK_EX, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
+					err := store.writeSelectedRecord(record, nil, false)
+					return record, err == nil, err
+				})
+			} else {
+				_, err = store.CreateGenesis(ctx, record)
+			}
+			if err == nil || !store.selected.poisoned || renames != 1 || syncs != 0 || canary == nil {
+				t.Fatal("reported publication failure was not retained as uncertain")
+			}
+			if _, err := store.Load(ctx); err == nil {
+				t.Fatal("uncertain publication became readback authority")
+			}
+			assertJailerRecoveryPublicationCanary(t, store.directoryFD, source, expected, canary)
+		})
+	}
+}

@@ -132,11 +132,16 @@ func (store *l8RuntimeOwnerLinuxRecordStore) writeSelectedRecord(record firecrac
 	}
 	file := os.NewFile(uintptr(fd), "jailer-owner-record-update")
 	keep := false
+	ownsTemporaryName := true
 	defer func() {
+		if ownsTemporaryName && unlinkJailerRecoveryTemporary(store.directoryFD, name, file) != nil {
+			// Unconfirmed publication/cleanup remains uncertain without
+			// replacing the original error or unlinking an unowned entry.
+			s.poisoned = true
+		}
 		if !keep {
 			_ = file.Close()
 		}
-		_ = unix.Unlinkat(store.directoryFD, name, 0)
 	}()
 	// Once IO starts, a failure poisons this owner. Readback of a rename after a
 	// failed sync cannot promote uncertain state into launch/idle authority.
@@ -152,6 +157,11 @@ func (store *l8RuntimeOwnerLinuxRecordStore) writeSelectedRecord(record firecrac
 		err = publication.rename(store.directoryFD, name, true)
 	} else {
 		err = publication.rename(store.directoryFD, name, false)
+	}
+	if err == nil {
+		// Rename consumes this name permanently, even when a later sync,
+		// readback or close fails. Never clean up a subsequent occupant.
+		ownsTemporaryName = false
 	}
 	if err != nil || publication.syncDirectory(store.directoryFD) != nil {
 		s.poisoned = true
@@ -176,6 +186,18 @@ func (store *l8RuntimeOwnerLinuxRecordStore) writeSelectedRecord(record firecrac
 	keep = true
 	if old != nil && old.Close() != nil {
 		s.poisoned = true
+		return errL8RuntimeOwnerInvalid
+	}
+	return nil
+}
+
+// Inspect the retained original before closing it. A missing or replaced
+// unpublished name is uncertain; following a symlink cannot establish ownership.
+func unlinkJailerRecoveryTemporary(directoryFD int, name string, file *os.File) error {
+	var retained, current unix.Stat_t
+	if file == nil || unix.Fstat(int(file.Fd()), &retained) != nil || retained.Mode&unix.S_IFMT != unix.S_IFREG ||
+		unix.Fstatat(directoryFD, name, &current, unix.AT_SYMLINK_NOFOLLOW) != nil || current.Mode&unix.S_IFMT != unix.S_IFREG ||
+		retained.Dev != current.Dev || retained.Ino != current.Ino || unix.Unlinkat(directoryFD, name, 0) != nil {
 		return errL8RuntimeOwnerInvalid
 	}
 	return nil
