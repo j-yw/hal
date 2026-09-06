@@ -106,6 +106,28 @@ func TestSandboxWorkerJobJSONCommandDetachDoesNotPublishInnerCompletion(t *testi
 	}
 }
 
+func TestSandboxWorkerJobJSONCommandInnerOutcome(t *testing.T) {
+	bounded := runWorkerJSONCommandFixture(t, sandboxexecution.PurposeRun, workerJSONCommandCase{invalid: "bounded-run"})
+	raw := decodeWorkerJSONCommandDocument(t, bounded.output)
+	if bounded.err != nil || raw["ok"] != true || raw["complete"] != false {
+		t.Fatalf("successful bounded run was rejected: %v / %s", bounded.err, bounded.output)
+	}
+	for _, purpose := range []sandboxexecution.Purpose{sandboxexecution.PurposeRun, sandboxexecution.PurposeAuto} {
+		t.Run(string(purpose), func(t *testing.T) {
+			result := runWorkerJSONCommandFixture(t, purpose, workerJSONCommandCase{invalid: "inner-failure"})
+			raw := decodeWorkerJSONCommandDocument(t, result.output)
+			var exitErr *ExitCodeError
+			if !errors.As(result.err, &exitErr) || exitErr.Code != ExitCodeExpectedNonZero || raw["ok"] != false {
+				t.Fatalf("inner failure without execution error returned success: %v / %s", result.err, result.output)
+			}
+			stderrOnly := runWorkerJSONCommandFixture(t, purpose, workerJSONCommandCase{invalid: "stderr-truncated"})
+			if stderrOnly.err != nil || decodeWorkerJSONCommandDocument(t, stderrOnly.output)["ok"] != true {
+				t.Fatalf("stderr-only truncation rejected intact stdout: %v / %s", stderrOnly.err, stderrOnly.output)
+			}
+		})
+	}
+}
+
 type workerJSONCommandCase struct {
 	syncOut        bool
 	releaseFailure bool
@@ -144,6 +166,9 @@ func runWorkerJSONCommandFixture(t *testing.T, purpose sandboxexecution.Purpose,
 	}
 	if scenario.invalid == "stdout-truncated" {
 		terminal.StdoutTruncated = true
+	}
+	if scenario.invalid == "stderr-truncated" {
+		terminal.StderrTruncated = true
 	}
 	page := sandboxworker.JobLogsResponse{
 		ContractVersion: sandboxworker.JobContractVersion, JobID: terminal.ID, NextCursor: 1,
@@ -264,6 +289,10 @@ func workerJSONCommandPayload(t *testing.T, purpose sandboxexecution.Purpose, in
 		raw["ok"] = "true"
 	case "missing-fields":
 		delete(raw, "summary")
+	case "bounded-run":
+		raw["complete"] = false
+	case "inner-failure":
+		raw["ok"], raw["summary"], raw["error"] = false, "inner failure", "inner failure"
 	}
 	data, err = json.Marshal(raw)
 	if err != nil {

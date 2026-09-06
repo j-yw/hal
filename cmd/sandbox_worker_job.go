@@ -110,6 +110,10 @@ func runSandboxWorkerJob(ctx context.Context, req sandboxWorkerJobRunRequest) er
 	if req.Persist == nil {
 		return fmt.Errorf("sandbox worker job persistence hook is required")
 	}
+	jsonCapture := sandboxWorkerJobJSONCaptureFromContext(ctx)
+	if jsonCapture != nil {
+		req.Command.Stdout = jsonCapture.workerStream(req.Command.Stdout)
+	}
 	submissionID := sandboxWorkerJobSubmissionID(req.ExecutionID)
 	if submissionID == "" {
 		return fmt.Errorf("sandbox worker job execution identity is required")
@@ -170,6 +174,9 @@ func runSandboxWorkerJob(ctx context.Context, req sandboxWorkerJobRunRequest) er
 		if err := validateSandboxWorkerJobIdentity(status, submissionID, reference.JobID, req.HostID, req.Target); err != nil {
 			return &sandboxWorkerJobDetachedError{Cause: err}
 		}
+		if jsonCapture != nil && status.StdoutTruncated {
+			jsonCapture.truncated = true
+		}
 		if status.LogCursor < reference.LogCursor {
 			return &sandboxWorkerJobDetachedError{Cause: fmt.Errorf("sandbox worker job log cursor regressed")}
 		}
@@ -210,6 +217,11 @@ func drainSandboxWorkerJobLogs(
 		}
 		if err := validateSandboxWorkerJobLogs(logs, status.ID, *readCursor, status.LogCursor); err != nil {
 			return &sandboxWorkerJobDetachedError{Cause: err}
+		}
+		if logs.Truncated {
+			if capture := sandboxWorkerJobJSONCaptureFromContext(ctx); capture != nil {
+				capture.truncated = true
+			}
 		}
 		if logs.Truncated && !*retentionGapWarned {
 			if err := writeSandboxWorkerJobRetentionWarning(req.Command.Stderr); err != nil {
