@@ -167,3 +167,19 @@ the recovered source, bundle, archives, logs and original credentials remain.
 This checkpoint accepts the R1/R2 Linux slice only. It is not a fresh macOS run,
 complete Sandbox v2, strict network/credential enforcement, microVM boot or final
 PR acceptance. Later integrated changes still require their own affected gates.
+
+## Command-context completion boundary
+
+Copy installation, absent-file reset and remote `hal init` must each return a
+non-nil completed execution result with exit0 and no transport error before
+preparation can report success. Missing results are unknown completion, not
+implicit success. Failures stop subsequent preparation; failed installation
+retains the existing best-effort temporary-copy cleanup and makes no rollback
+claim. The no-host-context no-op and successful legacy/runtime behavior remain
+unchanged. This defensive follow-up was found during source review; it was not
+observed in the native game run or inferred from its host doctor snapshot.
+
+The fake-only `TestPrepareSandboxCommandContextRuntimeRequiresCompletedResult`
+exercises all three actual boundaries with missing results, nonzero exits,
+transport errors paired with zero exits, and successful completion. It checks
+that no success operation or later preparation step escapes a failure.
