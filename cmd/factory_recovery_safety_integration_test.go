@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
 
 type factoryRecoverySafetyGitFixture struct {
@@ -64,7 +66,7 @@ func (f *factoryRecoverySafetyGitFixture) storeBundle(t *testing.T, refs ...stri
 }
 
 func TestFactoryRecoverySafetyRealGitRejectsWithoutHostMutation(t *testing.T) {
-	for _, scenario := range []string{"staged", "unstaged", "untracked", "checkout expression", "corrupt bundle", "missing bundle", "symlink bundle", "unrelated output", "missing pin", "missing input history", "divergent destination", "ambiguous bundle", "legacy missing base", "legacy moved base"} {
+	for _, scenario := range []string{"staged", "unstaged", "untracked", "ignored collision", "checkout expression", "option-like branch", "full ref branch", "revision expression", "corrupt bundle", "missing bundle", "symlink bundle", "unrelated output", "missing pin", "worker symbolic pin", "missing input history", "divergent destination", "ambiguous bundle", "legacy missing base", "legacy moved base"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -81,8 +83,21 @@ func TestFactoryRecoverySafetyRealGitRejectsWithoutHostMutation(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(f.host, "private-dirty-canary"), []byte("keep\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
+			case "ignored collision":
+				if err := os.WriteFile(filepath.Join(f.host, ".git", "info", "exclude"), []byte("result.txt\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(f.host, "result.txt"), []byte("private-ignored-canary\x00keep exactly\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			case "checkout expression":
 				f.record.BranchName = "@{-1}"
+			case "option-like branch":
+				f.record.BranchName = "--orphan"
+			case "full ref branch":
+				f.record.BranchName = "refs/heads/hal/output"
+			case "revision expression":
+				f.record.BranchName = "hal/output~1"
 			case "corrupt bundle":
 				path := mustFactoryRecoveryBundleStoredPath(t, f.store, f.record)
 				if err := os.WriteFile(path, []byte("not a bundle"), 0o600); err != nil {
@@ -108,6 +123,8 @@ func TestFactoryRecoverySafetyRealGitRejectsWithoutHostMutation(t *testing.T) {
 				f.storeBundle(t, "HEAD")
 			case "missing pin":
 				f.record.Sandbox.Workspace.SyncRef = ""
+			case "worker symbolic pin":
+				f.record.Sandbox.Workspace.SyncRef = "origin/main"
 			case "missing input history":
 				f.record.Sandbox.Workspace.SyncRef = strings.Repeat("f", 40)
 			case "divergent destination":
@@ -139,6 +156,13 @@ func TestFactoryRecoverySafetyRealGitRejectsWithoutHostMutation(t *testing.T) {
 			if err != nil && (strings.Contains(err.Error(), "private-dirty-canary") || strings.Contains(err.Error(), f.host)) {
 				t.Error("recovery error leaked local details")
 			}
+			if scenario == "ignored collision" {
+				data, err := os.ReadFile(filepath.Join(f.host, "result.txt"))
+				if err != nil || string(data) != "private-ignored-canary\x00keep exactly\n" {
+					t.Error("ignored canary bytes were changed")
+				}
+			}
+			assertFactoryRecoverySafetyLockReleased(t, f.host)
 		})
 	}
 }
@@ -149,13 +173,17 @@ func factoryRecoverySafetyHostSnapshot(t *testing.T, dir string) string {
 }
 
 func TestFactoryRecoverySafetyRealGitCleanAndRepeated(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
-		t.Run(map[bool]string{false: "recorded worker pin", true: "legacy local base compatibility"}[legacy], func(t *testing.T) {
+	for _, scenario := range []string{"recorded worker pin", "legacy local base compatibility", "legacy symbolic SyncRef compatibility"} {
+		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			f := newFactoryRecoverySafetyGitFixture(t)
-			if legacy {
+			if scenario == "legacy local base compatibility" {
 				f.record.Sandbox = nil
+			}
+			if scenario == "legacy symbolic SyncRef compatibility" {
+				f.record.Sandbox.Workspace.InputSource = "clone"
+				f.record.Sandbox.Workspace.SyncRef = "origin/main"
 			}
 			for attempt := 0; attempt < 2; attempt++ {
 				branch, bundle, err := applyFactorySandboxRecoveryBundle(ctx, f.store, f.host, f.record, factoryRunDeps{runGit: runFactoryGitInDir})
@@ -169,7 +197,96 @@ func TestFactoryRecoverySafetyRealGitCleanAndRepeated(t *testing.T) {
 				if status := factoryBundleGit(t, f.host, "status", "--porcelain=v1"); status != "" {
 					t.Fatalf("recovery dirty: %s", status)
 				}
+				assertFactoryRecoverySafetyLockReleased(t, f.host)
 			}
 		})
+	}
+}
+
+func assertFactoryRecoverySafetyLockReleased(t *testing.T, dir string) {
+	t.Helper()
+	lock, err := sandboxworkspace.NewLockManager(filepath.Join(os.TempDir(), "hal-workspace-locks")).Acquire("workspace:" + dir)
+	if err != nil {
+		t.Fatalf("recovery left workspace lock active: %v", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFactoryRecoverySafetyRealGitRejectsChangedPreflight(t *testing.T) {
+	for _, scenario := range []string{"destination ref changed", "cancelled after analysis", "Git failure", "current ref changed during host fetch", "cancelled during host fetch", "current ref changed after checkout"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			f := newFactoryRecoverySafetyGitFixture(t)
+			if scenario == "current ref changed after checkout" {
+				factoryBundleGit(t, f.host, "branch", f.record.BranchName, f.input)
+			}
+			cause := errors.New("private-git-failure-canary")
+			expected := factoryRecoverySafetyHostSnapshot(t, f.host)
+			triggered := false
+			_, _, err := applyFactorySandboxRecoveryBundle(ctx, f.store, f.host, f.record, factoryRunDeps{runGit: func(ctx context.Context, dir string, args ...string) (string, error) {
+				if args[0] == "clone" && scenario == "Git failure" {
+					triggered = true
+					return "", cause
+				}
+				out, err := runFactoryGitInDir(ctx, dir, args...)
+				if dir != f.host && args[0] == "diff-tree" && err == nil && (scenario == "destination ref changed" || scenario == "cancelled after analysis") {
+					triggered = true
+					if scenario == "destination ref changed" {
+						factoryBundleGit(t, f.host, "update-ref", "refs/heads/"+f.record.BranchName, f.input)
+						expected = factoryRecoverySafetyHostSnapshot(t, f.host)
+					} else {
+						cancel()
+					}
+				}
+				if dir == f.host && err == nil && (args[0] == "fetch" && strings.Contains(scenario, "host fetch") || args[0] == "checkout" && scenario == "current ref changed after checkout") {
+					triggered = true
+					if scenario == "cancelled during host fetch" {
+						cancel()
+					} else {
+						factoryBundleGit(t, f.host, "checkout", "local-base")
+						expected = factoryRecoverySafetyHostSnapshot(t, f.host)
+					}
+				}
+				return out, err
+			}})
+			if !triggered || err == nil {
+				t.Fatalf("changed preflight was not rejected: triggered=%t err=%v", triggered, err)
+			}
+			if scenario == "Git failure" && !errors.Is(err, cause) || strings.HasPrefix(scenario, "cancelled") && !errors.Is(err, context.Canceled) {
+				t.Error("original failure identity lost")
+			}
+			if strings.Contains(err.Error(), "private-git-failure-canary") {
+				t.Error("raw Git error leaked")
+			}
+			if factoryRecoverySafetyHostSnapshot(t, f.host) != expected {
+				t.Error("recovery changed host after rejected preflight")
+			}
+			if _, err := runFactoryGitInDir(context.Background(), f.host, "cat-file", "-e", f.output+"^{commit}"); err == nil && !strings.Contains(scenario, "host fetch") && !strings.Contains(scenario, "after checkout") {
+				t.Error("rejected preflight imported host objects")
+			}
+			assertFactoryRecoverySafetyLockReleased(t, f.host)
+		})
+	}
+}
+
+func TestFactoryRecoverySafetyRealGitPinsSnapshotAfterStoredPathReplacement(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	f := newFactoryRecoverySafetyGitFixture(t)
+	replaced := false
+	_, _, err := applyFactorySandboxRecoveryBundle(ctx, f.store, f.host, f.record, factoryRunDeps{runGit: func(ctx context.Context, dir string, args ...string) (string, error) {
+		if args[0] == "bundle" && args[1] == "verify" {
+			replaced = true
+			if err := os.WriteFile(mustFactoryRecoveryBundleStoredPath(t, f.store, f.record), []byte("replaced stored path"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return runFactoryGitInDir(ctx, dir, args...)
+	}})
+	if !replaced || err != nil || factoryBundleGit(t, f.host, "rev-parse", "HEAD") != f.output {
+		t.Fatalf("verified snapshot not retained: replaced=%t err=%v", replaced, err)
 	}
 }

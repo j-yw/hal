@@ -3618,41 +3618,7 @@ func factoryRunCanCollectSandboxArtifacts(deps factoryRunDeps) bool {
 }
 
 func applyFactorySandboxRecoveryBundle(ctx context.Context, store factory.Store, dir string, record factory.RunRecord, deps factoryRunDeps) (string, string, error) {
-	branchName := strings.TrimSpace(record.BranchName)
-	if branchName == "" {
-		return "", "", fmt.Errorf("apply sandbox recovery bundle: branch name is required")
-	}
-	if deps.runGit == nil {
-		return "", "", fmt.Errorf("apply sandbox recovery bundle: git dependency is required")
-	}
-	if _, err := deps.runGit(ctx, dir, "check-ref-format", "--branch", branchName); err != nil {
-		return "", "", fmt.Errorf("apply sandbox recovery bundle: invalid branch %q: %w", branchName, err)
-	}
-	artifact, ok := factoryRunRecoveryBundleArtifact(record)
-	if !ok {
-		return "", "", fmt.Errorf("apply sandbox recovery bundle: recovery bundle artifact is unavailable")
-	}
-	bundlePath, err := store.ResolveArtifactPath(record.RunID, artifact.StoredPath)
-	if err != nil {
-		return "", "", fmt.Errorf("apply sandbox recovery bundle: resolve artifact path: %w", err)
-	}
-	if _, err := deps.runGit(ctx, dir, "fetch", "--no-tags", bundlePath, "HEAD"); err != nil {
-		return "", "", fmt.Errorf("apply sandbox recovery bundle: fetch bundle: %w", err)
-	}
-	exists := factoryRunBranchExists(ctx, dir, branchName, deps)
-	if exists {
-		if _, err := deps.runGit(ctx, dir, "checkout", branchName); err != nil {
-			return "", "", fmt.Errorf("apply sandbox recovery bundle: checkout branch %q: %w", branchName, err)
-		}
-		if _, err := deps.runGit(ctx, dir, "merge", "--ff-only", "FETCH_HEAD"); err != nil {
-			return "", "", fmt.Errorf("apply sandbox recovery bundle: fast-forward branch %q: %w", branchName, err)
-		}
-		return branchName, artifact.StoredPath, nil
-	}
-	if _, err := deps.runGit(ctx, dir, "checkout", "-b", branchName, "FETCH_HEAD"); err != nil {
-		return "", "", fmt.Errorf("apply sandbox recovery bundle: create branch %q: %w", branchName, err)
-	}
-	return branchName, artifact.StoredPath, nil
+	return applyFactoryRecoverySafely(ctx, store, dir, record, deps)
 }
 
 func factoryRunBranchExists(ctx context.Context, dir, branchName string, deps factoryRunDeps) bool {
@@ -6398,16 +6364,18 @@ func runFactoryRecoverWithDeps(ctx context.Context, out io.Writer, runID string,
 		return fmt.Errorf("factory recover git dependency is required")
 	}
 	fail := func(status string, err error) error {
+		safeErr := factoryRunRedactedError{message: "factory recovery failed; manual recovery required", cause: err}
 		if !jsonMode {
-			return err
+			return safeErr
 		}
-		return renderFactoryRecoverJSON(out, FactoryRecoverResponse{
+		renderErr := renderFactoryRecoverJSON(out, FactoryRecoverResponse{
 			ContractVersion: FactoryRecoverContractVersion,
 			OK:              false,
 			RunID:           runID,
 			Status:          status,
-			Error:           err.Error(),
+			Error:           safeErr.Error(),
 		})
+		return errors.Join(safeErr, renderErr)
 	}
 
 	store, err := deps.defaultStore()
@@ -6974,7 +6942,10 @@ func renderFactoryRecoverJSON(out io.Writer, resp FactoryRecoverResponse) error 
 	if err != nil {
 		return fmt.Errorf("marshal factory recover: %w", err)
 	}
-	fmt.Fprintln(out, string(data))
+	_, err = fmt.Fprintln(out, string(data))
+	if err != nil {
+		return factoryRunRedactedError{message: "write factory recovery JSON failed", cause: err}
+	}
 	return nil
 }
 

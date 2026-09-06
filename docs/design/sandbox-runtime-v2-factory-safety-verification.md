@@ -49,10 +49,18 @@ expressions), acquires the existing `hal-workspace-locks` manager using the
 `workspace:<canonical project root>` key, and rejects staged, unstaged or
 untracked work without listing paths. There is no stash/reset/force behavior.
 The same lock stays owned through host apply and is released on every outcome.
+The shared manager canonicalizes existing absolute `workspace:` paths so direct,
+SafeApply and factory callers using symlinked parents contend on one identity.
+Opaque/custom keys and absent paths retain their previous key behavior. This
+does not coordinate older binaries or adversarial directory renames/uncooperative
+Git processes; detected concurrent changes require handoff, not rollback.
 
 Exactly one complete bundle artifact must resolve inside its run's artifact
-directory. Recovery opens a regular non-symlink file through a contained root
-and copies it into a private, context-aware, bounded snapshot (512 MiB maximum).
+directory. Recovery retains each opened directory, checks per-component and
+leaf `SameFile` identity and non-symlink bindings before/after the copy, and
+opens the leaf without following symlinks or blocking on a FIFO on Unix.
+It copies the regular file into a private, context-aware, bounded snapshot
+(512 MiB maximum).
 All Git verification and consumption use that snapshot, not a reopened stored
 path. No new durable digest or schema is claimed. Temporary state is removed.
 
@@ -68,10 +76,14 @@ changes host objects, refs, the index or worktree.
   `BaseBranch` tip as a conservative compatibility-only ancestry anchor. This
   is not a claim about the original input commit. A missing or divergent local
   base requires manual handoff; recovery does not fetch missing private history.
+  Legacy symbolic `SyncRef` values such as `origin/main` are not immutable pins;
+  they take this same compatibility path. Worker `git_bundle` never does so.
 
 Any existing destination branch must be an ancestor of the inspected output
-before checkout. Immediately before host mutation, recheck cleanliness and exact
-host refs. Fetch only the inspected local snapshot without writing `FETCH_HEAD`,
+before checkout. Recheck cleanliness and exact host refs before and after host
+object import, and the expected checked-out branch before fast-forwarding it.
+Verify the final branch, commit and clean state before success. Fetch only the
+inspected local snapshot without writing `FETCH_HEAD`,
 and create/fast-forward the branch by immutable commit identity, preserving
 ignored-file collision protection. Never use `FETCH_HEAD` or force a branch.
 Cancellation or failed preflight cannot publish success. Cancellation during an
@@ -89,6 +101,9 @@ Git failures and cancellation; no real publication or runtime is required.
 go test -p 2 ./cmd -run 'TestFactoryVerificationSafety' -count=1
 go test -p 2 -race ./cmd -run 'TestFactoryVerificationSafety' -count=3
 go test -p 2 -tags=integration ./cmd -run 'TestFactoryVerificationSafety' -count=1
+go test -p 2 ./cmd -run 'TestFactoryRecoverySafety' -count=1
+go test -p 2 -race -tags=integration ./cmd -run 'TestFactoryRecoverySafety' -count=3
+go test -p 2 -tags=integration ./cmd -run '^TestFactory|^TestRunFactory|^TestRecordFactory|^TestPublishFactory' -count=1
 go vet -p 2 ./cmd
 git diff --check
 ```

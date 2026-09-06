@@ -17,11 +17,12 @@ import (
 
 func TestFactoryRecoverySafetyJSONFailureReturnsError(t *testing.T) {
 	cause := errors.New("private-recovery-canary /operator/private/store")
+	renderCause := errors.New("private-render-canary /operator/private/output")
 	for _, renderFailure := range []bool{false, true} {
 		var out bytes.Buffer
 		var writer io.Writer = &out
 		if renderFailure {
-			writer = factoryRecoverySafetyFailWriter{cause}
+			writer = factoryRecoverySafetyFailWriter{renderCause}
 		}
 		err := runFactoryRecoverWithDeps(context.Background(), writer, "missing-run", true, factoryRecoverDeps{
 			defaultStore: func() (factory.Store, error) { return factory.Store{}, cause },
@@ -30,6 +31,12 @@ func TestFactoryRecoverySafetyJSONFailureReturnsError(t *testing.T) {
 		})
 		if !errors.Is(err, cause) {
 			t.Errorf("JSON failure lost nonzero original error: %v", err)
+		}
+		if renderFailure && !errors.Is(err, renderCause) {
+			t.Error("render failure identity lost")
+		}
+		if err != nil && (strings.Contains(err.Error(), "private-recovery-canary") || strings.Contains(err.Error(), "private-render-canary")) {
+			t.Error("returned error leaked original details")
 		}
 		if !renderFailure {
 			var response FactoryRecoverResponse
@@ -40,6 +47,106 @@ func TestFactoryRecoverySafetyJSONFailureReturnsError(t *testing.T) {
 				t.Error("JSON recovery failure leaked private error detail")
 			}
 		}
+	}
+}
+
+func TestFactoryRecoverySafetySnapshotBoundsAndContainment(t *testing.T) {
+	for _, scenario := range []string{"oversize", "zero size", "size mismatch", "cancelled", "outside run", "symlink directory", "directory payload"} {
+		t.Run(scenario, func(t *testing.T) {
+			store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+			record := factory.RunRecord{RunID: "bounded-recovery"}
+			if err := store.SaveRun(&record); err != nil {
+				t.Fatal(err)
+			}
+			record = saveFactoryRecoveryBundleArtifact(t, store, record)
+			artifact := record.Artifacts[0]
+			path := mustFactoryRecoveryBundleStoredPath(t, store, record)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch scenario {
+			case "oversize", "zero size":
+				size := int64(0)
+				if scenario == "oversize" {
+					size = factoryRecoveryBundleLimit + 1
+				}
+				if err := os.Truncate(path, size); err != nil {
+					t.Fatal(err)
+				}
+				artifact.SizeBytes = &size
+			case "size mismatch":
+				size := *artifact.SizeBytes + 1
+				artifact.SizeBytes = &size
+			case "cancelled":
+				cancel()
+			case "outside run":
+				artifact.StoredPath = "artifacts/another-run/bundle"
+			case "symlink directory":
+				directory := filepath.Dir(path)
+				outside := filepath.Join(t.TempDir(), "outside")
+				if err := os.Rename(directory, outside); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, directory); err != nil {
+					t.Fatal(err)
+				}
+			case "directory payload":
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := snapshotFactoryRecoveryBundle(ctx, store, record.RunID, artifact, filepath.Join(t.TempDir(), "snapshot")); err == nil {
+				t.Error("unsafe snapshot accepted")
+			}
+		})
+	}
+}
+
+func TestFactoryRecoverySafetySnapshotRejectsReplacementAtOpen(t *testing.T) {
+	for _, scenario := range []string{"regular leaf replacement", "internal leaf symlink", "run directory replacement"} {
+		t.Run(scenario, func(t *testing.T) {
+			store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+			record := factory.RunRecord{RunID: "retained-run"}
+			if err := store.SaveRun(&record); err != nil {
+				t.Fatal(err)
+			}
+			record = saveFactoryRecoveryBundleArtifact(t, store, record)
+			path := mustFactoryRecoveryBundleStoredPath(t, store, record)
+			replacement := filepath.Join(filepath.Dir(path), "replacement.bundle")
+			if err := os.WriteFile(replacement, []byte("other  payload"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			triggered := false
+			err := snapshotFactoryRecoveryBundleWithOpen(context.Background(), store, record.RunID, record.Artifacts[0], filepath.Join(t.TempDir(), "snapshot"), func(root *os.Root, name string) (*os.File, error) {
+				triggered = true
+				switch scenario {
+				case "regular leaf replacement":
+					if err := os.Rename(replacement, path); err != nil {
+						t.Fatal(err)
+					}
+				case "internal leaf symlink":
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink("replacement.bundle", path); err != nil {
+						t.Fatal(err)
+					}
+				case "run directory replacement":
+					if err := os.Rename(filepath.Dir(path), filepath.Join(store.Root(), "artifacts", "different-run")); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink("different-run", filepath.Dir(path)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return root.Open(name)
+			})
+			if !triggered || err == nil {
+				t.Errorf("replacement accepted: triggered=%t error=%v", triggered, err)
+			}
+		})
 	}
 }
 

@@ -2540,19 +2540,8 @@ func TestPublishFactoryRunAfterVerifiedSuccessPushAppliesSandboxBundle(t *testin
 
 	var gitCalls [][]string
 	deps := factoryRunDeps{
-		now: func() time.Time { return now },
-		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
-			if gotDir != dir {
-				t.Fatalf("git dir = %q, want %q", gotDir, dir)
-			}
-			gitCalls = append(gitCalls, append([]string(nil), args...))
-			switch {
-			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/game-ripple"}):
-				return "", errors.New("missing branch")
-			default:
-				return "", nil
-			}
-		},
+		now:    func() time.Time { return now },
+		runGit: factoryRecoveryFixtureGit(t, dir, false, &gitCalls),
 	}
 	got, err := publishFactoryRunAfterVerifiedSuccess(context.Background(), store, dir, factoryRunRequest{
 		Sandbox:    true,
@@ -2562,13 +2551,7 @@ func TestPublishFactoryRunAfterVerifiedSuccessPushAppliesSandboxBundle(t *testin
 		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
 	}
 
-	wantCalls := [][]string{
-		{"check-ref-format", "--branch", "hal/game-ripple"},
-		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
-		{"show-ref", "--verify", "--quiet", "refs/heads/hal/game-ripple"},
-		{"checkout", "-b", "hal/game-ripple", "FETCH_HEAD"},
-		{"push", "-u", "origin", "hal/game-ripple"},
-	}
+	wantCalls := append(factoryRecoveryFixtureCalls(record.BranchName, record.BaseBranch, false), []string{"push", "-u", "origin", "hal/game-ripple"})
 	if !reflect.DeepEqual(gitCalls, wantCalls) {
 		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
 	}
@@ -2650,14 +2633,8 @@ func TestPublishFactoryRunAfterVerifiedSuccessPROpensFromHostBranch(t *testing.T
 	var capturedPushDir string
 	var capturedPushOpts ci.PushOptions
 	deps := factoryRunDeps{
-		now: func() time.Time { return now },
-		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
-			if gotDir != dir {
-				t.Fatalf("git dir = %q, want %q", gotDir, dir)
-			}
-			gitCalls = append(gitCalls, append([]string(nil), args...))
-			return "", nil
-		},
+		now:    func() time.Time { return now },
+		runGit: factoryRecoveryFixtureGit(t, dir, true, &gitCalls),
 		pushAndCreatePRInDir: func(_ context.Context, gotDir string, opts ci.PushOptions) (ci.PushResult, error) {
 			capturedPushDir = gotDir
 			capturedPushOpts = opts
@@ -2682,13 +2659,7 @@ func TestPublishFactoryRunAfterVerifiedSuccessPROpensFromHostBranch(t *testing.T
 		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
 	}
 
-	wantCalls := [][]string{
-		{"check-ref-format", "--branch", "hal/game-polish"},
-		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
-		{"show-ref", "--verify", "--quiet", "refs/heads/hal/game-polish"},
-		{"checkout", "hal/game-polish"},
-		{"merge", "--ff-only", "FETCH_HEAD"},
-	}
+	wantCalls := factoryRecoveryFixtureCalls(record.BranchName, record.BaseBranch, true)
 	if !reflect.DeepEqual(gitCalls, wantCalls) {
 		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
 	}
@@ -2862,29 +2833,12 @@ func TestPublishFactoryRunAfterVerifiedSuccessAutoFallsBackToHost(t *testing.T) 
 				Error:           "simulated sandbox publish failure",
 			})
 		},
-		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
-			if gotDir != dir {
-				t.Fatalf("git dir = %q, want %q", gotDir, dir)
-			}
-			gitCalls = append(gitCalls, append([]string(nil), args...))
-			switch {
-			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/auto-fallback"}):
-				return "", errors.New("missing branch")
-			default:
-				return "", nil
-			}
-		},
+		runGit: factoryRecoveryFixtureGit(t, dir, false, &gitCalls),
 	}, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPush}, factory.RunSecretRedactor{}, "automatic", false)
 	if err != nil {
 		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
 	}
-	wantCalls := [][]string{
-		{"check-ref-format", "--branch", "hal/auto-fallback"},
-		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
-		{"show-ref", "--verify", "--quiet", "refs/heads/hal/auto-fallback"},
-		{"checkout", "-b", "hal/auto-fallback", "FETCH_HEAD"},
-		{"push", "-u", "origin", "hal/auto-fallback"},
-	}
+	wantCalls := append(factoryRecoveryFixtureCalls(record.BranchName, record.BaseBranch, false), []string{"push", "-u", "origin", "hal/auto-fallback"})
 	if !reflect.DeepEqual(gitCalls, wantCalls) {
 		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
 	}
@@ -2931,28 +2885,12 @@ func TestRunFactoryRecoverAppliesBundleWithoutPublishing(t *testing.T) {
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		workingDir:   func() (string, error) { return dir, nil },
 		now:          func() time.Time { return now },
-		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
-			if gotDir != dir {
-				t.Fatalf("git dir = %q, want %q", gotDir, dir)
-			}
-			gitCalls = append(gitCalls, append([]string(nil), args...))
-			switch {
-			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/recoverable"}):
-				return "", errors.New("missing branch")
-			default:
-				return "", nil
-			}
-		},
+		runGit:       factoryRecoveryFixtureGit(t, dir, false, &gitCalls),
 	})
 	if err != nil {
 		t.Fatalf("runFactoryRecoverWithDeps() error = %v", err)
 	}
-	wantCalls := [][]string{
-		{"check-ref-format", "--branch", "hal/recoverable"},
-		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
-		{"show-ref", "--verify", "--quiet", "refs/heads/hal/recoverable"},
-		{"checkout", "-b", "hal/recoverable", "FETCH_HEAD"},
-	}
+	wantCalls := factoryRecoveryFixtureCalls(record.BranchName, record.BaseBranch, false)
 	if !reflect.DeepEqual(gitCalls, wantCalls) {
 		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
 	}
@@ -2983,28 +2921,24 @@ func TestRunFactoryRecoverJSONReportsMissingRecoveryBundle(t *testing.T) {
 	}
 
 	var out bytes.Buffer
+	var gitCalls [][]string
 	err := runFactoryRecoverWithDeps(context.Background(), &out, record.RunID, true, factoryRecoverDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		workingDir:   func() (string, error) { return dir, nil },
 		now:          func() time.Time { return now },
-		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
-			if gotDir != dir {
-				t.Fatalf("git dir = %q, want %q", gotDir, dir)
-			}
-			if !reflect.DeepEqual(args, []string{"check-ref-format", "--branch", "hal/recoverable"}) {
-				t.Fatalf("git args = %#v, want branch format check", args)
-			}
-			return "", nil
-		},
+		runGit:       factoryRecoveryFixtureGit(t, dir, false, &gitCalls),
 	})
-	if err != nil {
-		t.Fatalf("runFactoryRecoverWithDeps() error = %v", err)
+	if err == nil {
+		t.Fatal("missing recovery bundle JSON must return a nonzero error")
+	}
+	if want := factoryRecoveryFixturePreflightCalls(record.BranchName, record.BaseBranch); !reflect.DeepEqual(gitCalls, want) {
+		t.Fatalf("Git calls=%v, want preflight only %v", gitCalls, want)
 	}
 	var resp FactoryRecoverResponse
 	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
 		t.Fatalf("Unmarshal(recover error response) error = %v; output = %s", err, out.String())
 	}
-	if resp.ContractVersion != FactoryRecoverContractVersion || resp.OK || !strings.Contains(resp.Error, "recovery bundle artifact is unavailable") {
+	if resp.ContractVersion != FactoryRecoverContractVersion || resp.OK || resp.Error != "factory recovery failed; manual recovery required" {
 		t.Fatalf("recover error response = %#v", resp)
 	}
 }
@@ -3192,6 +3126,7 @@ func TestRunFactoryPublishJSONReportsMissingRecoveryBundle(t *testing.T) {
 	}
 
 	var out bytes.Buffer
+	var gitCalls [][]string
 	err := runFactoryPublishWithDeps(context.Background(), &out, record.RunID, factoryPublishRequest{
 		Policy: factory.PublishPolicyPush,
 		JSON:   true,
@@ -3199,24 +3134,19 @@ func TestRunFactoryPublishJSONReportsMissingRecoveryBundle(t *testing.T) {
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		workingDir:   func() (string, error) { return dir, nil },
 		now:          func() time.Time { return now },
-		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
-			if gotDir != dir {
-				t.Fatalf("git dir = %q, want %q", gotDir, dir)
-			}
-			if !reflect.DeepEqual(args, []string{"check-ref-format", "--branch", "hal/missing-bundle"}) {
-				t.Fatalf("git args = %#v, want branch format check", args)
-			}
-			return "", nil
-		},
+		runGit:       factoryRecoveryFixtureGit(t, dir, false, &gitCalls),
 	})
 	if err != nil {
 		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
+	}
+	if want := factoryRecoveryFixturePreflightCalls(record.BranchName, record.BaseBranch); !reflect.DeepEqual(gitCalls, want) {
+		t.Fatalf("Git calls=%v, want preflight only %v", gitCalls, want)
 	}
 	var resp FactoryPublishResponse
 	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
 		t.Fatalf("Unmarshal(publish missing bundle response) error = %v; output = %s", err, out.String())
 	}
-	if resp.ContractVersion != FactoryPublishContractVersion || resp.OK || resp.Policy != factory.PublishPolicyPush || !strings.Contains(resp.Error, "recovery bundle artifact is unavailable") {
+	if resp.ContractVersion != FactoryPublishContractVersion || resp.OK || resp.Policy != factory.PublishPolicyPush || !strings.Contains(resp.Error, "one complete recovery bundle artifact is required") {
 		t.Fatalf("publish missing bundle response = %#v", resp)
 	}
 }
@@ -3249,29 +3179,12 @@ func TestRunFactoryPublishAllowsFailedRunWithRecoveryBundleWhenExplicit(t *testi
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		workingDir:   func() (string, error) { return dir, nil },
 		now:          func() time.Time { return now },
-		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
-			if gotDir != dir {
-				t.Fatalf("git dir = %q, want %q", gotDir, dir)
-			}
-			gitCalls = append(gitCalls, append([]string(nil), args...))
-			switch {
-			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/allow"}):
-				return "", errors.New("missing branch")
-			default:
-				return "", nil
-			}
-		},
+		runGit:       factoryRecoveryFixtureGit(t, dir, false, &gitCalls),
 	})
 	if err != nil {
 		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
 	}
-	wantCalls := [][]string{
-		{"check-ref-format", "--branch", "hal/allow"},
-		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
-		{"show-ref", "--verify", "--quiet", "refs/heads/hal/allow"},
-		{"checkout", "-b", "hal/allow", "FETCH_HEAD"},
-		{"push", "-u", "origin", "hal/allow"},
-	}
+	wantCalls := append(factoryRecoveryFixtureCalls(record.BranchName, record.BaseBranch, false), []string{"push", "-u", "origin", "hal/allow"})
 	if !reflect.DeepEqual(gitCalls, wantCalls) {
 		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
 	}
@@ -3450,18 +3363,7 @@ func TestRunFactoryPublishCollectsSandboxRecoveryBundleBeforeManualPublish(t *te
 				return factory.ErrSandboxArtifactNotFound
 			}
 		},
-		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
-			if gotDir != dir {
-				t.Fatalf("git dir = %q, want %q", gotDir, dir)
-			}
-			gitCalls = append(gitCalls, append([]string(nil), args...))
-			switch {
-			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/wasd-movement-controls"}):
-				return "", errors.New("missing branch")
-			default:
-				return "", nil
-			}
-		},
+		runGit: factoryRecoveryFixtureGit(t, dir, false, &gitCalls),
 		pushAndCreatePRInDir: func(_ context.Context, gotDir string, opts ci.PushOptions) (ci.PushResult, error) {
 			if gotDir != dir {
 				t.Fatalf("push dir = %q, want %q", gotDir, dir)
@@ -3495,9 +3397,9 @@ func TestRunFactoryPublishCollectsSandboxRecoveryBundleBeforeManualPublish(t *te
 	if got := readStoredFactoryArtifact(t, store, updated.RunID, bundle); got != "bundle bytes\n" {
 		t.Fatalf("stored recovery bundle = %q", got)
 	}
-	wantFetch := []string{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, *updated), "HEAD"}
-	if len(gitCalls) < 2 || !reflect.DeepEqual(gitCalls[1], wantFetch) {
-		t.Fatalf("git calls = %#v, want second call %#v", gitCalls, wantFetch)
+	wantCalls := factoryRecoveryFixtureCalls(record.BranchName, record.BaseBranch, false)
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
 	}
 	requireFactoryPublishOutcomeArtifact(t, *updated, factory.PublishPolicyPR, "hal/wasd-movement-controls", true)
 	var resp FactoryPublishResponse
@@ -4518,18 +4420,7 @@ func TestRunFactoryRunWithDepsCollectsProviderExecRecoveryBundleBeforePublish(t 
 		},
 		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
 		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
-		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
-			if gotDir != dir {
-				t.Fatalf("git dir = %q, want %q", gotDir, dir)
-			}
-			gitCalls = append(gitCalls, append([]string(nil), args...))
-			switch {
-			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/factory-feature"}):
-				return "", errors.New("missing branch")
-			default:
-				return "", nil
-			}
-		},
+		runGit:         factoryRecoveryFixtureGit(t, dir, false, &gitCalls),
 		pushAndCreatePRInDir: func(_ context.Context, gotDir string, opts ci.PushOptions) (ci.PushResult, error) {
 			if gotDir != dir {
 				t.Fatalf("push dir = %q, want %q", gotDir, dir)
@@ -4563,9 +4454,9 @@ func TestRunFactoryRunWithDepsCollectsProviderExecRecoveryBundleBeforePublish(t 
 	if got := readStoredFactoryArtifact(t, store, record.RunID, bundle); got != "bundle bytes\n" {
 		t.Fatalf("stored recovery bundle = %q", got)
 	}
-	wantFetch := []string{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, *record), "HEAD"}
-	if len(gitCalls) < 2 || !reflect.DeepEqual(gitCalls[1], wantFetch) {
-		t.Fatalf("git calls = %#v, want second call %#v", gitCalls, wantFetch)
+	wantCalls := factoryRecoveryFixtureCalls(record.BranchName, record.BaseBranch, false)
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
 	}
 	requireFactoryPublishOutcomeArtifact(t, *record, factory.PublishPolicyPR, "hal/factory-feature", true)
 }

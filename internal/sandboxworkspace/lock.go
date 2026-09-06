@@ -34,6 +34,13 @@ func (m LockManager) Acquire(resourceKey string) (*DirectLock, error) {
 	if resourceKey == "" {
 		return nil, fmt.Errorf("direct workspace lock: resource key is required")
 	}
+	// Existing absolute workspace paths share one identity across symlink
+	// aliases. Keep opaque/custom keys and absent-path compatibility unchanged.
+	if path, workspace := strings.CutPrefix(resourceKey, "workspace:"); workspace && filepath.IsAbs(path) {
+		if canonical, err := filepath.EvalSymlinks(path); err == nil {
+			resourceKey = "workspace:" + canonical
+		}
+	}
 	dir := strings.TrimSpace(m.Dir)
 	if dir == "" {
 		return nil, fmt.Errorf("direct workspace lock: lock directory is required")
