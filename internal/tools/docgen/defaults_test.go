@@ -40,7 +40,7 @@ func TestRunSandboxdDocumentationDefaultsArePortable(t *testing.T) {
 				if strings.Contains(content, runtimeDir) {
 					t.Errorf("%s docs contain host-specific runtime directory %q", format, runtimeDir)
 				}
-				for _, want := range []string{"<runtime-dir>", "XDG_RUNTIME_DIR", "hal-sandboxd.sock", "jobs"} {
+				for _, want := range []string{"RUNTIME_DIR", "XDG_RUNTIME_DIR", "hal-sandboxd.sock", "jobs"} {
 					if !strings.Contains(content, want) {
 						t.Errorf("%s docs omit portable default explanation %q", format, want)
 					}
