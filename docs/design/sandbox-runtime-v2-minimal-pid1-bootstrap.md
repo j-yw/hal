@@ -64,9 +64,18 @@ preparation; the optional private callback remains only a deterministic test
 override. This restores the diagnostic's direct production call edge without
 changing startup order or any original test assertion. Regenerate the four
 changed HL8Q/source-lock outputs using the existing generator, not edited pins.
+Then run the native-role generator: its generated artifact embeds the HL8Q
+identity and must be refreshed after a policy change. The full suite at
+`de9518fb` caught this stale dependent digest; the native source, callsite,
+install-table and compiled filter remain unchanged.
 HL8Q is not HL8E, and the unchanged graph test must still reject issuing HL8E
 because the named process-creation syscalls remain reachable.
 
 ```sh
+go run ./tools/microvm/l8/policy/generate
+go run ./tools/microvm/l8/role-bootstrap/generate
+go run ./tools/microvm/l8/policy/generate -check
+go run ./tools/microvm/l8/role-bootstrap/generate -check
 go test ./tools/microvm/l8/policy/generate -run '^TestL8D7(ReachableGraphNamesGoLaunchBaseExtraSyscalls|ArtifactGenerationIsDeterministicAndMatchesCheckedInOutputs)$' -count=1
+go test ./tools/microvm/l8/role-bootstrap/generate -run '^TestL8D7NativeIdentityGenerationIsDeterministicAndMatchesCheckedInOutput$' -count=1
 ```
