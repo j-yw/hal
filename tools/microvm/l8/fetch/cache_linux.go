@@ -118,13 +118,24 @@ func verifyCacheDir(ctx context.Context, dir *os.File, locks map[string]lockedFi
 	if len(locks) == 0 || len(locks) > maxSources || ctx.Err() != nil {
 		return errCache
 	}
-	entries, err := dir.ReadDir(len(locks) + 1)
+	// Btrfs may retain the extent visible when a directory was opened, before
+	// this stage's entries were created. A fresh enumeration handle also avoids
+	// reusing an exhausted cursor. Resolve only through the retained authority,
+	// never the mutable stage pathname. Read names only; all entry metadata and
+	// bytes are checked through openCacheEntry's retained-FD-relative NOFOLLOW.
+	fd, err := unix.Openat(int(dir.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return errCache
+	}
+	enumeration := os.NewFile(uintptr(fd), dir.Name())
+	defer enumeration.Close()
+	entries, err := enumeration.Readdirnames(len(locks) + 1)
 	if (err != nil && err != io.EOF) || len(entries) != len(locks) {
 		return errCache
 	}
-	for _, entry := range entries {
-		pin, ok := locks[entry.Name()]
-		if !ok || pin.Name != entry.Name() || entry.Type()&os.ModeSymlink != 0 {
+	for _, name := range entries {
+		pin, ok := locks[name]
+		if !ok || pin.Name != name {
 			return errCache
 		}
 	}

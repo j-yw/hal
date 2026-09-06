@@ -49,6 +49,11 @@ stage pathname. Rename/replacement negatives prove foreign directories and
 same-name files are neither written nor deleted. If an external actor renames
 the owned stage, its created files are cleaned through the retained FD, but the
 actor-selected empty directory name is not discovered or deleted by a scan.
+Final enumeration uses a fresh handle opened relative to that retained FD,
+not its pathname: Btrfs can otherwise expose only the entries visible when the
+empty stage was opened. Bounded name enumeration is separate from the retained
+FD-relative, no-follow metadata and digest checks for every exact entry. An
+exhausted enumeration cursor cannot turn a complete stage into an empty cache.
 
 Default tests use synthetic tar/manifest fixtures and fake HTTP transports,
 with no network, npm or process calls. They cover path/link/duplicate attacks,
