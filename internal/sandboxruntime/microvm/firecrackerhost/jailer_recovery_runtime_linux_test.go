@@ -68,6 +68,7 @@ func jailerRecoveryRuntimeFixture(t *testing.T) (*l8RuntimeOwnerLinuxRuntime, *c
 		t.Fatal("selected coordinator fixture", err)
 	}
 	store := &l8RuntimeOwnerLinuxRecordStore{directoryFD: int(directory.Fd()), bootID: record.HostBootID, selected: &jailerRecoveryStore{config: selected.config}}
+	selected.store = store
 	coordinator.deps.recovery = store.recoveryAuthority()
 	owned := &l8RuntimeOwnerLinuxRuntime{selected: selected, store: store, genesis: record, listenerFD: -1, config: l8RuntimeOwnerSupervisorConfigV1{DaemonUID: 0}}
 	sockets, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)

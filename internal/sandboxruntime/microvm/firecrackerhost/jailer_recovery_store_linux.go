@@ -177,6 +177,32 @@ func (store *l8RuntimeOwnerLinuxRecordStore) recoveryAuthority() *jailerRecovery
 	}
 }
 
+// The original lease remembers its successful durable idle/readback commit.
+// Do not re-open its journal: another job may already own that prepared slot.
+func (store *l8RuntimeOwnerLinuxRecordStore) confirmTerminalCleanup(ctx context.Context) error {
+	if ctx == nil || ctx.Err() != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	_, _, err := store.withLock(ctx, unix.LOCK_EX, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
+		if store.selected == nil {
+			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
+		}
+		record, present, err := store.readRecord()
+		s := store.selected
+		if err != nil || !present || !s.terminal || s.reservation == nil || s.busy == nil {
+			return record, false, errL8RuntimeOwnerInvalid
+		}
+		lease := s.reservation
+		lease.mu.Lock()
+		defer lease.mu.Unlock()
+		if ctx.Err() != nil || !equalJailerRecoveryBusy(&lease.busy, s.busy) || lease.poisoned || !lease.idleCommitted || !lease.released || !lease.closed || lease.closeErr != nil {
+			return record, false, errL8RuntimeOwnerInvalid
+		}
+		return record, true, nil
+	})
+	return err
+}
+
 func (store *l8RuntimeOwnerLinuxRecordStore) checkpoint(ctx context.Context, lease *strictJailerIdentityLease, terminal bool) error {
 	if lease == nil {
 		return errL8RuntimeOwnerInvalid

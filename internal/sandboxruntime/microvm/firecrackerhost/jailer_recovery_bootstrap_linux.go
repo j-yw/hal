@@ -17,11 +17,11 @@ func (owned *l8RuntimeOwnerLinuxRuntime) quarantineJailerBootstrap() error {
 	selected.coordinator.mu.Lock()
 	retained := selected.coordinator.generation != nil
 	selected.coordinator.mu.Unlock()
-	if !retained && !selected.terminal {
-		return errL8RuntimeOwnerInvalid
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), l8RuntimeOwnerHandshakeTimeout)
 	defer cancel()
+	if !retained && !selected.terminal && selected.finishTerminalCleanup(ctx) != nil {
+		return errL8RuntimeOwnerInvalid
+	}
 	record, err := owned.store.Load(ctx)
 	if err != nil {
 		return errL8RuntimeOwnerInvalid

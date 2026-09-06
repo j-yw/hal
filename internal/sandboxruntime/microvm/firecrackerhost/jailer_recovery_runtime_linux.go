@@ -22,6 +22,7 @@ type jailerRecoveryRuntime struct {
 	starter             *jailerRecoveryStarter
 	lifecycle           *strictJailerLifecycle
 	coordinator         *strictJailerCoordinator
+	store               *l8RuntimeOwnerLinuxRecordStore
 	session             strictJailerSession
 	attempted, terminal bool
 	observation         l8RuntimeOwnerAbsenceObservation
@@ -102,6 +103,7 @@ func newJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorCo
 		return nil, errL8RuntimeOwnerInvalid
 	}
 	owned := &l8RuntimeOwnerLinuxRuntime{selected: selected, config: l8RuntimeOwnerSupervisorConfigV1{DaemonUID: config.DaemonUID}, store: &l8RuntimeOwnerLinuxRecordStore{directoryFD: fds[1], bootID: bootID, selected: &jailerRecoveryStore{config: config}}, commitKey: key, listenerFD: listenerFD, listenerKey: listenerKey, configFD: fds[2], assetFDs: [2]int{fds[3], fds[4]}}
+	selected.store = owned.store
 	j := config.Job
 	owned.genesis = firecrackerRuntimeOwnerRecordV1{ContractVersion: jailerRecoveryRecordVersion, State: "starting", ControllerState: "none", HostBootID: bootID, SeedCorrelationDigest: jailerRecoveryConfigDigest(config), SupervisorGeneration: generation, SupervisorPID: supervisor.PID, SupervisorStartTime: supervisor.StartTime, ReconnectListenerIdentity: listenerIdentity, ReconnectSecret: secret, SandboxID: j.SandboxID, ExecutionID: j.ExecutionID, WorkerID: j.WorkerID, HostID: j.HostID, RuntimeID: j.RuntimeID, RuntimeGeneration: j.RuntimeGeneration}
 	runner, err := newStrictJailerNamespaceRunner(strictJailerNamespaceRunnerOptions{namespace: owned, starter: selected.starter})
@@ -200,12 +202,22 @@ func (selected *jailerRecoveryRuntime) contain() (l8RuntimeOwnerAbsenceObservati
 	coordinator.mu.Lock()
 	pending := coordinator.generation != nil
 	coordinator.mu.Unlock()
-	if pending || selected.starter.close() != nil {
+	if pending || selected.finishTerminalCleanup(ctx) != nil {
 		return l8RuntimeOwnerAbsenceObservation{}, errL8RuntimeOwnerInvalid
+	}
+	return selected.observation, nil
+}
+
+// Caller holds selected.mu and has checked there is no remaining coordinator
+// generation. That absence is necessary but not sufficient: only the original
+// store/checkpoint and released lease can authorize terminal observation.
+func (selected *jailerRecoveryRuntime) finishTerminalCleanup(ctx context.Context) error {
+	if selected.store == nil || selected.starter == nil || selected.store.confirmTerminalCleanup(ctx) != nil || selected.starter.close() != nil || ctx.Err() != nil {
+		return errL8RuntimeOwnerInvalid
 	}
 	selected.observation = l8RuntimeOwnerAbsenceObservation{Kind: l8RuntimeOwnerAbsenceKindWait, ObservedAt: time.Now()}
 	selected.terminal = true
-	return selected.observation, nil
+	return nil
 }
 
 func (owned *l8RuntimeOwnerLinuxRuntime) DuplicateNetworkNamespaceForStrictJailer() (*os.File, error) {

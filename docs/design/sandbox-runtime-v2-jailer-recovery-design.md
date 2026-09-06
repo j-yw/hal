@@ -254,6 +254,16 @@ operations then retry that same coordinator. Zero PID never proves absence or
 allows identity idle. Poisoned record IO/currentness stays quarantined, even if
 old bytes later reappear. No new opcode or legacy transition is introduced.
 
+A pre-PID start failure may already have completed exact coordinator cleanup.
+That case finishes through the same terminal helper only after validating the
+current retained canonical terminal checkpoint, its original busy reservation,
+and that exact lease's durable-idle/readback and successful-close flags, with
+no poison or retained close error. It then closes the gate/observation before
+recording terminal runtime state and allowing authenticated finalization. It
+never infers cleanup from a nil coordinator generation or reopens the identity
+journal: a successor may already own the prepared slot. Missing or mismatched
+evidence and descriptor-close failure stay quarantined.
+
 Successful record retirement synchronizes and checks exact removal before
 closing its retained inode. After the terminal commit point, later descriptor
 close errors remain old-handle errors: they cannot rewrite a record or affect a
