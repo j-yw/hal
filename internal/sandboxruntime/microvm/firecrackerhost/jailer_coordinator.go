@@ -101,6 +101,7 @@ type strictJailerCoordinatorLifecycle interface {
 }
 
 type strictJailerCoordinatorDependencies struct {
+	recovery      *jailerRecoveryAuthority
 	identity      *strictJailerIdentityAuthority
 	prepareCgroup func(context.Context, strictJailerCgroupRequest) (*strictJailerCgroupLease, error)
 	inspect       func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error)
