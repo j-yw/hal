@@ -2918,8 +2918,8 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 			joinedArgs := strings.Join(req.Args, " ")
 			if strings.Contains(joinedArgs, "bundle-runtime-probe") {
 				workspaceRuntimeCalls++
-			} else if strings.Contains(joinedArgs, "hal-factory-verify-stderr") {
-				_, _ = io.WriteString(req.Stdout, `{"schemaVersion":"verify-v1","status":"pass","summary":{"total":0},"checks":[]}`+"\n")
+			} else if strings.Contains(joinedArgs, "HAL_FACTORY_VERIFY_EXIT=") {
+				_, _ = io.WriteString(req.Stdout, `{"schemaVersion":"verify-v1","status":"pass","summary":{"total":0,"passed":0,"failed":0,"timedOut":0,"missing":0,"skipped":0,"warnings":0},"checks":[]}`+"\nHAL_FACTORY_VERIFY_EXIT=0\n")
 			} else {
 				_, _ = io.WriteString(req.Stdout, "worker-backed factory path\n")
 			}
