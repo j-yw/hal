@@ -1,4 +1,4 @@
-# Minimal host transport availability: DESIGN / RED
+# Minimal host transport availability
 
 ## Scope and authority
 
@@ -17,20 +17,27 @@ generation to reach port 1025.
 
 ## Small private API and retained authority
 
-Proposed implementation ownership is new `minimal_control_transport*.go` and
+Implementation ownership is new `minimal_control_transport*.go` and
 tests in `internal/sandboxruntime/microvm/firecrackerhost`, plus this note.
 No shared extraction is currently necessary: reuse the existing private socket
 observation/peer/ACK helpers directly. Do not edit the lifecycle, coordinator,
 cgroup, identity, recovery or owner files assigned to the J worker.
 
-The private constructor receives only the actual retained
+`newMinimalControlTransport` receives only the actual retained
 `*ProcessLifecycleManager`, exact `firecracker.ProcessHandleMetadata` and
 canonical runtime ID. A one-shot `Open(ctx)` returns an opaque stream supporting
 `Read`, `Write`, `SetDeadline`, idempotent `Close` and `Done`, with read-only safe
-process/transport correlation. No caller PID, UID, socket path, readiness flag,
-serialized target, credential seed or generation override is accepted. Private
-per-instance test dependencies may inject existing socket/peer observations;
-the production constructor always uses actual Linux observations.
+process/transport correlation through `Correlation()`. That method returns a
+copy of the exact manager-issued handle and a nonzero process-local counter;
+closed or stale streams return a zero handle/counter. No caller PID, UID, socket
+path, readiness flag, serialized target, credential seed or generation override
+is accepted. Private
+per-instance test dependencies may inject existing socket/peer observations,
+a context-aware dial, and shorter time limits; they cannot enlarge the fixed
+time bounds. The production constructor always uses actual Linux observations
+and `net.Dialer.DialContext`. These private test dependencies are trusted bounded
+operations, not an arbitrary blocking extension API. The polling interval does
+not promise interruption of arbitrary blocking filesystem/injected observations.
 
 Resolve through `manager.resolveLiveProcessIdentity(handle)` and require an
 exact handle/source, positive tracked PID, non-nil live process channel, paths
@@ -90,33 +97,40 @@ Errors are fixed sanitized transport errors; do not print observation causes,
 paths, PIDs, UIDs, raw protocol bytes or caller context causes. Safe error identity
 may preserve cancellation/deadline classification without raw error disclosure.
 
-## Behavioral RED and next tests
+## Behavioral RED and implemented verification
 
-`minimal_control_transport_red_test.go` deliberately adapts the actual legacy
-connector, without calling `ActivateSession`. Its ordinary private Unix fixture
-uses the existing manager/process fixture and explicitly injected strict-UID
+At frozen RED `45ea39e6`, `minimal_control_transport_red_test.go` deliberately
+adapted the actual legacy connector, without calling `ActivateSession`. Its
+ordinary private Unix fixture uses the existing manager/process fixture and
+explicitly injected strict-UID
 observations; it is not a real Jailer, alternate UID, AF_VSOCK or privileged test.
 Every new post-open loss/cancellation case first requires actual CONNECT1025,
 ACK and an unchanged byte roundtrip. At RED the old connector returns unavailable
 before opening: that is protocol-gap evidence, **not** evidence that its future
-post-open negative assertions ran. GREEN may replace only the explicit adapter
-and add implementation tests; preserve these transcripts and assertions.
+post-open negative assertions ran. GREEN replaces only the explicit opener
+adapter with the new private constructor; all eight actual CONNECT/ACK/byte
+transcripts and pending-I/O/termination assertions are unchanged.
 
 Passing controls retain the legacy no-readiness rejection and existing
 `TestJailerVsockOwnerControlReconnect` behavior after real fixture v1 readiness.
-GREEN additionally needs before/during/after admission negatives for nil or
-legacy owner, wrong runtime/handle/source, socket/parent type/mode/UID/inode,
+`minimal_control_transport_test.go` adds before/during/after admission negatives
+for nil or legacy owner, wrong runtime/handle/source, socket/parent type/mode/UID/inode,
 peer PID/UID, record loss, malformed/oversized/partial/trailing ACK, pending dial,
 ACK timeout, cancellation, one-shot concurrent admission and generation retirement.
+Delayed real dial and silent ACK share the same deadline; caller and hard expiry
+survive admission and attempted deadline extension. Rejected partial/non-Unix
+dial results are closed. Closure leaves the tracked process and socket untouched.
 Every rejection must assert no usable stream, no generation, no legacy session,
 bounded termination and joined handlers. Default fixtures may use ordinary Unix
 sockets as the existing firecrackerhost tests do; no guest/image execution occurs.
 
-Focused RED and compatibility commands:
+Focused implementation and compatibility commands (ordinary Unix fixtures only):
 
 ```sh
-go test -p 2 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalHostTransportRED' -count=1
+go test -p 2 -race ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalHostTransport' -count=3
 go test -p 2 -race ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(MinimalHostTransportLegacy|JailerVsockOwnerControlReconnect|L8D6V2ControlFoundation)' -count=1
+go test -p 2 -race ./internal/sandboxruntime/microvm/firecrackerhost -count=3
+go vet -p 2 ./internal/sandboxruntime/microvm/firecrackerhost
 ```
 
 ## Subsequent supervisor consumer (not wired here)

@@ -21,19 +21,15 @@ type minimalHostTransportREDStream interface {
 	Done() <-chan struct{}
 }
 
-// RED adapter: the actual current connector requires prior v1 readiness. Do
-// not fake that session or a late generation. GREEN replaces only this adapter
-// with the new retained transport constructor; the real transcript stays.
-type minimalHostTransportLegacyStream struct{ l8V2ControlStream }
-
-func (s minimalHostTransportLegacyStream) Done() <-chan struct{} { return s.ProcessDone() }
-
+// The original RED used the actual legacy connector without prior v1 readiness.
+// Only this opener changes for GREEN; the real transcript/assertions stay intact.
 func openMinimalHostTransportRED(ctx context.Context, fixture l5ProductionBridgeFixture) (minimalHostTransportREDStream, error) {
-	stream, err := (&productionL8V2ControlConnector{bridge: fixture.bridge}).OpenL8V2Control(ctx, jailerVsockTarget(fixture))
-	if err != nil || stream == nil {
+	connector, err := newMinimalControlTransport(fixture.bridge.lifecycle, fixture.handle, "fc-production-test")
+	if err != nil {
 		return nil, err
 	}
-	return minimalHostTransportLegacyStream{stream}, nil
+	connector.checks = fixture.bridge.ownerChecks // private ordinary-UID fixture
+	return connector.Open(ctx)
 }
 
 func TestMinimalHostTransportREDRetainedStreamWithoutV1(t *testing.T) {
