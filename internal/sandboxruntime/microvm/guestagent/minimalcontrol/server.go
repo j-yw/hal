@@ -60,13 +60,13 @@ type Options struct {
 type Server struct {
 	options Options
 	binding Binding
+	boot    *BootConfig
 	used    atomic.Bool
 	done    chan struct{}
 }
 
 func New(options Options) (*Server, error) {
-	if nilDependency(options.Listener) || options.OwnerDone == nil || len(options.PinnedControllerPublicKey) != ed25519.PublicKeySize ||
-		options.Clock != nil && nilDependency(options.Clock) || options.Random != nil && nilDependency(options.Random) {
+	if !validServerDependencies(options) || len(options.PinnedControllerPublicKey) != ed25519.PublicKeySize {
 		return nil, ErrInvalid
 	}
 	binding, err := NewBinding(options.Identity, options.Binding)
@@ -79,6 +79,39 @@ func New(options Options) (*Server, error) {
 		options.Clock = wallClock{}
 	}
 	return &Server{options: options, binding: binding, done: make(chan struct{})}, nil
+}
+
+// BootstrapOptions selects immutable boot pins, not an already-completed
+// identity. The owner must outlive this boot; nil entropy selects Linux's
+// bounded nonblocking adapter, never the fixed constructor's random fallback.
+type BootstrapOptions struct {
+	Listener  Listener
+	Boot      BootConfig
+	OwnerDone <-chan struct{}
+	Clock     Clock
+	Random    io.Reader
+}
+
+func NewBootstrap(options BootstrapOptions) (*Server, error) {
+	common := Options{Listener: options.Listener, Identity: options.Boot.identity,
+		PinnedControllerPublicKey: append(ed25519.PublicKey(nil), options.Boot.controllerKey[:]...),
+		OwnerDone:                 options.OwnerDone, Clock: options.Clock, Random: options.Random}
+	if !options.Boot.valid || !validServerDependencies(common) {
+		return nil, ErrInvalid
+	}
+	if common.Clock == nil {
+		common.Clock = wallClock{}
+	}
+	if common.Random == nil {
+		common.Random = bootstrapEntropy{}
+	}
+	boot := options.Boot
+	return &Server{options: common, boot: &boot, done: make(chan struct{})}, nil
+}
+
+func validServerDependencies(options Options) bool {
+	return !nilDependency(options.Listener) && options.OwnerDone != nil &&
+		(options.Clock == nil || !nilDependency(options.Clock)) && (options.Random == nil || !nilDependency(options.Random))
 }
 
 func (server *Server) Done() <-chan struct{} { return server.done }
@@ -193,16 +226,35 @@ func (server *Server) connection(parent context.Context, stream *ownedStream, at
 	deadline := clock.Now().Add(session.HandshakeDeadline)
 	timer := clock.AfterFunc(session.HandshakeDeadline, func() { cancel(ErrTimeout) })
 	defer timer.Stop()
+	identity, binding := server.options.Identity, server.binding
+	if server.boot != nil {
+		start, err := frame.Read(stream, MaxMessageBytes)
+		if err != nil {
+			return false, ErrInvalid
+		}
+		identity, binding, err = server.boot.complete(start)
+		if err != nil || ctx.Err() != nil || !clock.Now().Before(deadline) {
+			return false, ErrInvalid
+		}
+	}
 	handshake, hello, err := session.NewGuestHandshake(session.GuestHandshakeConfig{
-		Identity: server.options.Identity, PinnedControllerPublicKey: server.options.PinnedControllerPublicKey,
+		Identity: identity, PinnedControllerPublicKey: server.options.PinnedControllerPublicKey,
 		Dependencies: session.Dependencies{Random: server.options.Random, Now: clock.Now},
 	})
 	if err != nil {
 		return false, ErrUnavailable
 	}
 	defer func() { _, _ = handshake.AcceptControllerAuth(nil) }()
-	start, err := frame.Read(stream, 512)
-	if err != nil || string(start) != prelude || writeAll(stream, hello) != nil {
+	if server.boot != nil && (ctx.Err() != nil || !clock.Now().Before(deadline)) {
+		return false, ErrInvalid
+	}
+	if server.boot == nil {
+		start, err := frame.Read(stream, 512)
+		if err != nil || string(start) != prelude {
+			return false, ErrInvalid
+		}
+	}
+	if writeAll(stream, hello) != nil {
 		return false, ErrInvalid
 	}
 	auth, err := readHandshake(stream)
@@ -235,7 +287,7 @@ func (server *Server) connection(parent context.Context, stream *ownedStream, at
 			return ErrInvalid
 		}
 		var decodeErr error
-		request, decodeErr = server.binding.decodeReadiness(payload, sessionID)
+		request, decodeErr = binding.decodeReadiness(payload, sessionID)
 		return decodeErr
 	})
 	session.DestroyBytes(plaintext)

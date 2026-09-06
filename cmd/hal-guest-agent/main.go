@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/minimalcontrol"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/vsock"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestnetwork"
@@ -26,22 +27,75 @@ func main() {
 
 func run() error {
 	return runGuestAgentEntry(context.Background(), guestAgentEntryDependencies{
-		runLegacy: runLegacyGuestAgent,
+		readBootCommandLine: minimalcontrol.ReadLinuxBootCommandLine,
+		runLegacy:           runLegacyGuestAgent,
+		runMinimal:          runMinimalGuestAgent,
 	})
 }
 
 // This private seam makes the actual entrypoint's selection observable without
-// binding a socket. At the bootstrap RED checkpoint it deliberately preserves
-// the existing legacy-only behavior; boot loading and minimal selection are
-// not implemented or enabled by these dependencies.
+// binding a socket. Boot validation precedes either constructor; malformed
+// selected input is never treated as legacy absence.
 type guestAgentEntryDependencies struct {
 	readBootCommandLine func(context.Context) (string, error)
 	runLegacy           func() error
 	runMinimal          func(context.Context, string) error
 }
 
-func runGuestAgentEntry(_ context.Context, dependencies guestAgentEntryDependencies) error {
+func runGuestAgentEntry(ctx context.Context, dependencies guestAgentEntryDependencies) error {
+	if ctx == nil || dependencies.readBootCommandLine == nil || dependencies.runLegacy == nil || dependencies.runMinimal == nil {
+		return minimalcontrol.ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	line, err := dependencies.readBootCommandLine(ctx)
+	if err != nil {
+		return minimalcontrol.ErrInvalid
+	}
+	_, selected, err := minimalcontrol.ParseBootCommandLine(line)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if selected {
+		return dependencies.runMinimal(ctx, line)
+	}
 	return dependencies.runLegacy()
+}
+
+func runMinimalGuestAgent(parent context.Context, line string) error {
+	ctx, cancel := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return runMinimalGuestAgentWithListener(ctx, line, vsock.ListenLinuxControl)
+}
+
+// Only the fixed listener is injected; the selected adapter constructs the
+// actual authenticated bootstrap server, not a test substitute or v1 backend.
+func runMinimalGuestAgentWithListener(ctx context.Context, line string, listen func() (vsock.Listener, error)) error {
+	boot, selected, err := minimalcontrol.ParseBootCommandLine(line)
+	if err != nil || !selected || ctx == nil || listen == nil {
+		return minimalcontrol.ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	listener, err := listen()
+	if err != nil {
+		return minimalcontrol.ErrUnavailable
+	}
+	agent, err := minimalcontrol.NewBootstrap(minimalcontrol.BootstrapOptions{
+		Listener: listener, Boot: boot, OwnerDone: ctx.Done(),
+	})
+	if err != nil {
+		if listener != nil {
+			_ = listener.Close()
+		}
+		return err
+	}
+	return agent.Serve(ctx)
 }
 
 func runLegacyGuestAgent() error {

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/session"
 	"golang.org/x/sys/unix"
 )
 
@@ -33,6 +34,16 @@ type linuxConnection struct {
 
 // ListenLinux binds the fixed production guest-agent AF_VSOCK port.
 func ListenLinux() (Listener, error) {
+	return listenLinuxPort(GuestAgentPort)
+}
+
+// ListenLinuxControl binds only the authenticated control port. It does not
+// construct the legacy transport or establish authenticated readiness.
+func ListenLinuxControl() (Listener, error) {
+	return listenLinuxPort(session.ControlPort)
+}
+
+func listenLinuxPort(port uint32) (Listener, error) {
 	fd, err := unix.Socket(
 		unix.AF_VSOCK,
 		unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK,
@@ -45,7 +56,7 @@ func ListenLinux() (Listener, error) {
 	listener.fd.Store(int64(fd))
 	if err := unix.Bind(fd, &unix.SockaddrVM{
 		CID:  unix.VMADDR_CID_ANY,
-		Port: GuestAgentPort,
+		Port: port,
 	}); err != nil {
 		_ = listener.Close()
 		return nil, errors.New("guest AF_VSOCK bind failed")

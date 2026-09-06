@@ -45,33 +45,63 @@ func NewBinding(identity session.Identity, fields map[string]string) (Binding, e
 	if _, err := session.MarshalGuestHello(session.GuestHello{Suite: session.HandshakeSuite1, Identity: identity}); err != nil {
 		return Binding{}, ErrInvalid
 	}
-	if len(fields) != len(bindingFields) {
-		return Binding{}, ErrInvalid
+	if err := validateBindingFields(identity, fields, false); err != nil {
+		return Binding{}, err
+	}
+	return Binding{fields: maps.Clone(fields)}, nil
+}
+
+// Prelaunch validation omits only the two generations unavailable before the
+// host owns the actual process and control stream. It never synthesizes them.
+func validateBindingFields(identity session.Identity, fields map[string]string, prelaunch bool) error {
+	count := len(bindingFields)
+	if prelaunch {
+		count -= 2
+		if _, exists := fields["processGeneration"]; exists {
+			return ErrInvalid
+		}
+		if _, exists := fields["vsockGeneration"]; exists {
+			return ErrInvalid
+		}
+	}
+	if len(fields) != count {
+		return ErrInvalid
 	}
 	for _, key := range bindingFields {
-		value := fields[key]
-		switch key {
-		case "imageDigest":
-			if value != "sha256-"+hex.EncodeToString(identity.ImageSHA256[:]) {
-				return Binding{}, ErrInvalid
-			}
-		case "admissionRevision":
-			revision, err := strconv.ParseUint(value, 10, 64)
-			if err != nil || revision == 0 || strconv.FormatUint(revision, 10) != value {
-				return Binding{}, ErrInvalid
-			}
-		default:
-			if !safeID(value) {
-				return Binding{}, ErrInvalid
-			}
+		if prelaunch && lateBindingField(key) {
+			continue
+		}
+		if err := validateBindingField(identity, key, fields[key]); err != nil {
+			return err
 		}
 	}
 	if fields["runtimeDriver"] != "microvm" || fields["runtimeId"] != identity.RuntimeID ||
-		fields["runtimeGeneration"] != identity.RuntimeGeneration || fields["processGeneration"] != identity.FirecrackerProcessGeneration ||
-		fields["vsockGeneration"] != identity.VsockGeneration || fields["bootGeneration"] != identity.BootGeneration || fields["imageGeneration"] != identity.ImageGeneration {
-		return Binding{}, ErrInvalid
+		fields["runtimeGeneration"] != identity.RuntimeGeneration || fields["bootGeneration"] != identity.BootGeneration || fields["imageGeneration"] != identity.ImageGeneration ||
+		!prelaunch && (fields["processGeneration"] != identity.FirecrackerProcessGeneration || fields["vsockGeneration"] != identity.VsockGeneration) {
+		return ErrInvalid
 	}
-	return Binding{fields: maps.Clone(fields)}, nil
+	return nil
+}
+
+func lateBindingField(key string) bool { return key == "processGeneration" || key == "vsockGeneration" }
+
+func validateBindingField(identity session.Identity, key, value string) error {
+	switch key {
+	case "imageDigest":
+		if value != "sha256-"+hex.EncodeToString(identity.ImageSHA256[:]) {
+			return ErrInvalid
+		}
+	case "admissionRevision":
+		revision, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || revision == 0 || strconv.FormatUint(revision, 10) != value {
+			return ErrInvalid
+		}
+	default:
+		if !safeID(value) {
+			return ErrInvalid
+		}
+	}
+	return nil
 }
 
 func safeID(value string) bool {

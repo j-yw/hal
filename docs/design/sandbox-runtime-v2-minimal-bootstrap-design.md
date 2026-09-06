@@ -1,4 +1,4 @@
-# Selected minimal bootstrap: design and executable entrypoint RED
+# Selected minimal bootstrap: implementation and verification boundary
 
 ## Scope and status
 
@@ -6,19 +6,25 @@ Base: `0a41be54479fe0baf86b45154b650966fe0d96f4`, including the accepted
 [injected minimal control](sandbox-runtime-v2-minimal-authenticated-control-design.md).
 The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md)
 and [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) remain
-authoritative. This commit is DESIGN/RED, not bootstrap implementation.
+authoritative. The design and executable routing RED were frozen in
+`a39981ea41cad9da135ac8d46f54a1ea90671fbd`; the subsequent GREEN implements
+the bounded guest bootstrap and explicit entrypoint selection described here.
 
 `run()` now delegates through a private dependency seam; the legacy listener,
 backend, verifier, server and cleanup body is otherwise unchanged. The helper
-still calls that legacy constructor unconditionally. The new test supplies
+called that legacy constructor unconditionally at RED. The original test supplies
 public boot strings and counted constructors to this actual helper: selected
 and malformed minimal settings reach legacy construction without reading boot
-input. That is the observed RED, not an absent-symbol or parser-shape test.
+input at RED. That is the observed RED, not an absent-symbol or parser-shape test.
+Those assertions are unchanged and now pass through the production parser and
+actual routing helper. The selected adapter constructs `NewBootstrap`, not a
+v1 transport/backend; injected malformed streams also exercise that adapter.
 No test opens a socket, reads real boot state, or calls a workload backend.
 
-GREEN may implement only public boot parsing/loading, provisional identity
-completion inside the existing acceptor, nonblocking entropy, and actual
-agent profile selection. No credentials, workload dispatch, host launch,
+GREEN implements only public boot parsing/loading, provisional identity
+completion inside the existing acceptor, nonblocking entropy, the fixed control
+listener dispatch, and actual agent profile selection. No credentials, workload
+dispatch, host launch,
 network enforcement, PID1 mutation, image build, or readiness-proof consumer
 is implemented here. Public metadata is not runtime authority by itself.
 
@@ -28,15 +34,17 @@ The sole guest source is `/proc/cmdline`, read once with the existing L7 loader'
 bounded/no-follow/regular-file/context-check pattern, with at most 4097 bytes
 read and a 4096-byte **whole command-line** limit. No CLI option, environment,
 workspace file, candidate receipt or fallback source may replace it. Read
-errors, NUL and overflow fail before any listener/backend constructor. Missing
-minimal keys on an otherwise usable command line preserve legacy selection.
+errors, NUL and overflow fail before any listener/backend constructor. One
+terminal newline is accepted and counted; embedded/repeated newlines and other
+ASCII controls except tab are rejected. Missing minimal keys on an otherwise
+usable command line preserve legacy selection.
 
 Ten exact keys are required together:
 
 | Key (`hal_minimal_` prefix) | Value |
 | --- | --- |
 | `profile` | `guest-agent-minimal-v1` |
-| `controller_key` | canonical unpadded raw-URL base64 of 32 public key bytes |
+| `controller_key` | canonical unpadded raw-URL base64 of 32 public key bytes; reject the all-zero value |
 | `controller_key_generation` | safe ID, 1–64 ASCII bytes |
 | `boot_nonce` | canonical unpadded raw-URL base64 of 32 nonzero nonce bytes |
 | `runtime_id`, `runtime_generation` | safe IDs, 1–64 bytes each |
@@ -57,10 +65,13 @@ At the maximum 64-byte ID lengths this complete minimal suffix occupies 846
 ASCII bytes including its nine internal spaces, excluding the separator/base
 arguments. The producer must check the actual final combined length, including
 existing kernel and L7 arguments; individual parsers do not get separate 4-KiB
-budgets. Oversize fails before launch. The rootfs image digest and rendered boot
+budgets. The renderer reserves one byte for the newline that Linux appends to
+`/proc/cmdline`: at most 4095 rendered bytes, then at most 4096 guest-visible
+bytes. It rejects a newline in its base argument instead of normalizing it.
+Oversize fails before launch. The rootfs image digest and rendered boot
 configuration digest remain separate; neither recursively includes the other.
 
-Proposed narrow exported helpers in `guestagent/minimalcontrol`:
+Exported helpers in `guestagent/minimalcontrol`:
 
 ```go
 type BootConfig struct { /* immutable, opaque public pins; JSON {} */ }
@@ -99,7 +110,7 @@ not a serialized daemon PID, socket-existence inference or prior v1 readiness.
 The host constructs the full `session.Identity` and `NewBinding(identity,
 full27Fields)`, then sends `binding.BootstrapPrelude()` on that retained stream.
 
-The proposed initial frame uses the existing four-byte length prefix, maximum
+The initial frame uses the existing four-byte length prefix, maximum
 8192 bytes, and exactly this compact canonical JSON shape:
 
 ```json
@@ -114,6 +125,12 @@ and compare it to immutable boot pins; independently correlate the runtime,
 boot and image fields. Build the full identity using the pinned nonce/key
 generation, fixed control channel/CID/port and those two late generations.
 
+The independent golden vector in `TestBootstrapPrelaunchGoldenAndImmutableInputs`
+uses the 25 explicit fixture values, 853 encoded bytes, and SHA-256
+`380806f309fa7e04e6061d84f2e864ebb332706dcb7becba035b65d3e875cca8`.
+It was calculated separately using Python `hashlib` and `struct.pack('>H')`,
+not the production encoder or a paired decoder.
+
 These provisional bytes remain unauthenticated. Only after validation may the
 guest emit GuestHello. The existing ControllerAuth signature covers the full
 GuestHello/transcript; unchanged Finished messages establish the session.
@@ -121,7 +138,7 @@ Finally the existing encrypted readiness request must match the complete
 27-field binding and session-bound digest. No provisional parse, digest match,
 GuestHello, socket or unsigned acknowledgment is authenticated readiness.
 
-Add a distinct `NewBootstrap(BootstrapOptions)` using `BootConfig`, injected
+The distinct `NewBootstrap(BootstrapOptions)` uses `BootConfig`, injected
 listener, owner-loss channel, clock and entropy. Reuse the existing `Server`
 lifecycle, not a new server for each provisional connection. Parsing the late
 prelude must occur **inside** its existing 15-second boot budget, five-second
@@ -157,7 +174,7 @@ presence invokes only the minimal runner with the same immutable source bytes;
 invalid presence or read error invokes neither. The concrete minimal adapter
 parses those retained bytes into `BootConfig` and constructs `NewBootstrap`;
 it never reopens `/proc/cmdline`. This small duplicate parse keeps the private
-RED seam independent of a not-yet-existing public type, without another source.
+original RED seam independent of the later public type, without another source.
 
 No legacy port1024 listener, exec/copy backend, environment-derived proxy
 configuration or v1 transport is constructed on selected minimal input. Signal
@@ -165,13 +182,14 @@ cancellation feeds the minimal server's existing lifetime. The only advertised
 capability stays `authenticated_minimal_control`; no workload or credential
 operation appears in this slice.
 
-Two ownership dependencies require agreement before GREEN/integration:
+Ownership and remaining dependencies:
 
-- Add only `vsock.ListenLinuxControl()` on port1025 by reusing the existing
+- The separately approved `vsock.ListenLinuxControl()` on port1025 reuses the existing
   private Linux listener construction. Keep `ListenLinux()` fixed at1024 and
   legacy behavior unchanged; do not expose an arbitrary-port API or duplicate
-  the transport implementation. This is a proposed narrow ownership expansion,
-  not an edit in this RED commit. Tests inject listeners, never bind sockets.
+  transport implementation. A narrow AST test checks the fixed constructors
+  and selected bind argument without invoking them. Actual AF_VSOCK availability
+  is not tested. The non-Linux implementations fail closed.
 - Root PID1 must subsequently validate the same minimal boot config **before**
   network configuration/start-gate release/child creation. The current untagged
   L7 PID1 validates only L7 keys and ignores these minimal keys. The agent's
@@ -180,37 +198,55 @@ Two ownership dependencies require agreement before GREEN/integration:
   behavior, tests, rebuilt exact guest binaries/image and inspection. No PID1
   or tools/image file is changed here.
 
+The exact later PID1 sequence is `ReadLinuxBootCommandLine(ctx)`, then
+`ParseBootCommandLine(retainedLine)`. Any read/parse error must stop before
+`guestnetwork` setup, start-gate release, or child construction. Only
+`selected == false && err == nil` preserves legacy absence. The opaque
+`BootConfig` has no caller-settable fields or JSON authority. Other boot parsers
+should consume the same retained public line; they must not obtain a second
+independent 4-KiB budget. This package does not implement that PID1 sequence.
+
 The later host producer/transport owner also retains config/process/socket/L7
 authority and enforces currentness/loss. Neither this parser nor a guest ACK
 is host teardown, network enforcement, credential usability, UID separation,
 seccomp, Jailer proof or strict-default admission. Host-network/Jailer NIC
 correlation and all credential/exec/copy/terminal acceptance remain later work.
 
-## RED evidence and GREEN exit gates
+## RED evidence and GREEN checks
 
 `TestMinimalBootstrapREDActualEntrySelectsMinimalBeforeLegacy` requires boot
 read then only selected construction. Sixteen malformed/read-failure subcases
-require boot validation and neither constructor. At this RED they fail because
-the reader is bypassed and the legacy constructor is called. They do **not**
-yet prove malformed data reaches an implemented parser or provisional handler.
+require boot validation and neither constructor. At the frozen RED they fail
+because the reader is bypassed and the legacy constructor is called. That RED
+alone did **not** prove malformed data reached an implemented parser or
+provisional handler; the GREEN adds those direct and transcript assertions.
 `TestMinimalBootstrapLegacyAbsenceKeepsCurrentConstructor` separately passes.
 
 ```sh
 go test -p 2 ./cmd/hal-guest-agent -run '^TestMinimalBootstrapRED' -count=1
-go test -p 2 -race ./cmd/hal-guest-agent -skip '^TestMinimalBootstrapRED' -count=3
-go vet -p 2 ./cmd/hal-guest-agent
+go test -p 2 -race ./internal/sandboxruntime/microvm/guestagent/minimalcontrol ./cmd/hal-guest-agent -count=10
+go test -p 2 -race ./internal/sandboxruntime/microvm/guestagent/... ./cmd/hal-guest-agent -count=3
+go vet -p 2 ./internal/sandboxruntime/microvm/guestagent/... ./cmd/hal-guest-agent
 ```
 
-GREEN must execute these assertions unchanged, then add direct codec/renderer
+GREEN executes these assertions unchanged, with direct codec/renderer
 and full handshake negatives: all 25 missing/changed prelaunch fields; wrong
 nonce/key/runtime/image; duplicate/unknown/aliased/null/noncanonical/oversized
 prelude; partial read/write plus cancellation/owner loss/clock expiry at every
 new stage; exactly three attempts across provisional failures; third-attempt
 success, one claim, no re-admission; bounded entropy errors with zero output;
-unchanged fixed constructor/v1/v2 behavior and safe errors. Measure maximum-ID
-render size and final combined 4096/4097 boundaries without truncation. Add
-explicit non-Linux fail-closed checks and no-default-live-listener tests.
+unchanged fixed constructor/v1/v2 behavior and safe errors. Tests measure
+maximum-ID render size and final combined 4096/4097 boundaries without
+truncation, with non-Linux fail-closed source/tests and fixed-listener checks.
+Cross-compilation of the cmd, minimalcontrol, and vsock test binaries for Darwin
+checks build compatibility only; it does not execute non-Linux behavior here.
 
-Commit GREEN only after review of this design and scope. Rebuild/boot/network,
-credentials and final strict readiness remain unverified even if these pure
+All new default tests use public synthetic pins, owned in-memory streams,
+injected clocks, temporary regular-file/FIFO/symlink fixtures, and bounded
+injected entropy. They do not bind AF_VSOCK, read real `/proc/cmdline`, measure
+kernel entropy availability, modify host configuration, or activate credentials.
+The accepted fixed-constructor transcript tests and original routing RED file
+remain unchanged. No historical guard is weakened.
+
+Rebuild/boot/network, credentials and final strict readiness remain unverified even if these pure
 and injected gates pass. A required live skip is not acceptance.
