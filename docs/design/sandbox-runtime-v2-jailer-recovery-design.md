@@ -149,6 +149,18 @@ and approval. The command entrypoint should need no new command or flags.
 
 ## Crash ordering and commit points
 
+Implementation refinement: use a private `jailer-child-gate-v1` role of the
+same runtime-owner executable, with exactly two inherited descriptors: control
+socket and sealed bounded gate config. Do not pad the legacy six-descriptor
+child-gate ABI. The selected starter reuses `startStrictJailerOSExecCommand`
+for private executable mounts, the retained creating thread, network namespace,
+clone-time cgroup and additive Pdeathsig. The gate checks canonical derived
+Jailer argv, current mounted snapshot identity/hash, unchanged parent and
+SIGKILL parent-death setting; it waits for bounded armed/release acknowledgement
+and closes inherited descriptors before same-PID Jailer exec. Actual armed
+PID/start time is durably published before release. This is a private role,
+not a new public command, guest role or daemon.
+
 | Window | Required outcome |
 | --- | --- |
 | Before durable selected genesis and valid owner capability | No reservation/allocation/launch; close local inputs. |

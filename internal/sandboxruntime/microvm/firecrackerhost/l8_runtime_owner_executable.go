@@ -42,6 +42,7 @@ type l8RuntimeOwnerExecutableOps struct {
 	CloseFD       func(int) error
 	RunSupervisor func([6]int) error
 	RunChildGate  func([6]int) error
+	RunJailerGate func([2]int) error
 }
 
 type l8RuntimeOwnerChildLaunchOps struct {
