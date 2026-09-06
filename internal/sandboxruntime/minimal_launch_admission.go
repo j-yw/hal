@@ -224,7 +224,7 @@ func (authorizer *MinimalLaunchAuthorizer) Close() {
 
 // Start dispatches only this binding's armed reservation and original input
 // handle. The caller must retain a nonnil returned owner even alongside errors.
-func (binding *MinimalLaunchProviderBinding) Start(reservation *MinimalLaunchReservation, selection *MinimalLaunchPreparedSelection) (owner *MinimalLaunchOwnerBinding, err error) {
+func (binding *MinimalLaunchProviderBinding) Start(reservation *MinimalLaunchReservation, selection *MinimalLaunchPreparedSelection, barrier func() error) (owner *MinimalLaunchOwnerBinding, err error) {
 	if binding == nil || binding.self != binding || reservation == nil || reservation.self != reservation || selection == nil || selection.self != selection || selection.binding != binding || reservation.selection != selection || selection.Current(reservation.ctx) != nil {
 		return nil, ErrMinimalLaunchUnavailable
 	}

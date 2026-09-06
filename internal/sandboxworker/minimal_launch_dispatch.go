@@ -86,11 +86,19 @@ func (service *L8Service) handleMinimalLaunch(ctx context.Context, principal san
 	if entry == nil {
 		return l8JobV2SuccessResponse(request, job)
 	}
-	owner, startErr := service.minimalLaunch.Provider.Start(entry.reservation, entry.selection)
+	owner, startErr := service.minimalLaunch.Provider.Start(entry.reservation, entry.selection, func() error {
+		return service.jobs.checkMinimalDispatch(entry)
+	})
 	service.jobs.finishMinimalDispatch(entry, owner, startErr)
 	// This initial reachable boundary has no credential/workload result
 	// consumer. Keep exact ownership, but do not manufacture worker success.
 	return l8ServiceFailureResponse(request)
+}
+
+// Compiling RED boundary. This exact callback must be checked after the last
+// provider Current and before provider entry; the binding does not call it yet.
+func (manager *jobManagerV2) checkMinimalDispatch(entry *minimalLaunchEntry) error {
+	return errMinimalLaunchState
 }
 
 func (manager *jobManagerV2) resolveMinimalSubmission(principalID, submissionID, requestKey string) (JobV2, bool, error) {
