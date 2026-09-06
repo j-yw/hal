@@ -150,11 +150,18 @@ individual recovery captures, and `02757af4-live-lifecycle.*`. The full ignored
 runtime archive was preserved separately and matched against original Git and
 stored artifacts; it is not native artifact-collection coverage. Three optional
 legacy artifact gaps (CI, PR and the archived source path) remain explicit.
-The separate doctor snapshot failed initialization checks: installed Hal skills
-were missing, with additional default/config and broken-link warnings. Passing
-the three project checks does not make that doctor snapshot successful; this
-initialization gap remains a release follow-up. The completed game sandbox,
-worker registration, foreground daemon and temporary copied auth were removed;
+The separate doctor snapshot failed checks in the **host fixture**, not the
+container: `defaultFactoryDoctorSnapshot` runs the local doctor against the
+source directory. That clone had committed relative skill links but omitted
+their Git-ignored installed targets and prompt; config also lacked two defaults.
+Filesystem-only probes reproduced those exact failures. Separate disposable
+`hal init` checks repaired those omissions while preserving explicit settings.
+Worker command-context preparation invokes that initialization remotely, but
+this run did not collect a remote doctor snapshot. Neither remote doctor success
+nor remote initialization failure can be inferred from the local artifact.
+Future release fixtures should initialize the host and collect separately
+identified remote diagnostics when claiming remote readiness. The completed
+game sandbox, worker registration, foreground daemon and temporary copied auth were removed;
 the recovered source, bundle, archives, logs and original credentials remain.
 
 This checkpoint accepts the R1/R2 Linux slice only. It is not a fresh macOS run,
