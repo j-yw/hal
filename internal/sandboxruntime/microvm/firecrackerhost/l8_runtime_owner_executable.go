@@ -167,8 +167,8 @@ func runPrivateL8RuntimeOwnerExecutableWithOps(arguments []string, ops l8Runtime
 	var fds [6]int
 	copy(fds[:], opened)
 	var runErr error
+	selected := false
 	if arguments[0] == l8RuntimeOwnerExecutableSupervise {
-		selected := false
 		if ops.SelectSupervisor != nil {
 			selected, runErr = ops.SelectSupervisor(fds)
 		}
@@ -189,7 +189,9 @@ func runPrivateL8RuntimeOwnerExecutableWithOps(arguments []string, ops l8Runtime
 		}
 	}
 	for i := len(opened) - 1; i >= 0; i-- {
-		_ = ops.CloseFD(opened[i])
+		if err := ops.CloseFD(opened[i]); err != nil && selected {
+			runErr = errL8RuntimeOwnerInvalid
+		}
 	}
 	if runErr != nil {
 		return 127

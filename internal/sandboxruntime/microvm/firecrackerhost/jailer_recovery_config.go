@@ -84,6 +84,12 @@ func validateJailerRecoverySupervisorConfig(config jailerRecoverySupervisorConfi
 	if config.Version != jailerRecoveryConfigVersion || config.DaemonUID != 0 || !slices.Equal(config.Roles, jailerRecoverySupervisorRoles()) {
 		return errL8RuntimeOwnerInvalid
 	}
+	return validateJailerRecoveryCommonConfig(config)
+}
+
+// Both private schemas apply their own exact discriminator, roles and root
+// daemon gate before reusing these job/policy/path/asset checks.
+func validateJailerRecoveryCommonConfig(config jailerRecoverySupervisorConfig) error {
 	j := config.Job
 	for _, id := range []string{j.SandboxID, j.ExecutionID, j.WorkerID, j.HostID, j.RuntimeID, j.RuntimeGeneration} {
 		if !validL8RuntimeOwnerSafeID(id) {
