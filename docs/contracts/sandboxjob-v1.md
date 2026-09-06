@@ -64,6 +64,22 @@ succeeds. Complete safe lines are durable and readable while execution is
 still running; unterminated suffixes remain bounded until they can be safely
 classified across write boundaries.
 
+Literal log masks are collected from arguments, stdin, and environment values,
+except the four exact, case-sensitive public Git identity keys:
+`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and
+`GIT_COMMITTER_EMAIL`. Values under those keys are not secrets solely because
+they occur in the environment; short names must not replace ordinary output or
+JSON syntax. A matching value supplied through any other environment key,
+argument, or stdin still requires masking. Structural credential, token,
+endpoint, and host-path masking continues to apply to all output, including
+public identities. This is fixed worker policy, not a caller-supplied mechanism
+for excluding arbitrary values from redaction.
+
+The omission of request environment values from job metadata does not require
+suppressing public Git author/committer metadata legitimately produced in logs.
+Log redaction does not modify the runtime request, source output buffers, or
+workspace artifact bytes.
+
 ## Compatibility
 
 Fields may be added only when optional and redaction-safe. A client must reject
