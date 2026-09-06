@@ -216,3 +216,47 @@ func verifyVsockPeer(conn *net.UnixConn, expectedPID int) error {
 	}
 	return nil
 }
+
+// Observe relative to the pinned, nofollow parent, then revalidate its pathname.
+// A different parent can never authenticate an identically named socket.
+func observeVsockSocketOwner(path string) (vsockSocketObservation, error) {
+	parent := filepath.Dir(path)
+	fd, err := unix.Open(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return vsockSocketObservation{}, err
+	}
+	defer unix.Close(fd)
+	var directory, socket, current unix.Stat_t
+	if unix.Fstat(fd, &directory) != nil {
+		return vsockSocketObservation{}, errors.New("Firecracker parent identity unavailable")
+	}
+	if err := unix.Fstatat(fd, filepath.Base(path), &socket, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return vsockSocketObservation{}, err
+	}
+	if unix.Fstatat(unix.AT_FDCWD, parent, &current, unix.AT_SYMLINK_NOFOLLOW) != nil ||
+		directory.Dev != current.Dev || directory.Ino != current.Ino || directory.Uid != current.Uid || directory.Mode != current.Mode ||
+		directory.Mode&unix.S_IFMT != unix.S_IFDIR || socket.Mode&unix.S_IFMT != unix.S_IFSOCK {
+		return vsockSocketObservation{}, errors.New("Firecracker socket identity changed")
+	}
+	return vsockSocketObservation{
+		identity: vsockSocketIdentity{socketDevice: uint64(socket.Dev), socketInode: socket.Ino, parentDevice: uint64(directory.Dev), parentInode: directory.Ino},
+		uid:      socket.Uid, parentUID: directory.Uid,
+		socketMode: os.ModeSocket | os.FileMode(socket.Mode&0o7777), parentMode: os.ModeDir | os.FileMode(directory.Mode&0o7777),
+	}, nil
+}
+
+func observeVsockPeerOwner(conn *net.UnixConn) (vsockPeerIdentity, error) {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return vsockPeerIdentity{}, errors.New("Firecracker peer credentials unavailable")
+	}
+	var credentials *unix.Ucred
+	var controlErr error
+	err = raw.Control(func(fd uintptr) {
+		credentials, controlErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+	})
+	if err != nil || controlErr != nil || credentials == nil {
+		return vsockPeerIdentity{}, errors.New("Firecracker peer credentials unavailable")
+	}
+	return vsockPeerIdentity{pid: int(credentials.Pid), uid: credentials.Uid}, nil
+}

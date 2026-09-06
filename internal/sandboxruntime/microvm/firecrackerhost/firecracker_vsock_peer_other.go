@@ -48,3 +48,11 @@ func statVsockSocket(string) (vsockSocketIdentity, error) {
 func verifyVsockPeer(*net.UnixConn, int) error {
 	return errors.New("Firecracker peer credentials unsupported")
 }
+
+func observeVsockSocketOwner(string) (vsockSocketObservation, error) {
+	return vsockSocketObservation{}, errors.New("Firecracker socket ownership unsupported")
+}
+
+func observeVsockPeerOwner(*net.UnixConn) (vsockPeerIdentity, error) {
+	return vsockPeerIdentity{}, errors.New("Firecracker peer credentials unsupported")
+}

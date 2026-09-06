@@ -25,6 +25,8 @@ const (
 var errFirecrackerVsockGuestPortUnavailable = errors.New("Firecracker vsock guest port is unavailable")
 
 type firecrackerVsockTransportOptions struct {
+	owner            *vsockProcessOwner
+	ownerChecks      vsockOwnerChecks
 	socketPath       string
 	guestPort        uint32
 	expectedPeerPID  int
@@ -34,6 +36,8 @@ type firecrackerVsockTransportOptions struct {
 }
 
 type firecrackerVsockTransport struct {
+	owner            *vsockProcessOwner
+	ownerChecks      vsockOwnerChecks
 	socketPath       string
 	guestPort        uint32
 	expectedPeerPID  int
@@ -48,6 +52,90 @@ type firecrackerVsockTransport struct {
 	active map[*net.UnixConn]struct{}
 }
 
+// These observations are private and per instance; public options cannot
+// replace Linux ownership or peer inspection.
+type vsockOwnerChecks struct {
+	observe func(string) (vsockSocketObservation, error)
+	peer    func(*net.UnixConn) (vsockPeerIdentity, error)
+}
+
+type vsockSocketObservation struct {
+	identity               vsockSocketIdentity
+	uid, parentUID         uint32
+	socketMode, parentMode os.FileMode
+}
+
+type vsockPeerIdentity struct {
+	pid int
+	uid uint32
+}
+
+func statVsockSocketForOwner(path string, owner *vsockProcessOwner, checks vsockOwnerChecks) (vsockSocketIdentity, error) {
+	if owner == nil {
+		return statVsockSocket(path)
+	}
+	if !owner.active() {
+		return vsockSocketIdentity{}, errors.New("Firecracker owner is unavailable")
+	}
+	observe := checks.observe
+	if observe == nil {
+		observe = observeVsockSocketOwner
+	}
+	observed, err := observe(path)
+	if err != nil {
+		return vsockSocketIdentity{}, err
+	}
+	if !owner.active() || observed.uid != owner.uid || observed.parentUID != owner.uid ||
+		observed.socketMode != os.ModeSocket|0o600 || observed.parentMode != os.ModeDir|0o700 ||
+		observed.identity.parentDevice != owner.parent.device || observed.identity.parentInode != owner.parent.inode {
+		return vsockSocketIdentity{}, errors.New("Firecracker socket owner identity mismatch")
+	}
+	return observed.identity, nil
+}
+
+func verifyVsockPeerForOwner(conn *net.UnixConn, pid int, owner *vsockProcessOwner, checks vsockOwnerChecks) error {
+	if owner == nil {
+		return verifyVsockPeer(conn, pid)
+	}
+	peer := checks.peer
+	if peer == nil {
+		peer = observeVsockPeerOwner
+	}
+	observed, err := peer(conn)
+	if err != nil || !owner.active() || observed.pid != pid || observed.uid != owner.uid {
+		return errors.New("Firecracker peer identity mismatch")
+	}
+	return nil
+}
+
+func (transport *firecrackerVsockTransport) authorityActive() bool {
+	if transport == nil {
+		return false
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	return !transport.closed && transport.owner.active()
+}
+
+// An admitted strict handshake must not outlive the tracked process while
+// waiting on a peer. Joining the watcher keeps each connection's ownership
+// bounded, including cancellation and all partial-handshake failures.
+func (transport *firecrackerVsockTransport) watchOwner(conn *net.UnixConn) func() {
+	if transport.owner == nil {
+		return func() {}
+	}
+	stop, finished := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(finished)
+		select {
+		case <-transport.owner.done:
+			_ = conn.Close()
+		case <-stop:
+		}
+	}()
+	return func() { close(stop); <-finished }
+}
+
 func newFirecrackerVsockTransport(options firecrackerVsockTransportOptions) (*firecrackerVsockTransport, error) {
 	if options.guestPort == 0 || options.guestPort == ^uint32(0) || options.expectedPeerPID <= 0 {
 		return nil, errors.New("Firecracker vsock transport metadata is invalid")
@@ -60,10 +148,12 @@ func newFirecrackerVsockTransport(options firecrackerVsockTransportOptions) (*fi
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0o077 != 0 {
 		return nil, errors.New("Firecracker vsock socket is not privately owned")
 	}
-	if err := validateVsockSocketOwnership(path, info); err != nil {
-		return nil, errors.New("Firecracker vsock socket is not privately owned")
+	if options.owner == nil {
+		if err := validateVsockSocketOwnership(path, info); err != nil {
+			return nil, errors.New("Firecracker vsock socket is not privately owned")
+		}
 	}
-	identity, err := statVsockSocket(path)
+	identity, err := statVsockSocketForOwner(path, options.owner, options.ownerChecks)
 	if err != nil {
 		return nil, errors.New("Firecracker vsock socket identity is unavailable")
 	}
@@ -76,6 +166,7 @@ func newFirecrackerVsockTransport(options firecrackerVsockTransportOptions) (*fi
 		operationTimeout = 30 * time.Second
 	}
 	return &firecrackerVsockTransport{
+		owner: options.owner, ownerChecks: options.ownerChecks,
 		socketPath: path, guestPort: options.guestPort, expectedPeerPID: options.expectedPeerPID,
 		handshakeTimeout: timeout, responseLimit: options.responseLimit,
 		operationTimeout: operationTimeout, socketIdentity: identity,
@@ -94,7 +185,10 @@ func (transport *firecrackerVsockTransport) RoundTrip(ctx context.Context, reque
 	if int64(len(request.Encoded)) > guestagent.DefaultMaxEncodedRequestBytes {
 		return guestagent.TransportResponse{}, guestagent.NewProtocolError(guestagent.ErrorCodeOversizedRequest, request.Operation, "request", errors.New("guest request exceeds limit"))
 	}
-	before, err := statVsockSocket(transport.socketPath)
+	if !transport.authorityActive() {
+		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, errors.New("Firecracker owner is unavailable"))
+	}
+	before, err := statVsockSocketForOwner(transport.socketPath, transport.owner, transport.ownerChecks)
 	if err != nil {
 		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, err)
 	}
@@ -116,11 +210,13 @@ func (transport *firecrackerVsockTransport) RoundTrip(ctx context.Context, reque
 		transport.unregister(conn)
 		_ = conn.Close()
 	}()
-	after, err := statVsockSocket(transport.socketPath)
+	stopOwner := transport.watchOwner(conn)
+	defer stopOwner()
+	after, err := statVsockSocketForOwner(transport.socketPath, transport.owner, transport.ownerChecks)
 	if err != nil || before != transport.socketIdentity || after != transport.socketIdentity {
 		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, errors.New("Firecracker vsock socket identity changed"))
 	}
-	if err := verifyVsockPeer(conn, transport.expectedPeerPID); err != nil {
+	if err := verifyVsockPeerForOwner(conn, transport.expectedPeerPID, transport.owner, transport.ownerChecks); err != nil {
 		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, err)
 	}
 	deadline := time.Now().Add(transport.handshakeTimeout)
@@ -175,6 +271,9 @@ func (transport *firecrackerVsockTransport) RoundTrip(ctx context.Context, reque
 			return guestagent.TransportResponse{}, guestagent.NewProtocolError(guestagent.ErrorCodeOversizedResponse, request.Operation, "response", errors.New("guest response exceeds limit"))
 		}
 		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, err)
+	}
+	if !transport.authorityActive() || ctx.Err() != nil {
+		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, errors.New("Firecracker owner is unavailable"))
 	}
 	return guestagent.TransportResponse{Encoded: encoded}, nil
 }

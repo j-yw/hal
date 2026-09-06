@@ -14,6 +14,13 @@ for strict processes, UID via peer credentials. Changed or absent authority,
 socket replacement, process exit, and cancellation cannot publish readiness.
 Private per-instance observation callbacks permit deterministic tests with fake
 UID observations and ordinary local Unix sockets; they are not public options.
+The default observer remains authoritative and the strict peer check requires
+both PID and UID. An incomplete strict launch record yields an invalid non-nil
+owner, never a legacy fallback; ordinary process-liveness inspection remains
+separate. Admitted strict handshakes join a process-exit watcher and close their
+connection on revocation. Publication rechecks cancellation and authority; an
+exit or cancellation after the final check can still race publication, and
+process exit then invalidates the session through the existing generation owner.
 
 Default tests do not chown, change identity, start Jailer, or use KVM. They prove
 owner correlation, not dedicated-UID allocation, boot, cgroups, network policy,
@@ -27,6 +34,7 @@ go test -p 2 -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^T
 go test -p 2 -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^(TestL5.*Vsock|TestL7ProductionVsock|TestL8D6V2Control|TestStrictJailerLifecycle)'
 go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/firecrackerhost
 go vet ./internal/sandboxruntime/microvm/firecrackerhost
+GOOS=darwin GOARCH=arm64 go test -p 2 -c -o /dev/null ./internal/sandboxruntime/microvm/firecrackerhost
 ```
 
 Cross-compilation for Darwin is a compile gate only, not execution evidence.

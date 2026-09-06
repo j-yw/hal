@@ -39,6 +39,7 @@ type ProductionVsockBridgeOptions struct {
 // ProductionVsockBridge owns live Firecracker UDS sessions. No socket path,
 // host PID, or inode leaves this in-memory boundary.
 type ProductionVsockBridge struct {
+	ownerChecks              vsockOwnerChecks
 	lifecycle                *ProcessLifecycleManager
 	timeout                  time.Duration
 	pollInterval             time.Duration
@@ -129,12 +130,13 @@ func (bridge *ProductionVsockBridge) ActivateSession(ctx context.Context, req fi
 			return firecracker.GuestReadinessResult{}, "", errors.New("Firecracker process exited before guest readiness")
 		default:
 		}
-		if err := secureFirecrackerVsockSocket(socketPath); err != nil {
+		if err := secureFirecrackerVsockSocketForOwner(socketPath, identity.owner, bridge.ownerChecks); err != nil {
 			if !errors.Is(err, errProductionVsockNotReady) {
 				return firecracker.GuestReadinessResult{}, "", err
 			}
 		} else {
 			wire, createErr := newFirecrackerVsockTransport(firecrackerVsockTransportOptions{
+				owner: identity.owner, ownerChecks: bridge.ownerChecks,
 				socketPath: socketPath, guestPort: bridge.guestPort, expectedPeerPID: identity.pid,
 				handshakeTimeout: bridge.timeout, operationTimeout: bridge.operationTime,
 			})
@@ -154,6 +156,20 @@ func (bridge *ProductionVsockBridge) ActivateSession(ctx context.Context, req fi
 			case readinessErr != nil && !transientProductionVsockError(readinessErr):
 				return firecracker.GuestReadinessResult{}, "", readinessErr
 			case readinessErr == nil && response != nil && response.Ready && response.Status == guestagent.ReadinessStatusReady:
+				if err := ctx.Err(); err != nil {
+					wire.Close()
+					return firecracker.GuestReadinessResult{}, "", err
+				}
+				current, currentErr := bridge.lifecycle.resolveLiveProcessIdentity(req.Handle)
+				observed, observedErr := statVsockSocketForOwner(socketPath, identity.owner, bridge.ownerChecks)
+				if currentErr != nil || current.pid != identity.pid || current.done != identity.done || !sameVsockProcessOwner(current.owner, identity.owner) || observedErr != nil || observed != wire.socketIdentity || !wire.authorityActive() {
+					wire.Close()
+					return firecracker.GuestReadinessResult{}, "", errors.New("Firecracker readiness identity changed")
+				}
+				if err := ctx.Err(); err != nil {
+					wire.Close()
+					return firecracker.GuestReadinessResult{}, "", err
+				}
 				guestTransport := NewGuestAgentTransport(GuestAgentTransportOptions{Client: client})
 				proofGeneration, proofRuntimeID := "", ""
 				if response.IsolationProof != nil {
@@ -223,6 +239,17 @@ func secureFirecrackerVsockSocket(path string) error {
 		return errors.New("Firecracker vsock socket is not privately owned")
 	}
 	return nil
+}
+
+func secureFirecrackerVsockSocketForOwner(path string, owner *vsockProcessOwner, checks vsockOwnerChecks) error {
+	if owner == nil {
+		return secureFirecrackerVsockSocket(path)
+	}
+	_, err := statVsockSocketForOwner(path, owner, checks)
+	if os.IsNotExist(err) {
+		return errProductionVsockNotReady
+	}
+	return err
 }
 
 func transientProductionVsockError(err error) bool {
@@ -321,11 +348,11 @@ func (bridge *ProductionVsockBridge) SessionActive(req firecracker.ProductionVso
 		return false
 	}
 	identity, err := bridge.lifecycle.resolveLiveProcessIdentity(req.Handle)
-	if err != nil || identity.handle.ID != session.handleID {
+	if err != nil || identity.handle.ID != session.handleID || session.wire == nil || session.wire.expectedPeerPID != identity.pid || !session.wire.authorityActive() || !sameVsockProcessOwner(identity.owner, session.wire.owner) {
 		bridge.invalidate(req.RuntimeID, session.handleID, session.generation)
 		return false
 	}
-	current, err := statVsockSocket(identity.paths.VsockSocketPath)
+	current, err := statVsockSocketForOwner(identity.paths.VsockSocketPath, identity.owner, session.wire.ownerChecks)
 	if err != nil || current != session.identity {
 		bridge.invalidate(req.RuntimeID, session.handleID, session.generation)
 		return false

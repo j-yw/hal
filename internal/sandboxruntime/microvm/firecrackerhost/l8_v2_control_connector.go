@@ -55,10 +55,10 @@ func (connector *productionL8V2ControlConnector) OpenL8V2Control(
 		return nil, ErrL8V2ControlUnavailable
 	}
 	socketPath := filepath.Clean(process.paths.VsockSocketPath)
-	if socketPath == "." || !filepath.IsAbs(socketPath) || secureFirecrackerVsockSocket(socketPath) != nil {
+	if socketPath == "." || !filepath.IsAbs(socketPath) || !sameVsockProcessOwner(process.owner, active.wire.owner) || secureFirecrackerVsockSocketForOwner(socketPath, process.owner, active.wire.ownerChecks) != nil {
 		return nil, ErrL8V2ControlUnavailable
 	}
-	before, err := statVsockSocket(socketPath)
+	before, err := statVsockSocketForOwner(socketPath, process.owner, active.wire.ownerChecks)
 	if err != nil || before != active.identity {
 		return nil, ErrL8V2ControlUnavailable
 	}
@@ -81,12 +81,14 @@ func (connector *productionL8V2ControlConnector) OpenL8V2Control(
 		done: make(chan struct{}), stopWatch: make(chan struct{}), watchDone: make(chan struct{}),
 	}
 	go owned.watchAuthority(process.done, active.wire.done)
+	stopOwner := active.wire.watchOwner(conn)
+	defer stopOwner()
 	fail := func() (l8V2ControlStream, error) {
 		_ = owned.Close()
 		return nil, ErrL8V2ControlUnavailable
 	}
-	after, err := statVsockSocket(socketPath)
-	if err != nil || after != active.identity || verifyVsockPeer(conn, process.pid) != nil {
+	after, err := statVsockSocketForOwner(socketPath, process.owner, active.wire.ownerChecks)
+	if err != nil || after != active.identity || verifyVsockPeerForOwner(conn, process.pid, process.owner, active.wire.ownerChecks) != nil {
 		return fail()
 	}
 	deadline := time.Now().Add(session.HandshakeDeadline)
@@ -109,8 +111,8 @@ func (connector *productionL8V2ControlConnector) OpenL8V2Control(
 	if !bridge.SessionActive(request, active.generation) {
 		return fail()
 	}
-	current, err := statVsockSocket(socketPath)
-	if err != nil || current != active.identity || conn.SetDeadline(time.Time{}) != nil {
+	current, err := statVsockSocketForOwner(socketPath, process.owner, active.wire.ownerChecks)
+	if err != nil || current != active.identity || ctx.Err() != nil || !active.wire.authorityActive() || conn.SetDeadline(time.Time{}) != nil {
 		return fail()
 	}
 	return owned, nil

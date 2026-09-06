@@ -532,6 +532,38 @@ type liveProcessIdentity struct {
 	done   <-chan struct{}
 	handle firecracker.ProcessHandleMetadata
 	paths  firecracker.PathPlan
+	owner  *vsockProcessOwner
+}
+
+// vsockProcessOwner is derived only from the manager's strict launch record.
+// It is not configurable through a readiness request and does not prove that
+// the UID is dedicated. The captured parent and Done channel bind its lifetime.
+type vsockProcessOwner struct {
+	uid    uint32
+	parent privateStateDirIdentity
+	done   <-chan struct{}
+}
+
+func (owner *vsockProcessOwner) active() bool {
+	if owner == nil {
+		return true
+	} // legacy caller-owned process
+	if owner.uid == 0 || owner.parent.uid != owner.uid || owner.parent.inode == 0 || owner.done == nil {
+		return false
+	}
+	select {
+	case <-owner.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func sameVsockProcessOwner(left, right *vsockProcessOwner) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right && left.active()
 }
 
 func (manager *ProcessLifecycleManager) resolveLiveProcessIdentity(handle firecracker.ProcessHandleMetadata) (liveProcessIdentity, error) {
@@ -553,10 +585,20 @@ func (manager *ProcessLifecycleManager) resolveLiveProcessIdentity(handle firecr
 		return liveProcessIdentity{}, errors.New("Firecracker process is not active")
 	default:
 	}
+	var owner *vsockProcessOwner
+	if snapshot.hasStrictUID || snapshot.strictRuntimeUID != 0 {
+		owner = &vsockProcessOwner{uid: snapshot.strictRuntimeUID, parent: snapshot.stateIdentity, done: identity.Done()}
+		if !snapshot.hasStrictUID || !snapshot.hasPaths || snapshot.stateRemoved || !snapshot.hasStateIdentity || !owner.active() {
+			// Keep process-liveness inspection separate from readiness authority.
+			// An invalid strict owner is non-nil and can never become legacy.
+			owner = &vsockProcessOwner{}
+		}
+	}
 	return liveProcessIdentity{
 		pid: identity.HostPID(), done: identity.Done(),
 		handle: firecracker.ProcessHandleMetadata{ID: id, Source: processHandleSource},
 		paths:  snapshot.paths,
+		owner:  owner,
 	}, nil
 }
 
