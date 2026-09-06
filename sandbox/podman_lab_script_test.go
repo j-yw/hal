@@ -332,6 +332,7 @@ func newPodmanLabCommand(env podmanLabTestEnv, command string) *exec.Cmd {
 		"PATH="+env.binDir+":"+os.Getenv("PATH"),
 		"HAL_SANDBOX_LAB_ROOT="+env.labRoot,
 		"HAL_SANDBOX_LAB_MACHINE=lab-machine",
+		"HAL_SANDBOX_LAB_IMAGE=localhost/hal-agent:hal-lab",
 		"HAL_SANDBOX_LAB_MACHINE_PROVIDER=",
 		"HAL_SANDBOX_LAB_PODMAN_MODE="+env.podmanMode,
 		"HAL_SANDBOX_LAB_BASE_IMAGE=example.invalid/base:latest",
