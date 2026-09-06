@@ -143,15 +143,26 @@ func (c *minimalControlTransport) Open(ctx context.Context) (*minimalControlStre
 	if !s.current() || s.SetDeadline(time.Time{}) != nil {
 		return fail()
 	}
+	if !s.current() {
+		return fail()
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return fail()
 	}
+	// Final ownership observations may consume the remaining admission budget.
+	// Recheck elapsed time too: the context timer callback can still be pending.
+	// No potentially blocking observation follows this publication boundary.
+	if admission.Err() != nil || !time.Now().Before(deadline) {
+		s.mu.Unlock()
+		s.finish(minimalControlContextError(admission))
+		return fail()
+	}
 	s.generation = nextMinimalControlGeneration(&minimalControlTransportGeneration)
 	valid := s.generation != 0
 	s.mu.Unlock()
-	if !valid || !s.current() {
+	if !valid {
 		return fail()
 	}
 	return s, nil

@@ -69,9 +69,16 @@ minimal readiness, execution, helpers, network proof or credential operations.
 
 The complete dial/CONNECT/ACK attempt shares one deadline, no later than the
 caller deadline or the existing five-second handshake bound. Pending dial and
-read/write must observe cancellation and owner/process loss. Keep the watcher
-for the full returned-stream lifetime, not only until ACK. The captured owner
-channel currently equals process Done; manager record revocation has no separate
+read/write must observe cancellation and owner/process loss.
+
+The final admission check covers every post-ACK ownership observation and
+checks both cancellation and the captured absolute deadline immediately before
+allocating transport correlation. A delayed context timer cannot extend
+admission; an expired attempt closes and joins without publishing a stream or
+allocating a generation. No potentially blocking observation follows that check.
+
+Keep the watcher for the full returned-stream lifetime, not only until ACK.
+The captured owner channel currently equals process Done; manager record revocation has no separate
 event. Therefore a joined bounded-interval currentness watcher (at most 25ms
 between checks, excluding bounded local observation work) also re-resolves the
 record/socket and closes on loss. No lifecycle/store framework is added.
@@ -120,6 +127,10 @@ ACK timeout, cancellation, one-shot concurrent admission and generation retireme
 Delayed real dial and silent ACK share the same deadline; caller and hard expiry
 survive admission and attempted deadline extension. Rejected partial/non-Unix
 dial results are closed. Closure leaves the tracked process and socket untouched.
+The regression in `minimal_control_transport_deadline_test.go` delays each
+post-ACK currentness checkpoint past the admission deadline, including a context
+whose timer has not fired yet. All cases require actual CONNECT/ACK first, then
+no returned stream, no generation allocation and peer-observed closure.
 Every rejection must assert no usable stream, no generation, no legacy session,
 bounded termination and joined handlers. Default fixtures may use ordinary Unix
 sockets as the existing firecrackerhost tests do; no guest/image execution occurs.
