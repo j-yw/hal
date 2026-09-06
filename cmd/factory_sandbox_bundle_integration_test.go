@@ -123,7 +123,7 @@ func TestFactoryRootlessBundleRealGitPreservesSourceBaseAndRun(t *testing.T) {
 }
 
 func TestFactoryRootlessBundleRealGitPreflightNegatives(t *testing.T) {
-	for _, scenario := range []string{"dirty", "missing_base", "unrelated_base", "same_base_run", "detached", "remote_mismatch"} {
+	for _, scenario := range []string{"dirty", "missing_base", "unrelated_base", "same_base_run", "run_alias", "detached", "remote_mismatch"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir, record := factoryBundleGitFixture(t)
 			switch scenario {
@@ -140,6 +140,8 @@ func TestFactoryRootlessBundleRealGitPreflightNegatives(t *testing.T) {
 				record.BaseBranch = "unrelated"
 			case "same_base_run":
 				record.BranchName = record.BaseBranch
+			case "run_alias":
+				record.BranchName = "@{-1}"
 			case "detached":
 				factoryBundleGit(t, dir, "checkout", "--detach", "HEAD")
 			case "remote_mismatch":

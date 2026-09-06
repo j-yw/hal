@@ -41,7 +41,10 @@ func planFactorySandboxBundle(ctx context.Context, projectDir string, record fac
 		if branch == "" || strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "refs/") {
 			return nil, errors.New("factory local workspace requires valid base and run branches")
 		}
-		if _, err := runFactoryGitInDir(ctx, projectDir, "check-ref-format", "--branch", branch); err != nil {
+		canonical, err := runFactoryGitInDir(ctx, projectDir, "check-ref-format", "--branch", branch)
+		// --branch expands checkout expressions such as @{-1}; only exact
+		// branch names are admissible as persisted base/run identities.
+		if err != nil || canonical != branch {
 			return nil, errors.New("factory local workspace requires valid base and run branches")
 		}
 	}
