@@ -332,10 +332,13 @@ func (completion *minimalJailerFinalization) execute(attempt *minimalJailerFinal
 		return result, errL8RuntimeOwnerInvalid
 	}
 	response, err = attempt.stream.exchange(l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeCommit, Sequence: sequence + 1, Body: body})
-	if err != nil || len(response.Body) != 8 || binary.BigEndian.Uint64(response.Body) != current.FinalizeTargetRevision || !minimalJailerCallerCurrent(attempt.ctx) {
+	if len(response.Body) != 8 || binary.BigEndian.Uint64(response.Body) != current.FinalizeTargetRevision {
 		return result, errL8RuntimeOwnerInvalid
 	}
 	result.acknowledged = true
+	if err != nil || !minimalJailerCallerCurrent(attempt.ctx) {
+		return result, errL8RuntimeOwnerInvalid
+	}
 	return result, nil
 }
 

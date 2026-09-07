@@ -81,17 +81,14 @@ func (stream *minimalJailerIO) close() error {
 }
 
 func (stream *minimalJailerIO) exchange(packet l8RuntimeOwnerPacketV1) (l8RuntimeOwnerPacketV1, error) {
+	deadline := time.Now().Add(l8RuntimeOwnerHandshakeTimeout)
 	if !minimalJailerCallerCurrent(stream.ctx) {
 		return l8RuntimeOwnerPacketV1{}, errL8RuntimeOwnerInvalid
 	}
-	budget := l8RuntimeOwnerHandshakeTimeout
-	if deadline, ok := stream.ctx.Deadline(); ok {
-		budget = min(budget, time.Until(deadline))
+	if callerDeadline, ok := stream.ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
 	}
-	if budget < time.Microsecond || setL8RuntimeOwnerSocketTimeout(int(stream.file.Fd()), budget) != nil || !minimalJailerCallerCurrent(stream.ctx) {
-		return l8RuntimeOwnerPacketV1{}, errL8RuntimeOwnerInvalid
-	}
-	return stream.exchangeOnce(packet)
+	return stream.exchangeSelected(packet, deadline)
 }
 
 // The selected connector never enters a blocking connect syscall. AF_UNIX may

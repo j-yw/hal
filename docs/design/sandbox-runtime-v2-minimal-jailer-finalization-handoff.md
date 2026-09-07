@@ -1,10 +1,10 @@
 # Selected Jailer finalization handoff
 
-Status: initial unselected client-split implementation after compiling RED
+Status: unselected client-split and selected transport correction after compiling RED
 `2a3fb401`, on the approved design at `511fdd7a` (source base
 `b8b9cd2c0f0d2947947e9823c862b508d64f403f`). The basic actual protocol/store
-handoff is exercised; the separate blocked-I/O, cancellation/close and failure
-matrices below still require completion. No provider, worker persistence, L7
+handoff and bounded blocked-I/O, cancellation/close and failure matrices below
+are exercised in ordinary fixtures. No provider, worker persistence, L7
 cleanup or terminal activation is included. This refines the deferred split in
 [minimal owner bindings](sandbox-runtime-v2-minimal-owner-bindings.md), under
 the [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
@@ -390,7 +390,7 @@ observation. Targeted repeated controls passed; the original failing logs are
 retained. No assertion is relaxed, automatic protocol retry added, or shared
 legacy transport changed to hide this unresolved interruption boundary.
 
-## Selected transport correction: DESIGN and compiling RED
+## Selected transport correction: DESIGN, RED and implementation
 
 The frozen `7ea5d155` review confirmed two bounded defects, not an unsafe
 retirement shortcut. First, an actual selected receive interrupted by SIGURG
@@ -406,8 +406,8 @@ overlays that neither replace packets nor perform retirement.
 
 The correction is selected-only. It does not change legacy syscall/retry/error
 semantics, automatic reconnect, packet/ACK schemas, the cleanup FSM or durable
-crash recovery. This checkpoint implements only a behavior-preserving seam and
-RED; the retry/ACK-retention changes below await GREEN approval.
+crash recovery. The behavior-preserving seam and 343 new RED lines were frozen
+at `431ab0a7` before the approved retry/ACK-retention implementation below.
 
 ### Smallest shared boundary
 
@@ -428,7 +428,7 @@ single-attempt RED body reuses those exact helpers and existing packet encoder,
 with the same timeout and cancellation behavior as the reviewed checkpoint.
 The actual default, legacy transcripts and old 113-line RED remain controls.
 
-### Proposed GREEN
+### Selected implementation
 
 At selected exchange entry, freeze one absolute deadline equal to the smaller
 of entry plus five seconds and the original caller deadline. Before each syscall,
@@ -483,6 +483,26 @@ no resend after successful send, current-caller/cancel/Close behavior, actual
 rights cleanup on rejection, malformed replies and unchanged legacy transcripts.
 The old source guards, race, vet and cross-platform compile gates remain active;
 this plan grants no guard exception or production selection.
+
+The implementation keeps one deadline across both syscall directions and every
+EINTR retry. The original 343 transport RED lines and all earlier tests remain
+unchanged. The actual signal case now receives the genuine peer ACK after its
+observed EINTR; successful requests are not resent. The exact Commit consumer
+records its validated ACK before applying caller currentness to its result.
+Both original external cancellation observations remain separate verification
+gates, with only their observation location adapted to the selected body.
+
+Additional ordinary transport tests exercise a fixed deadline that actually
+expires while Err remains nil, decreasing kernel socket budgets across send
+and repeated receive interruptions, the five-second cap and non-EINTR failure.
+Actual SCM_RIGHTS copies accompany rejected replies and invalid injected byte/
+control counts. Every complete bounded ancillary prefix is disposed before
+failure, including clipped or hidden count observations; malformed data never
+causes guessed descriptor closure. The original decoder and legacy receiver
+remain unchanged in this correction. Real selected Close after an interrupted
+receive joins its next blocked syscall; canceled malformed genuine Commit
+replies still cannot latch acknowledgment. These fixtures prove local transport
+ownership and response correlation, not live VM/L7 cleanup or durable ACK replay.
 
 ## Bounded future ownership
 
