@@ -1,8 +1,8 @@
 # Selected controller cleanup preflight
 
 Design based on `2d91b1d18671c8a2721dd01ead69f0e22c129bab`, followed by the
-bounded compiling RED below. No selected serving route or shutdown behavior
-is implemented.
+bounded compiling RED and shared-preflight implementation below. No selected
+serving route or concrete controller shutdown is implemented.
 This is the bounded dependency in section 4 of the constructor design frozen at
 `0021de07` (`sandbox-runtime-v2-minimal-runtime-constructor.md`), governed by the
 [controller handoff](sandbox-runtime-v2-minimal-host-controller.md),
@@ -55,8 +55,9 @@ selected server binds it only to its same retained lifecycle's concrete shutdown
 method. It is not a request field, exported constructor option, arbitrary owner
 replacement or true-returning proof callback. The concrete barrier and serving
 callsite remain constructor-owner work; this dependency initially tests a counted,
-blocked callback against the real FSM. Legacy `HandleController` delegates with
-nil, keeping its current single-lock order, observation counts and responses.
+blocked callback against the real FSM. Legacy `HandleController` retains its
+single-lock entry using shared helpers; the private compound method delegates
+to it when the barrier is nil, preserving observation counts and responses.
 
 Extract, rather than duplicate:
 
@@ -214,7 +215,7 @@ strict default or live VM acceptance.
 
 ## Initial compiling RED
 
-The private `handleControllerWithCleanup` seam only delegates to unchanged
+At RED `fca20abb`, the private `handleControllerWithCleanup` seam only delegates to unchanged
 `HandleController` and ignores its callback. No production serving path calls
 it. The 188-line `minimal_cleanup_preflight_red_test.go` uses actual encoded
 packets, role validation, `AdmitController`, its decoded ack and the existing FSM
@@ -237,3 +238,35 @@ unimplemented. No claims about those missing paths follow from this RED.
 The unchanged adjacent selector
 `^TestL8RuntimeOwner(Admission|Replay|Finalize|Stop|Protocol|Typed)` passes with
 `-race -count=3`: 177 test/subtest events, zero failures and zero skips.
+
+## Shared preflight implementation boundary
+
+The implementation preserves that 188-line RED unchanged. Existing replay and
+fresh-request classification/cache helpers are shared with the default handler.
+Only successful actual `AdmitController` sets the private session latch; successful
+Close/ControllerLost clears it. Legacy inferred sessions remain accepted only by
+the legacy cleanup path, not as selected shutdown authority.
+
+The compound method copies bounded request/ledger bytes and uses the same Stop,
+Finalize and Commit checks as dispatch. Finalize planning computes the original
+intent once; it does not move the absent-to-finalizing write past namespace
+closure or add commit-ID calls. After an unlocked synchronous barrier, full
+record/session/replay equality and post-Load context/deadline checks precede
+application. Callback failure/panic is sanitized and cannot cache success or
+retire the record. No new store schema, cleanup proof or attempt registry exists.
+
+The reachable matrix covers all three cleanup operations, finalizing/finalized
+retries, real admission versus default inference, exact replay (including Close
+after session reset), invalid packets/rights/state/absence/commit, every changed
+record field including same-revision mutations, replay-buffer mutation, actual
+concurrent Inspect/reconnect, duplicate dispatch, caller-byte ownership, barrier
+panic/error, failed reads and cancellation/deadlines at both reads and lock waits.
+Legacy-vs-selected comparison locks exact response/transitions, one default Load,
+one additional selected readback and unchanged commit/namespace-close counts.
+
+The barrier remains a private dependency with a synchronous, bounded, idempotent
+contract; this helper does not create or force-stop detached callback goroutines.
+Actual selected serving must supply the same-owner concrete I/O shutdown/join and
+retain/quarantine incomplete work. No production caller selects this method yet.
+Real controller/publisher/reader shutdown and containment ordering, combined L7
+cleanup, producer/worker ownership and live VM acceptance remain separate gates.
