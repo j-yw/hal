@@ -100,7 +100,8 @@ func withMinimalControlSupervisorAdmission(fds [6]int, openFD func(uintptr, stri
 	defer clear(key)
 	digest := sha256.Sum256(payload)
 	admission := &minimalControlSupervisorAdmission{config: config, configDigest: digest, controllerKey: key,
-		borrowed: [7]int{fds[0], fds[1], fds[2], fds[3], fds[4], fds[5], imported[0]},
+		borrowed:  [7]int{fds[0], fds[1], fds[2], fds[3], fds[4], fds[5], imported[0]},
+		namespace: minimalControlNamespaceProjection{configCorrelation: hex.EncodeToString(digest[:]), namespaces: config.Control.Namespace},
 		recovery: minimalControlRecoveryProjection{configCorrelation: hex.EncodeToString(digest[:]), job: config.Job,
 			uid: config.Policy.UID, gid: config.Policy.GID, firecrackerConfigSHA256: config.Config.SHA256}}
 	if consume(admission) != nil {

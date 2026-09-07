@@ -37,6 +37,8 @@ type l8RuntimeOwnerLinuxRuntime struct {
 	configFD    int
 	assetFDs    [2]int
 
+	minimalNamespaces *minimalControlNamespaceProjection
+
 	mu         sync.Mutex
 	namespaces [2]*os.File
 	child      *l8RuntimeOwnerLinuxChild
@@ -284,7 +286,8 @@ func (owned *l8RuntimeOwnerLinuxRuntime) serveBootstrap(owner *l8RuntimeOwnerSup
 		return errL8RuntimeOwnerInvalid
 	}
 	correlation, err := decodeL8RuntimeOwnerNamespaceCorrelation(received.Packet.Body)
-	if err != nil || validateL8RuntimeOwnerNamespaceFiles(received.Files, correlation) != nil {
+	if err != nil || validateL8RuntimeOwnerNamespaceFiles(received.Files, correlation) != nil ||
+		owned.validateMinimalControlNamespaces(received.Files, correlation) != nil {
 		return errL8RuntimeOwnerInvalid
 	}
 	owned.mu.Lock()

@@ -157,8 +157,9 @@ type minimalControlSupervisorAdmission struct {
 	configDigest  [32]byte
 	controllerKey ed25519.PrivateKey
 	// Borrowed only for the callback; FD10 has already been consumed/closed.
-	borrowed [7]int
-	recovery minimalControlRecoveryProjection
+	borrowed  [7]int
+	recovery  minimalControlRecoveryProjection
+	namespace minimalControlNamespaceProjection
 }
 
 func unavailableMinimalControlSupervisor(*minimalControlSupervisorAdmission) error {

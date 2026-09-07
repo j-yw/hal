@@ -1,20 +1,22 @@
 # Selected minimal bootstrap namespace binding
 
-DESIGN/RED checkpoint from `4f097e6c`. The actual eight-role runtime consumer
+Implemented after frozen DESIGN/RED `9cd5d424`, from `4f097e6c`.
+The actual eight-role runtime consumer
 remains unavailable. This is not a root supervisor, live L7 or VM acceptance.
 
-The current `serveBootstrap` checks peer UID, packet role, two actual nsfs
+The original `serveBootstrap` checked peer UID, packet role, two actual nsfs
 descriptors, their distinct device/inode tuples and the tuple in the packet.
-It does not compare them to the independent sealed eight-role public namespace
+It did not compare them to the independent sealed eight-role public namespace
 pins, or require the first descriptor to be a user namespace and the second a
 network namespace. Thus internally consistent packet/descriptor substitutions
-can reach namespace ownership, genesis persistence and the child callback.
+could reach namespace ownership, genesis persistence and the child callback.
 
 ## Compiling RED boundary
 
-Only a private no-op `bindMinimalControlNamespaces(owned, admission)` seam is
-added. It represents the later constructor's handoff, does not modify the
-receiver, and is not called by the unavailable production runtime consumer.
+The frozen RED added only a private no-op
+`bindMinimalControlNamespaces(owned, admission)` seam. It represented the later
+constructor's handoff without modifying the receiver. It was not called by the
+unavailable production runtime consumer.
 Tests call it inside actual eight-role admission, then call the actual existing
 `serveBootstrap` over unnamed Unix seqpacket sockets with real SCM_RIGHTS.
 
@@ -34,12 +36,12 @@ The actual RED run with race detection repeated three times has 24 failing
 test/subtest events (seven mismatches plus their parent per run), 18 control
 passes and zero skips. Every mismatch reached one child start, one gate release,
 three fake-store events and actual received-FD transfer. The decoded-mutation
-control presently proves fixture validity only; the no-op binder does not yet
-implement snapshot capture or namespace validation.
+control proved fixture validity only on that baseline. The original 196-line
+RED is byte-identical in GREEN; its previously missing comparisons now execute.
 
-## Proposed minimal GREEN
+## Implemented minimal GREEN
 
-Mint a private scalar namespace projection inline during actual eight-role
+Capture a private scalar namespace projection inline during actual eight-role
 admission, alongside the existing recovery projection. Copy the full canonical
 config correlation and four namespace numbers; never derive them from the
 candidate packet, later decoded-config mutations, paths or a reconstructed L7
@@ -58,11 +60,25 @@ owns rejected received FDs; do not close sender handles or introduce another
 descriptor-ownership framework. Six/seven branches without this selection
 remain unchanged.
 
-After the first GREEN, cover malformed/missing/duplicate/swapped FDs, repeated
-bootstrap, rejected-copy closure, successor/sender protection, missing/replaced
-projection and full-config mismatch. Preserve exact immutable RED assertions.
+Additional tests cover malformed/missing/duplicate/swapped/non-nsfs FDs, repeated
+bootstrap, rejected-copy closure, sender/original-handle protection,
+missing/replaced projection and full-config/recovery/genesis/job mismatch.
+The constructor handoff is single-use and copies its admission-owned scalar
+snapshot. Closed handles cannot cross SCM_RIGHTS, so the ioctl error case is
+tested directly and is not claimed as actual receipt.
 
-Expected production ownership: dedicated namespace projection/validator files,
+The malformed packet fixture uses a valid existing supervisor/FSM constructor
+and real SCM_RIGHTS, with a fake store and child callback. A truncated tuple is
+sent as raw test-only bytes because the production sender correctly rejects it.
+Rejected-copy checks count only exact fixture namespace device/inode identities
+under `/proc/self/fd`; unrelated runtime descriptors are not part of the count.
+No production observer, namespace creator, ownership framework or guard
+exception was added. Expanded namespace and adjacent admission/recovery/owner
+tests passed race x3: 2,361 test/subtest events, zero failures or skips, including
+117 namespace events. Initial test-fixture compile/packet-construction mistakes
+were corrected without changing production validation or the original RED.
+
+Production ownership: dedicated namespace projection/validator files,
 the small admission capture, the private admission/runtime projection fields,
 and the single pre-transfer `serveBootstrap` check. No controller, protocol,
 guest, coordinator, producer, privilege setup or live network changes.
