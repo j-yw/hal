@@ -1,10 +1,11 @@
 # Selected Jailer finalization handoff
 
-Status: first compiling RED on the approved design at `511fdd7a` (source base
-`b8b9cd2c0f0d2947947e9823c862b508d64f403f`). The private unselected scaffold
-delegates to legacy cleanup and returns unavailable. No completion authority,
-selected I/O/close implementation, provider, worker persistence, or terminal
-activation is included. This refines the deferred client split in
+Status: initial unselected client-split implementation after compiling RED
+`2a3fb401`, on the approved design at `511fdd7a` (source base
+`b8b9cd2c0f0d2947947e9823c862b508d64f403f`). The basic actual protocol/store
+handoff is exercised; the separate blocked-I/O, cancellation/close and failure
+matrices below still require completion. No provider, worker persistence, L7
+cleanup or terminal activation is included. This refines the deferred split in
 [minimal owner bindings](sandbox-runtime-v2-minimal-owner-bindings.md), under
 the [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md), and
@@ -237,7 +238,7 @@ missing-record check or a new tombstone hidden inside this client slice.
 
 ## First meaningful RED and follow-up gates
 
-The first RED uses a compiling private sibling scaffold delegating to existing
+The frozen first RED used a compiling private sibling scaffold delegating to existing
 `stopAndCommit` and returning unavailable. It uses the actual
 `jailerRecoveryWireFixture`/canonical selected store/real seqpacket/FSM. The
 intended first RED asserts that a completed Finalize leaves the exact record
@@ -285,13 +286,51 @@ go test -p 2 -race -count=3 -timeout=90s ./internal/sandboxruntime/microvm/firec
 go test -p 2 -race -count=1 -timeout=120s ./cmd -run '^TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection$'
 ```
 
-The first command compiles and reports the expected selected leaf failure on
+At `2a3fb401`, the first command compiles and reports the expected selected leaf failure on
 each repetition: operations `[8 10 11]`, one actual retirement, then missing
 finalized record. Eighteen legacy/control test events pass, with zero skips or
 race reports. The guard passes unchanged. Exact post-disconnect record checks
 below the missing-record assertion remain unreached; handle, concurrent-route,
 cancellation/close, and later Commit behavior await approved GREEN and follow-up
 REDs. No source guard exception or production caller is added.
+
+## Initial implementation checkpoint
+
+The private completion now retains its exact original client and first actual
+finalized record. The original 113-line RED is unchanged and passes: Finalize
+ends its one-use connection without Commit or retirement. The new basic actual
+wire tests then explicitly call the retained completion's Commit, reconnect to
+the same owner, revalidate Finalize and receive the real Commit ACK/retirement.
+They also exercise repeat Finalize without replacing the first record, closed
+connection/unclaimed state during the pause, released bookkeeping mutexes,
+copied/zero handles, cached actual ACK and selected-versus-legacy route exclusion.
+There is no fixture writer or fabricated L7/persistence receipt in this path.
+
+The two actual client mint sites add a private origin stamp. Legacy cleanup
+records its route only after its existing caller/closed/directory admission
+checks; nil/canceled invalid calls do not consume it. A selected claim cannot
+overlap or migrate after an admitted legacy operation. Legacy authentication,
+connection and exchange remain the nil-selected branch of shared validation.
+
+Selected attempts use an owned caller context with the same absolute deadline,
+serialize only bookkeeping, and retain a descriptor duplicate through the joined
+I/O interrupter. Selected connection uses the existing retained-directory,
+socket inode and SO_PEERCRED checks with a nonblocking connect loop bounded by
+one five-second/caller deadline. EAGAIN retries only the same endpoint, not a
+replacement owner or process. All protocol codecs and full ACK comparison are
+the existing ones. The canonical reader additionally distinguishes unavailable
+I/O from contradictory decoded bytes for sticky selected quarantine, without
+changing the legacy reader's error or result.
+
+Close withdraws new selected attempts, cancels/joins the admitted operation,
+and closes owned descriptors outside bookkeeping locks. Same-attempt waiters
+retain their own cancellation/deadline and cannot cancel the admitted caller.
+The implementation of these paths is present but the broader reachable fault
+matrix is not credited by this initial checkpoint. In particular blocked actual
+connect/send/receive, simultaneous route admission/close, partial errors/panics,
+wrong replies and restored contradictory records need their separate REDs and
+review before final acceptance. Whole-job cleanup and durable lost-ACK convergence
+remain the dependencies already listed above.
 
 ## Bounded future ownership
 

@@ -14,6 +14,9 @@ import (
 // This client holds no launch, identity-release or replacement-owner authority.
 type jailerRecoveryClient struct {
 	mu                      sync.Mutex
+	origin                  *jailerRecoveryClient
+	minimal                 *minimalJailerFinalization
+	legacyAdmitted          bool
 	expected                jailerRecoveryJob
 	correlation, generation string
 	directory, socket       *os.File
@@ -30,6 +33,15 @@ func (client *jailerRecoveryClient) close() error {
 		return nil
 	}
 	client.mu.Lock()
+	if client.minimal != nil {
+		completion := client.minimal
+		valid := client.origin == client
+		client.mu.Unlock()
+		if !valid {
+			return errL8RuntimeOwnerInvalid
+		}
+		return completion.close()
+	}
 	defer client.mu.Unlock()
 	if client.closed {
 		return client.closeErr
@@ -53,9 +65,10 @@ func (client *jailerRecoveryClient) stopAndCommit(ctx context.Context) error {
 	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if client.closed || client.directory == nil || ctx.Err() != nil {
+	if client.closed || client.directory == nil || ctx.Err() != nil || client.minimal != nil {
 		return errL8RuntimeOwnerInvalid
 	}
+	client.legacyAdmitted = true
 	if client.committed {
 		return nil
 	}

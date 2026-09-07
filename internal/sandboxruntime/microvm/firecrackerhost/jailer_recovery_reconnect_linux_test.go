@@ -71,6 +71,14 @@ func newJailerRecoveryBootstrapWireFixture(t *testing.T, failBeforeBootstrap fun
 			return file, nil
 		},
 	}
+	f.ops.connectMinimal = func(ctx context.Context, directory *os.File, record firecrackerRuntimeOwnerRecordV1) (*os.File, error) {
+		if !minimalJailerCallerCurrent(ctx) {
+			return nil, errL8RuntimeOwnerInvalid
+		}
+		// The existing fixture's socketpair allocation does not block. Real
+		// selected connection cancellation is tested independently.
+		return f.ops.connect(directory, record)
+	}
 	return f
 }
 

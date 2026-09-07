@@ -316,6 +316,7 @@ func startJailerRecoverySupervisorCommand(ctx context.Context, config jailerReco
 		return nil, errL8RuntimeOwnerInvalid
 	}
 	client := &jailerRecoveryClient{expected: config.Job, correlation: jailerRecoveryConfigDigest(config), directory: directory, ops: jailerRecoveryLinuxReconnectOps()}
+	client.origin = client
 	// Resolve the immutable executable through the producer's retained FD. It
 	// is not an inherited extra role and stays open through bootstrap reply.
 	path := "/proc/" + strconv.Itoa(os.Getpid()) + "/fd/" + strconv.FormatUint(uint64(executable.Fd()), 10)
