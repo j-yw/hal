@@ -1,4 +1,4 @@
-# Minimal native content predicate: bounded DESIGN/RED
+# Minimal native content predicate: implementation and verification
 
 ## Evidence and scope
 
@@ -20,13 +20,13 @@ reached native image gate. Neither the audit nor these tests attests the full
 image. The separate bracket-applet/recipe metadata correction is not a dependency
 of this slice: all fixtures use the already accepted ordinary names and metadata.
 
-This checkpoint adds only tests and this design, based on `38e16732`. No scanner,
-recipe, source lock, cache, stage, receipt or publication behavior changes yet.
-The proposed GREEN scope is the private content predicate and its one existing
-call in `minimalprofile/inspect_linux.go`, with any helper in the same package.
+The DESIGN/RED checkpoint `fcb77b6f`, based on `38e16732`, added only tests and
+this design. GREEN implements the reviewed grammar in the private predicate and
+one existing call in `minimalprofile/inspect_linux.go`. Recipe, source lock,
+cache, stage, receipt and publication behavior remain unchanged.
 No path, package, source hash, candidate pin or build-success exception is allowed.
 
-## Proposed precise grammar
+## Exact implemented grammar
 
 Retain unconditional case-insensitive private-key-header and `HAL_*CANARY`
 checks across the complete file. Continue examining every occurrence of the
@@ -40,7 +40,7 @@ may be ignored only when it belongs to one of these complete lexical forms:
    H* ("export" H+)? KEY H* "=" H* "..." H* (LF | CR LF | EOF)
    ```
 
-   `H` is ASCII space or tab. `KEY` is exactly either existing marker,
+   `H` is ASCII space or tab. `KEY` is exactly either existing ASCII marker,
    case-insensitively; `export` is lowercase. The left boundary is line start,
    not any earlier substring. Exactly three unquoted ASCII dots are the entire
    value. Bare CR, controls, comments, punctuation, quotes, suffixes, continuations
@@ -70,9 +70,13 @@ The predicate must not return harmless merely because one permitted occurrence
 was found, skip a whole matching file/line, rewrite content before hashing, or
 stop scanning later occurrences. Private-key headers and canaries still reject
 even alongside valid examples. All files retain the existing content/inode/record
-bounds, complete-read requirement and numeric-inode query boundary. Keep analysis
-bounded and linear over already bounded bytes; no subprocess, language runtime,
-path-aware parser or unbounded regex-result allocation is needed.
+bounds, complete-read requirement and numeric-inode query boundary. The predicate
+uses incremental matches from the unchanged marker regex, retaining only one
+match pair at a time. It advances past that marker alone and checks local byte
+boundaries without rewriting content or collecting all matches. Prefix checks
+walk only the current horizontal spacing or qualified identifier, not the whole
+earlier file/line. Thus repeated same-line type tests do not rescan every earlier
+expression. No subprocess, language runtime or path-aware parser is involved.
 
 ## Behavioral RED and later verification
 
@@ -108,12 +112,12 @@ go test -p 2 -race -count=1 -tags=microvm_assets_integration ./internal/sandboxr
 go test -p 2 ./internal/sandboxruntime/microvm/assets/minimalprofile -run '^TestMinimalDefault(TestsDoNotUseImageTools|ToolGuardRejectsSeededCalls)$'
 ```
 
-Freeze compiling RED and actual failing/control results before GREEN review.
-At RED the existing marker regex rejects harmless examples at the content gate;
-their later successful-measurement assertions are necessarily unreached. The
-negative and independent baseline controls execute independently. After approved
-GREEN, rerun these exact assertions plus adjacent default/tagged race, vet and
-source guards. Existing metadata, source/provenance and publication gates remain.
+The compiling RED was frozen and independently reproduced before GREEN review.
+At RED the existing marker regex rejected harmless examples at the content gate;
+their later successful-measurement assertions were necessarily unreached. The
+negative and independent baseline controls executed independently. GREEN retains
+both original test files byte-identically. Existing metadata, source/provenance
+and publication gates remain.
 
 The initial focused race reproduction has 12 intended failing leaves (13 events
 including the parent), 70 passing test/subtest events and no skips or race report.
@@ -121,7 +125,21 @@ The real-ext4 reproduction has two intended failing leaves (three events includi
 the parent), three passing controls and no skips or race report. Both benign cases
 reach `ext4 inspection`; the independent baseline publishes a measured fixture,
 and both unsafe-content controls leave their destinations absent. Tagged package
-vet passes. These are deliberately failing RED gates, not a passing feature.
+vet passed. Those deliberately failing RED gates are not GREEN evidence.
+
+Additional reachable token-boundary tests cover invalid prefixes/suffixes,
+qualified identifiers, controls, malformed export forms and mixed occurrences.
+The original case-insensitive regex also matches Unicode case aliases such as
+the Kelvin sign in a key. Two added negatives reproduced an initial exception
+being too permissive; GREEN explicitly retains their rejection rather than
+broadening the documented ASCII harmless grammar. Repeated same-line/multiline
+tests examine up to 2,048 harmless expressions and reject a final assignment,
+private-key header or canary. These tests execute the real inspector with fresh
+independent fixture pins; no actual key is involved.
+
+GREEN verification requires the original and added focused race tests, actual
+tagged ext4 race, adjacent package/default guards and vet. It demonstrates only
+the bounded content-predicate correction, not full native image acceptance.
 
 No full retained-tar transformation/probe, native rebuild, B1 issuance or receipt
 recovery is authorized here. A future explicitly diagnostic copy may reveal other

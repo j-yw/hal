@@ -166,7 +166,7 @@ func inspect(query imageQuery, pins Pins) (Measurement, error) {
 		switch e.kind {
 		case "regular":
 			data, err := query(fmt.Sprintf("cat <%d>", e.inode))
-			if err != nil || int64(len(data)) != e.size || secretContent.Match(data) {
+			if err != nil || int64(len(data)) != e.size || hasSecretContent(data) {
 				return Measurement{}, errImage
 			}
 			digests[e.inode] = digestBytes(data)
