@@ -156,7 +156,7 @@ type minimalControlSupervisorAdmission struct {
 	config        minimalControlSupervisorConfig
 	configDigest  [32]byte
 	controllerKey ed25519.PrivateKey
-	// DESIGN/RED: the actual admission does not populate either handoff yet.
+	// Borrowed only for the callback; FD10 has already been consumed/closed.
 	borrowed [7]int
 	recovery minimalControlRecoveryProjection
 }

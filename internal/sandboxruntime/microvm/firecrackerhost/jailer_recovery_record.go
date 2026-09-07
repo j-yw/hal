@@ -25,8 +25,48 @@ var jailerRecoveryOwnerFields = []string{
 	"hostBootId", "supervisorGeneration", "supervisorPid", "supervisorStartTime", "firecrackerPid", "firecrackerStartTime", "finalizedCommitId", "reconnectListenerIdentity", "reconnectSecret",
 }
 
-func encodeJailerRecoveryRecord(record firecrackerRuntimeOwnerRecordV1, config jailerRecoverySupervisorConfig, reservation *jailerIdentityRecord, terminal bool) ([]byte, error) {
+// Immutable scalar inputs to the common codec, not a launch/cleanup proof.
+// Seven-role wrappers derive them only after their existing exact validation;
+// eight-role stores consume the distinct admission-issued projection instead.
+type jailerRecoveryRecordBinding struct {
+	configCorrelation       string
+	job                     jailerRecoveryJob
+	uid, gid                uint32
+	firecrackerConfigSHA256 string
+}
+
+func jailerRecoveryBinding(config jailerRecoverySupervisorConfig) (jailerRecoveryRecordBinding, error) {
 	if validateJailerRecoverySupervisorConfig(config) != nil {
+		return jailerRecoveryRecordBinding{}, errL8RuntimeOwnerInvalid
+	}
+	return jailerRecoveryRecordBinding{configCorrelation: jailerRecoveryConfigDigest(config), job: config.Job,
+		uid: config.Policy.UID, gid: config.Policy.GID, firecrackerConfigSHA256: config.Config.SHA256}, nil
+}
+
+func (binding jailerRecoveryRecordBinding) valid() bool {
+	if !validJailerStagingDigest(binding.configCorrelation) || !validJailerStagingDigest(binding.firecrackerConfigSHA256) ||
+		binding.uid == 0 || binding.gid == 0 || !validStrictJailerRuntimeID(binding.job.RuntimeID) {
+		return false
+	}
+	j := binding.job
+	for _, id := range []string{j.SandboxID, j.ExecutionID, j.WorkerID, j.HostID, j.RuntimeID, j.RuntimeGeneration} {
+		if !validL8RuntimeOwnerSafeID(id) {
+			return false
+		}
+	}
+	return true
+}
+
+func encodeJailerRecoveryRecord(record firecrackerRuntimeOwnerRecordV1, config jailerRecoverySupervisorConfig, reservation *jailerIdentityRecord, terminal bool) ([]byte, error) {
+	binding, err := jailerRecoveryBinding(config)
+	if err != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	return encodeJailerRecoveryBoundRecord(record, binding, reservation, terminal)
+}
+
+func encodeJailerRecoveryBoundRecord(record firecrackerRuntimeOwnerRecordV1, binding jailerRecoveryRecordBinding, reservation *jailerIdentityRecord, terminal bool) ([]byte, error) {
+	if !binding.valid() {
 		return nil, errL8RuntimeOwnerInvalid
 	}
 	encoded, _ := json.Marshal(record)
@@ -39,8 +79,8 @@ func encodeJailerRecoveryRecord(record firecrackerRuntimeOwnerRecordV1, config j
 		common[name] = all[name]
 	}
 	owner, _ := json.Marshal(common)
-	disk := jailerRecoveryDiskRecord{Version: jailerRecoveryRecordVersion, ConfigCorrelation: jailerRecoveryConfigDigest(config), Job: config.Job, Owner: owner, Reservation: reservation, CleanupCheckpoint: terminal}
-	restored, err := jailerRecoveryRecordFromDisk(disk, config)
+	disk := jailerRecoveryDiskRecord{Version: jailerRecoveryRecordVersion, ConfigCorrelation: binding.configCorrelation, Job: binding.job, Owner: owner, Reservation: reservation, CleanupCheckpoint: terminal}
+	restored, err := jailerRecoveryRecordFromBinding(disk, binding)
 	if err != nil || restored != record {
 		return nil, errL8RuntimeOwnerInvalid
 	}
@@ -52,15 +92,23 @@ func encodeJailerRecoveryRecord(record firecrackerRuntimeOwnerRecordV1, config j
 }
 
 func decodeJailerRecoveryRecord(payload []byte, config jailerRecoverySupervisorConfig) (firecrackerRuntimeOwnerRecordV1, *jailerIdentityRecord, bool, error) {
-	var disk jailerRecoveryDiskRecord
-	if len(payload) == 0 || len(payload) > l8RuntimeOwnerRecordLimit || json.Unmarshal(payload, &disk) != nil {
-		return firecrackerRuntimeOwnerRecordV1{}, nil, false, errL8RuntimeOwnerInvalid
-	}
-	record, err := jailerRecoveryRecordFromDisk(disk, config)
+	binding, err := jailerRecoveryBinding(config)
 	if err != nil {
 		return firecrackerRuntimeOwnerRecordV1{}, nil, false, errL8RuntimeOwnerInvalid
 	}
-	canonical, err := encodeJailerRecoveryRecord(record, config, disk.Reservation, disk.CleanupCheckpoint)
+	return decodeJailerRecoveryBoundRecord(payload, binding)
+}
+
+func decodeJailerRecoveryBoundRecord(payload []byte, binding jailerRecoveryRecordBinding) (firecrackerRuntimeOwnerRecordV1, *jailerIdentityRecord, bool, error) {
+	var disk jailerRecoveryDiskRecord
+	if !binding.valid() || len(payload) == 0 || len(payload) > l8RuntimeOwnerRecordLimit || json.Unmarshal(payload, &disk) != nil {
+		return firecrackerRuntimeOwnerRecordV1{}, nil, false, errL8RuntimeOwnerInvalid
+	}
+	record, err := jailerRecoveryRecordFromBinding(disk, binding)
+	if err != nil {
+		return firecrackerRuntimeOwnerRecordV1{}, nil, false, errL8RuntimeOwnerInvalid
+	}
+	canonical, err := encodeJailerRecoveryBoundRecord(record, binding, disk.Reservation, disk.CleanupCheckpoint)
 	if err != nil || !bytes.Equal(payload, canonical) {
 		return firecrackerRuntimeOwnerRecordV1{}, nil, false, errL8RuntimeOwnerInvalid
 	}
@@ -73,11 +121,11 @@ func jailerRecoveryConfigDigest(config jailerRecoverySupervisorConfig) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func jailerRecoveryRecordFromDisk(disk jailerRecoveryDiskRecord, config jailerRecoverySupervisorConfig) (firecrackerRuntimeOwnerRecordV1, error) {
-	if disk.ConfigCorrelation != jailerRecoveryConfigDigest(config) || disk.Reservation != nil && (disk.Reservation.UID != config.Policy.UID || disk.Reservation.GID != config.Policy.GID || disk.Reservation.Config != config.Config.SHA256) {
+func jailerRecoveryRecordFromBinding(disk jailerRecoveryDiskRecord, binding jailerRecoveryRecordBinding) (firecrackerRuntimeOwnerRecordV1, error) {
+	if disk.ConfigCorrelation != binding.configCorrelation || disk.Reservation != nil && (disk.Reservation.UID != binding.uid || disk.Reservation.GID != binding.gid || disk.Reservation.Config != binding.firecrackerConfigSHA256) {
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
 	}
-	return jailerRecoveryCleanupRecordFromDisk(disk, config.Job)
+	return jailerRecoveryCleanupRecordFromDisk(disk, binding.job)
 }
 
 // This decoder grants no resource authority. A fresh daemon uses only the

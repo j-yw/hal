@@ -21,7 +21,7 @@ import (
 type jailerRecoveryStore struct {
 	mu                          sync.Mutex
 	config                      jailerRecoverySupervisorConfig
-	minimal                     *minimalControlRecoveryProjection // DESIGN/RED: ignored by the existing store.
+	minimal                     *minimalControlRecoveryProjection
 	publication                 *jailerRecoveryRecordPublicationOps
 	file                        *os.File
 	record                      firecrackerRuntimeOwnerRecordV1
@@ -35,6 +35,17 @@ type jailerRecoveryStore struct {
 type jailerRecoveryRecordPublicationOps struct {
 	rename        func(directoryFD int, temporaryName string, replaceExisting bool) error
 	syncDirectory func(directoryFD int) error
+}
+
+func (store *jailerRecoveryStore) recordBinding() (jailerRecoveryRecordBinding, error) {
+	if store.minimal == nil {
+		return jailerRecoveryBinding(store.config)
+	}
+	binding := jailerRecoveryRecordBinding(*store.minimal)
+	if !binding.valid() {
+		return jailerRecoveryRecordBinding{}, errL8RuntimeOwnerInvalid
+	}
+	return binding, nil
 }
 
 func renameJailerRecoveryRecord(directoryFD int, temporaryName string, replaceExisting bool) error {
@@ -65,8 +76,9 @@ func (store *l8RuntimeOwnerLinuxRecordStore) readRecord() (firecrackerRuntimeOwn
 		selected.poisoned = true
 		return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 	}
-	record, busy, terminal, err := readJailerRecoveryRecordFile(file, selected.config)
-	if err != nil || record != selected.record || !equalJailerRecoveryBusy(busy, selected.busy) || terminal != selected.terminal || record.HostBootID != store.bootID {
+	binding, bindingErr := selected.recordBinding()
+	record, busy, terminal, err := readJailerRecoveryRecordFile(file, binding)
+	if bindingErr != nil || err != nil || record != selected.record || !equalJailerRecoveryBusy(busy, selected.busy) || terminal != selected.terminal || record.HostBootID != store.bootID {
 		selected.poisoned = true
 		return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 	}
@@ -118,8 +130,9 @@ func (store *l8RuntimeOwnerLinuxRecordStore) writeSelectedRecord(record firecrac
 			return errL8RuntimeOwnerInvalid
 		}
 	}
-	payload, err := encodeJailerRecoveryRecord(record, s.config, busy, terminal)
-	if err != nil {
+	binding, bindingErr := s.recordBinding()
+	payload, err := encodeJailerRecoveryBoundRecord(record, binding, busy, terminal)
+	if bindingErr != nil || err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
 	var random [16]byte
@@ -174,8 +187,9 @@ func (store *l8RuntimeOwnerLinuxRecordStore) writeSelectedRecord(record firecrac
 		return errL8RuntimeOwnerInvalid
 	}
 	defer current.Close()
-	got, gotBusy, gotTerminal, readErr := readJailerRecoveryRecordFile(current, s.config)
-	if readErr != nil || !sameJailerRecoveryFile(current, file) || got != record || !equalJailerRecoveryBusy(gotBusy, busy) || gotTerminal != terminal {
+	currentBinding, bindingErr := s.recordBinding()
+	got, gotBusy, gotTerminal, readErr := readJailerRecoveryRecordFile(current, currentBinding)
+	if bindingErr != nil || currentBinding != binding || readErr != nil || !sameJailerRecoveryFile(current, file) || got != record || !equalJailerRecoveryBusy(gotBusy, busy) || gotTerminal != terminal {
 		s.poisoned = true
 		return errL8RuntimeOwnerInvalid
 	}
@@ -208,7 +222,11 @@ func (store *l8RuntimeOwnerLinuxRecordStore) recoveryAuthority() *jailerRecovery
 	return &jailerRecoveryAuthority{
 		current: func(ctx context.Context, runtimeID, digest string) error {
 			record, err := store.Load(ctx)
-			if err != nil || store.selected == nil || record.Revision != 0 || record.State != "starting" || record.RuntimeID != runtimeID || store.selected.config.Config.SHA256 != digest {
+			if err != nil || store.selected == nil || record.Revision != 0 || record.State != "starting" || record.RuntimeID != runtimeID {
+				return errL8RuntimeOwnerInvalid
+			}
+			binding, err := store.selected.recordBinding()
+			if err != nil || binding.firecrackerConfigSHA256 != digest {
 				return errL8RuntimeOwnerInvalid
 			}
 			return nil
@@ -311,12 +329,12 @@ func sameJailerRecoveryFile(left, right *os.File) bool {
 	return le == nil && re == nil && os.SameFile(l, r)
 }
 
-func readJailerRecoveryRecordFile(file *os.File, config jailerRecoverySupervisorConfig) (firecrackerRuntimeOwnerRecordV1, *jailerIdentityRecord, bool, error) {
+func readJailerRecoveryRecordFile(file *os.File, binding jailerRecoveryRecordBinding) (firecrackerRuntimeOwnerRecordV1, *jailerIdentityRecord, bool, error) {
 	payload, err := io.ReadAll(io.NewSectionReader(file, 0, l8RuntimeOwnerRecordLimit+1))
 	if err != nil {
 		return firecrackerRuntimeOwnerRecordV1{}, nil, false, errL8RuntimeOwnerInvalid
 	}
-	return decodeJailerRecoveryRecord(payload, config)
+	return decodeJailerRecoveryBoundRecord(payload, binding)
 }
 
 func equalJailerRecoveryBusy(left, right *jailerIdentityRecord) bool {

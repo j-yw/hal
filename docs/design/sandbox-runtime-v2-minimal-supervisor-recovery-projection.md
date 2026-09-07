@@ -2,7 +2,9 @@
 
 ## Scope and authority
 
-DESIGN/RED foundation at `99b58782390f0805efbdaf01d4eadbb52f70bb79`.
+Foundation at `99b58782390f0805efbdaf01d4eadbb52f70bb79`, with committed
+DESIGN/RED `c9e1bbf248b56fc9b2c7e267ec15113e86ec8287` followed by the bounded
+admission/store implementation described here.
 The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md), and
 [accepted controller design](sandbox-runtime-v2-minimal-host-controller.md)
@@ -12,14 +14,14 @@ producer, network, credential, or launch completion.
 The actual selected admission already validates the distinct bounded canonical
 supervisor config, measured sealed assets and one-shot controller seed. It closes
 the seed FD before its callback and clears the derived key afterward. However,
-the callback cannot reach the admitted handles, and the existing selected store
-accepts only the seven-role config. This slice supplies that concrete admission
-to store handoff without making the production supervisor available.
+at the RED base the callback cannot reach the admitted handles, and the selected
+store accepts only the seven-role config. This slice supplies that concrete
+admission-to-store handoff without making the production supervisor available.
 
 `unavailableMinimalControlSupervisor` remains unchanged. There is no root/boot,
 process, namespace, guest listener, readiness or credential acceptance here.
 
-## Existing coupling
+## Coupling at the RED base
 
 All paths below are under `internal/sandboxruntime/microvm/firecrackerhost/`.
 
@@ -39,7 +41,7 @@ All paths below are under `internal/sandboxruntime/microvm/firecrackerhost/`.
   and `recoveryAuthority().current` instead require the measured FC-file SHA256.
   The two digests are intentionally not interchangeable.
 
-## Bounded proposed interface
+## Bounded implemented interface
 
 The admission gets `borrowed [7]int`, in the same role order as the first seven
 inherited descriptors: control socket, owner directory, sealed supervisor config,
@@ -65,12 +67,15 @@ case preserves the exact current seven-role wrapper behavior. A nonnil projectio
 must validate its complete required scalar shape; a missing/zero selected
 projection cannot fall back through an eight-role config relabeled as seven.
 
-After separate GREEN approval, share the current record encode/decode body over
-these exact validated correlations. Existing seven-role wrappers must still run
-their original validator and derive their digest themselves. The selected branch
-uses only the admission-issued projection. Keep the disk schema, canonical bytes,
-owner field selection, job validation, reservation/terminal checks, cleanup-only
-fresh-client decoder and legacy six-role record branch unchanged.
+The shared record encode/decode body uses `jailerRecoveryRecordBinding`, one
+private scalar shape. `minimalControlRecoveryProjection` is a distinct defined
+type with that storage shape, populated only inside actual selected admission;
+sharing codec storage is not an alternate selected issuer. Existing seven-role
+wrappers still run their original validator and derive their digest themselves.
+The selected branch uses only the admission-issued projection. The disk schema,
+canonical bytes, owner field selection, job validation, reservation/terminal
+checks, cleanup-only fresh-client decoder and legacy six-role record branch
+remain unchanged.
 
 The existing store must use the same projection for genesis, write/readback,
 retained reads and recovery-current checks. Full supervisor correlation enters
@@ -81,22 +86,24 @@ uncertainty poison and successor-preserving cleanup.
 
 ## Files and test boundary
 
-Proposed production ownership is limited to `minimal_control_config.go`,
+Production ownership is limited to `minimal_control_config.go`,
 `minimal_control_config_linux.go`, new
 `minimal_control_recovery_projection.go`, `jailer_recovery_record.go`, and
 `jailer_recovery_store_linux.go`, plus narrowly named tests and this note.
 No executable dispatcher, runtime constructor, coordinator, namespace, worker,
 tool, protocol, schema-version or source-guard changes belong to this milestone.
 
-Compiling RED may add only ignored zero-valued admission/store fields and the
-private projection shape, with no behavior change. Tests use the real existing
-admission fixture and actual selected store filesystem operations. They never
-manufacture projection fields or replace the selected discriminator.
+The committed compiling RED added only ignored zero-valued admission/store fields
+and the private projection shape, with no behavior change. Tests use the real
+existing admission fixture and actual selected store filesystem operations. They
+never manufacture accepted projection fields or replace the selected discriminator.
 
-The intended first failures are the callback's missing borrowed handles and the
+The first RED failures were the callback's missing borrowed handles and the
 actual seven-only validator rejecting a valid selected eight-config genesis.
 Later assertions for record/readback, FC currentness, reservation mismatch and
-immutable projection are not claimed exercised when genesis fails first.
+immutable projection were not exercised while genesis failed first. The original
+231-line RED test file remains byte-identical; these later assertions now execute
+on the supported projection path.
 
 The frozen RED is compiling behavior, not missing-symbol scaffolding:
 
@@ -107,15 +114,15 @@ go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/firecrackerhost \
   -run '^Test(MinimalControlConfig|JailerRecovery(Record|StorePublication|SelectedConfig))'
 ```
 
-The first command reaches four intended failing leaves (one missing borrow,
-three eight-config genesis rejections), five failure events including the parent,
-two passing controls and zero skips. The second is the existing adjacent
+At the RED commit, the first command reaches four intended failing leaves (one
+missing borrow, three eight-config genesis rejections), five failure events
+including the parent, two passing controls and zero skips. The second is the existing adjacent
 admission/config/record/publication regression set, not a selected runtime test.
 The seven-role config and complete disk-record SHA256 golden values were captured
 independently from the unchanged old codec/fixture before this RED seam. They
 are not computed from a new paired encoder/decoder during the assertion.
 
-GREEN gates must prove:
+Foundation verification gates:
 
 1. Exact seven borrowed handles remain open/CLOEXEC during callback, FD10 is
    already closed, key clearing and all descriptor cleanup remain unchanged.
@@ -131,6 +138,15 @@ GREEN gates must prove:
    unavailable without creating any record or launching anything.
 6. Existing store publication, poison, retained lease, terminal retry and
    successor-preservation tests remain active.
+
+Additional selected integrity tests run through the same admitted borrowed
+directory. Tampered full correlation, reservation FC digest/UID/GID/runtime,
+missing/zero projection, same-byte replacement inode and corrupted initial
+post-rename readback remain poisoned. Restoring record bytes cannot revive the
+owner, and the unrelated replacement remains untouched. These tests construct
+reservation metadata only; they do not mint an actual retained identity lease
+or terminal checkpoint. Publication revalidates the same binding before accepting
+readback, preserving uncertainty if its inputs change during IO.
 
 Use focused default/race tests, adjacent admission/record/store tests, vet,
 Darwin compile and relevant existing source guards. Fixtures are ordinary
