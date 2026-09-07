@@ -287,3 +287,44 @@ Actual RED: six intended failing leaves (nine failure events including parents),
 EOF/P RED now passes unchanged. No positive record/identity/staging/pidfd
 revalidation, R/D admission or interruptible gate implementation is claimed;
 their remaining independent boundary cases are not covered by these two leaves.
+
+## Resource-currentness implementation checkpoint
+
+The selected start now captures the original coordinator/session/generation,
+concrete lifecycle/manager, process, starter/gate, identity busy record, staging
+lease, cgroup request and independent admitted store binding. The expected
+revision-1 record comes from the original genesis plus the armed observation,
+not from a newly decoded candidate. Release checks that snapshot against the
+actual canonical retained store and busy reservation, verifies identity and
+staging ownership, reads back the already-launched cgroup's exact limits, and
+correlates the actual manager process with retained CLOEXEC pidfd and fresh
+read-only PID/start/parent observation. Temporary pidfds close on both success
+and failure. Final same-owner/store/absolute-P checks run before the unchanged
+starter release. No selected/FSM/store lock is held over kernel observation;
+the store-to-identity lock order remains unchanged.
+
+`TestMinimalReleaseRetainedMismatchMatrix` reaches actual revision 1 before
+32 test-owned mismatches. It uses the actual selected start directly so the
+fixture's extra order-assertion read cannot intercept record faults before
+production currentness. Ordinary in-memory fixture corruption is restored
+before the existing Abort only to preserve cleanup ownership; poisoned or lost
+record authority is never repaired. Separate tests deliberately make retained
+start/parent metadata agree with fake genesis but disagree with actual `/proc`.
+They verify failure at independent kernel observation, no release packet, and
+stable descriptor counts over repeated success/failure observations. These are
+fake-launch/read-only-self-process tests, not supervisor-child or live Jailer
+acceptance. The original 87-line resource RED and 152-line release RED remain
+unchanged.
+
+At this checkpoint, `^TestMinimalRelease` race times three passes (133 events,
+zero failures/skips), and the unchanged affected command guards pass (74 events,
+zero failures/skips). The older preparation fixture still uses a nil selected
+concrete lifecycle, a close-only directory descriptor and a cgroup not marked
+launched. Its success assertions therefore fail the mandatory new boundary;
+the captured draft run has 15 failure events and 36 passes, zero skips. A
+supervisor-reviewed setup-only correction is required before whole-package
+acceptance. No production fallback is justified by that fixture limitation.
+
+Atomic one-attempt admission, original R/D, interruptible arming/send, later
+cleanup/quarantine composition and executable/controller activation remain
+unimplemented. Currentness alone is not an atomic snapshot of all resources.
