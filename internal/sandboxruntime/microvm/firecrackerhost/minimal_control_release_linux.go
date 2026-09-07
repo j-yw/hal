@@ -79,7 +79,9 @@ func (selected *jailerRecoveryRuntime) captureMinimalRelease(prep *minimalContro
 	return s
 }
 
-// No owner/coordinator/store lock is held over manager or kernel observation.
+// No selected-runtime/coordinator/store bookkeeping lock is held over manager
+// or kernel observation. The existing supervisor FSM still holds owner.mu
+// across Release; this helper does not change that outer locking contract.
 // This is retained-resource currentness only; atomic release admission and
 // interruptible gate I/O are separate, still-required boundaries.
 func (s minimalControlReleaseSnapshot) current() error {

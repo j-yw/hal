@@ -362,8 +362,10 @@ staging ownership, reads back the already-launched cgroup's exact limits, and
 correlates the actual manager process with retained CLOEXEC pidfd and fresh
 read-only PID/start/parent observation. Temporary pidfds close on both success
 and failure. Final same-owner/store/absolute-P checks run before the unchanged
-starter release. No selected/FSM/store lock is held over kernel observation;
-the store-to-identity lock order remains unchanged.
+starter release. No selected-runtime/coordinator/store bookkeeping lock is held
+over kernel observation. The existing supervisor FSM still holds `owner.mu`
+across Release; no outer unlock is claimed. The store-to-identity lock order
+remains unchanged.
 
 `TestMinimalReleaseRetainedMismatchMatrix` reaches actual revision 1 before
 32 test-owned mismatches. It uses the actual selected start directly so the
