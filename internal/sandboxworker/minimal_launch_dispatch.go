@@ -62,6 +62,10 @@ func (service *L8Service) handleMinimalLaunch(ctx context.Context, principal san
 			return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeMalformedRequest, "malformed worker minimal job start request")
 		}
 	}
+	template, err := minimalLaunchTemplateIdentity(start.Exec.Target.Runtime)
+	if err != nil {
+		return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeMalformedRequest, "malformed worker minimal job start request")
+	}
 	key, err := jobRequestKeyV2(request.DriverID, principalID, service.daemonGeneration, start)
 	if err != nil {
 		return l8ServiceFailureResponse(request)
@@ -80,7 +84,7 @@ func (service *L8Service) handleMinimalLaunch(ctx context.Context, principal san
 	defer service.jobs.endMinimalPreparation(preparation)
 	hints := sandboxruntime.MinimalLaunchSelectionHints{SandboxID: workerV2RequestSandboxID(start.Exec.Target), ExecutionID: start.Exec.OperationID, SubmissionID: start.SubmissionID,
 		RuntimeID: start.Exec.Target.Runtime.RuntimeID, PlanID: start.PlanID, TemplatePolicyID: start.TemplatePolicyID, WorkspacePolicyID: start.WorkspacePolicyID}
-	selection, err := service.minimalLaunch.Authorizer.ResolveSelection(preparation.ctx, principal, service.workerID, hints)
+	selection, err := service.minimalLaunch.Authorizer.ResolveSelection(preparation.ctx, principal, service.workerID, hints, template...)
 	if err != nil || selection == nil {
 		return l8ServiceFailureResponse(request)
 	}

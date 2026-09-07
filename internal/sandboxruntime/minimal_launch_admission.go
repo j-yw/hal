@@ -23,6 +23,7 @@ type MinimalLaunchPreparedSelection struct {
 	source     MinimalLaunchSelection
 	identity   MinimalLaunchSelectionIdentity
 	hints      MinimalLaunchSelectionHints
+	template   MinimalLaunchTemplateIdentity
 	principal  string
 	scope      MinimalLaunchScope
 }
@@ -41,6 +42,13 @@ type MinimalLaunchOwnerBinding struct {
 }
 
 func (authorizer *MinimalLaunchAuthorizer) ResolveSelection(ctx context.Context, principal AuthenticatedWorkerPrincipal, workerID string, hints MinimalLaunchSelectionHints, template ...MinimalLaunchTemplateIdentity) (result *MinimalLaunchPreparedSelection, err error) {
+	if len(template) > 1 || len(template) == 1 && !ValidMinimalLaunchTemplateIdentity(template[0]) {
+		return nil, ErrMinimalLaunchUnavailable
+	}
+	var requested MinimalLaunchTemplateIdentity
+	if len(template) == 1 {
+		requested = template[0]
+	}
 	if authorizer == nil || !authorizer.MatchesDependencies(authorizer.authority, authorizer.provider) || ctx == nil || ctx.Err() != nil || !ValidMinimalLaunchID(workerID) || !validMinimalLaunchHints(hints) {
 		return nil, ErrMinimalLaunchUnavailable
 	}
@@ -74,7 +82,7 @@ func (authorizer *MinimalLaunchAuthorizer) ResolveSelection(ctx context.Context,
 	}
 	for _, scope := range authorizer.scopes {
 		if scope.PrincipalID == principalID && scope.WorkerID == identity.WorkerID && scope.HostID == identity.HostID && scope.TemplatePolicyID == identity.TemplatePolicyID && scope.WorkspacePolicyID == identity.WorkspacePolicyID && scope.NetworkPolicyID == identity.NetworkPolicyID {
-			result = &MinimalLaunchPreparedSelection{authorizer: authorizer, binding: authorizer.provider, source: source, identity: identity, hints: hints, principal: principalID, scope: scope}
+			result = &MinimalLaunchPreparedSelection{authorizer: authorizer, binding: authorizer.provider, source: source, identity: identity, hints: hints, template: requested, principal: principalID, scope: scope}
 			result.self = result
 			return result, nil
 		}
@@ -165,7 +173,7 @@ func (selection *MinimalLaunchPreparedSelection) Reserve(ctx, ownerContext conte
 	}
 	owned, ownedCancel := context.WithCancel(ownerContext)
 	preparation, cancel := context.WithDeadline(owned, deadline)
-	value := &MinimalLaunchReservation{identity: identity, requestCorrelation: requested, selection: selection, ctx: preparation, cancel: cancel,
+	value := &MinimalLaunchReservation{identity: identity, requestCorrelation: requested, templateIdentity: selection.template, selection: selection, ctx: preparation, cancel: cancel,
 		ownedContext: owned, ownedCancel: ownedCancel, deadline: deadline}
 	value.self = value
 	value.stopAuthority = context.AfterFunc(selection.authorizer.ctx, ownedCancel)
@@ -210,11 +218,6 @@ func (reservation *MinimalLaunchReservation) RequestCorrelation() (MinimalLaunch
 
 func validMinimalLaunchRequestCorrelation(value MinimalLaunchRequestCorrelation) bool {
 	return ValidMinimalLaunchID(value.AdmissionGrantID) && value.AdmissionGrantRevision != 0
-}
-
-// TemplateIdentity is unavailable until original selected intent is retained.
-func (reservation *MinimalLaunchReservation) TemplateIdentity() (MinimalLaunchTemplateIdentity, error) {
-	return MinimalLaunchTemplateIdentity{}, ErrMinimalLaunchUnavailable
 }
 
 // ArmDispatch is called only by the manager after exact durable dispatch

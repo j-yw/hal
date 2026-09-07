@@ -66,6 +66,7 @@ type MinimalLaunchReservation struct {
 	mu                                 sync.Mutex
 	identity                           MinimalLaunchIdentity
 	requestCorrelation                 MinimalLaunchRequestCorrelation
+	templateIdentity                   MinimalLaunchTemplateIdentity
 	selection                          *MinimalLaunchPreparedSelection
 	ctx                                context.Context
 	cancel                             context.CancelFunc

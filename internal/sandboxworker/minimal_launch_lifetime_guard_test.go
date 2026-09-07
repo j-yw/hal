@@ -18,7 +18,7 @@ func l8WorkerV2MinimalDeclarationDigest(scope l8WorkerV2GuardScope) string {
 		"job_manager_v2.go/newJobManagerV2":                           "32e298a51b5d96bbe696079c4af3c040a04fcc4c449f60ad31b082f4181e6c17",
 		"minimal_launch_dispatch.go/beginMinimalPreparation":          "05fa4b86c84305737a351d6b08c5aba37c0a59ff65d44e1d2ce4af229b49823e",
 		"minimal_launch_dispatch.go/endMinimalPreparation":            "3ec422eef00dab736674de293a91bcff8595848f67065185462bfc7b473423b7",
-		"minimal_launch_dispatch.go/handleMinimalLaunch":              "4ff2e01144601fa002a17e126cb09411adc6230b75790ef1ac2cb639537c9eb8",
+		"minimal_launch_dispatch.go/handleMinimalLaunch":              "f2ff281a2bd64e5599b04f965a32b6d1a8906d5dcedadfd9749949627c37d154",
 		"minimal_launch_dispatch.go/checkMinimalDispatch":             "161e0f3090b31c0b742c345e79f235a26d281e305b67556d151150b3dc9a8610",
 		"minimal_launch_dispatch.go/reserveMinimalLaunch":             "e6091f8ace18d275c53cc2303e99875ebe2500c80150a0185bdbeea05dfc63aa",
 		"minimal_launch_dispatch.go/finishMinimalDispatch":            "c4207e03f08cfe0c74c395b87feea163591cbc917b4be89181da522de8d4ebf6",

@@ -5,9 +5,9 @@ original credential request-correlation dependency. This refines the provider
 proposal at `7144680c2d8b8ce1112a7a599c64da34e93d6cfc`, not its missing trusted
 asset association. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md)
 and [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) govern.
-The design at `5cd88b14` is approved for the compiling RED below, not GREEN.
-Only the type/signature/unavailable accessor scaffold and new tests are added;
-no worker production behavior, guard, provider, issuer or runtime is changed.
+The design at `5cd88b14` and compiling RED `fad1593d` were independently
+reviewed before this bounded implementation. The original tuple is copied and
+validated without changing provider authority, runtime selection or asset trust.
 
 ## Actual gap and digest meanings
 
@@ -267,4 +267,49 @@ Existing compatibility/dispatch/cancel/request-correlation/source-guard tests
 are selected separately for passing regression evidence; logs and exact frozen
 head results accompany the handoff. No source-guard exemption is needed to
 compile or reproduce this RED. `go vet` on both packages and formatting/diff
-checks pass. Stop here until independent RED review and explicit GREEN approval.
+checks passed at that frozen RED. GREEN was separately approved after independent
+race repetitions reproduced 135 intended failures and 42 controls, zero skips.
+
+## Bounded implementation and reached follow-up checks
+
+`ResolveSelection` now validates and copies the optional four-scalar value
+before any provider callback, retaining it on the exact prepared selection.
+`Reserve` copies it into the original self-bound reservation. `TemplateIdentity`
+returns only a checked value copy, independent of currentness; it cannot repair
+a copied handle, omitted value or revoked launch. A single pure
+`ValidMinimalLaunchTemplateIdentity` shares the bounded scalar grammar with the
+worker extractor; it is syntax validation, not an asset or credential issuer.
+
+The selected worker reads exactly the three typed locked roles, copies their
+digest values and original image before keying or Resolve, and forwards only
+that value. Both empty image and absent lock keep the original omission route.
+Malformed provided fields fail before any callback, durable allocation or
+publication. The existing request-key algorithm, hints, provider interface,
+credential Reserve argument, cancellation checks, store and receipts are
+unchanged. Typed sanitized intake still cannot recover raw JSON metadata that
+the existing decoder discarded; no raw decoder trust claim is added.
+
+Both original 199/247-line RED files remain byte-identical. The formerly
+unreached copy, loss and failed-Start assertions now pass. Separate follow-up
+tests reach actual neutral and authenticated-service Start/Claim, post-P reads
+followed by explicit cancel/service/authorizer loss, concurrent returned copies,
+nil/zero/copied handles, 4096 acceptance versus 4097 rejection without truncation,
+all digest roles and the precise prefix alphabet. Equal digest bytes keep their
+separate roles without inventing cross-role equality or inequality proof. Actual
+service duplicates reuse only the original queued job; changed image/document/
+manifest/runtime digests or omission neither resolve again nor rewrite its
+record. No terminal success is manufactured by those duplicate controls.
+
+The sole changed audited worker declaration is `handleMinimalLaunch`: add the
+pure extraction/error gate before the original key, then forward the copied
+optional value to the original Resolve call. Its exact declaration pin was
+independently reviewed for that delta before replacement, with eight new
+omission/substitution/reordering bypass cases and all existing cases preserved;
+there is no new typed-call exemption. Existing route, cancellation, durable
+readback and scope guards remain required. Fixed-head verification commands,
+counts, exact pin review and remaining limits accompany the immutable handoff.
+
+The provider still lacks its trusted OCI/template-to-B1 association and concrete
+host allocation, readiness, cleanup and persistence consumers. Valid original
+template intent alone does not enable any of them. No native build, OCI pull,
+live VM, credential transfer, legacy schema or default selector was changed.
