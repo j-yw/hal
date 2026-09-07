@@ -1,7 +1,7 @@
 # Separate owned cancellation from preparation expiry
 
-DESIGN only at `b8b9cd2c0f0d2947947e9823c862b508d64f403f`. No source or tests
-change here. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
+DESIGN/compiling RED from `b8b9cd2c0f0d2947947e9823c862b508d64f403f`.
+The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) and
 [controller handoff](sandbox-runtime-v2-minimal-host-controller.md) remain binding.
 This slice authorizes no provider, readiness, terminal receipt or restart path.
@@ -103,11 +103,11 @@ Cancel-request waiter cancellation remains separate from owned cancellation.
 
 ## Proposed compiling RED and follow-up coverage
 
-Freeze tests before GREEN after separate approval. A minimum unavailable
-OwnedContext scaffold may return nil: the first reachable failure is then the
-missing owned context after actual Reserve/Arm/Start, not the later deadline
-assertions. Independently execute existing valid-start and rejection controls.
-Once the accessor is implemented, all following cases must become reachable:
+The approved RED accessor delegates to existing Context(), exposing the actual
+combined lifetime without changing it. Tests reach Reserve/Arm/Start and P
+expiry before failing; their later post-P revoke assertions are not RED evidence.
+Valid-start and rejection controls execute independently. All following cases
+must be reachable at GREEN:
 
 1. Actual neutral reservation: Context's original deadline and provider argument
    remain exact; P expires while the retained OwnedContext remains live. Later
@@ -139,5 +139,28 @@ tests under race, then adjacent package/guard/vet gates at the fixed GREEN.
 Proposed production scope is only `internal/sandboxruntime/minimal_launch.go`
 and `minimal_launch_admission.go`, plus narrowly named neutral and worker tests.
 No worker production change or source-guard relaxation is expected. Any guard
-coupling requires exact source review before a change. This DESIGN was checked
-by source inspection and `git diff --check`; no tests were added or executed.
+coupling requires exact source review before a change. Existing tests are unchanged.
+
+## Frozen RED evidence
+
+The focused actual race run selected both new files:
+
+```text
+go test -race -p 2 ./internal/sandboxruntime ./internal/sandboxworker \
+  -run '^(TestMinimalReservationOwnedContext|TestMinimalLaunchServiceOwnedContext)' \
+  -count=1 -json
+```
+
+It produced seven expected leaf failures (ten failure events including parents),
+14 passing test/subtest events, zero skips and no race reports. Six failures
+observe original ownership canceled at P before explicit cancel/service close/
+authority close/parent cancel; the seventh observes that a later real parent
+deadline was replaced by P. The earlier-parent deadline, exact Start context,
+nil/zero/copy, durable initiating-client separation and pending cancel-waiter
+controls pass independently. No readiness or provider cleanup is exercised.
+An initial new-fixture nil-timestamp dereference was corrected before this run;
+that initial log is retained separately and is not final RED evidence.
+The independent new controls plus unchanged neutral attempt, worker cancel,
+client-disconnect and shutdown regressions pass race three times: 288 passing
+test/subtest events, zero failures/skips. Vet passes for both affected packages.
+These are RED checkpoint checks, not implementation or live acceptance.

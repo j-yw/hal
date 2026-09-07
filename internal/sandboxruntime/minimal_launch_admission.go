@@ -178,6 +178,12 @@ func (reservation *MinimalLaunchReservation) Context() context.Context {
 	return reservation.ctx
 }
 
+// OwnedContext is the compiling RED seam. It deliberately exposes the current
+// combined lifetime until owned cancellation is separated from preparation.
+func (reservation *MinimalLaunchReservation) OwnedContext() context.Context {
+	return reservation.Context()
+}
+
 // ArmDispatch is called only by the manager after exact durable dispatch
 // readback while holding its submission lock. No decoded record calls it.
 func (reservation *MinimalLaunchReservation) ArmDispatch(ctx context.Context, identity MinimalLaunchIdentity) error {
