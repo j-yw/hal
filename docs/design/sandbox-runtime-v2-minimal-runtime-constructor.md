@@ -268,8 +268,9 @@ separate required acceptance, never inferred from these local tests.
 
 ## First compiling RED checkpoint
 
-The first checkpoint captures the independent public expectation at actual
-admission and carries a value copy through selected request assembly. It adds
+At immutable RED `5bdeddb238560a7242ca03afc0e9281016124b08`, the first checkpoint
+captures the independent public expectation at actual admission and carries a
+value copy through selected request assembly. It adds
 no coordinator acceptance branch: the existing validators and unavailable
 executable consumer remain unchanged. The new test locally sets EnablePCI before
 resealing because its existing measured FC fixture contains a vsock; no shared
@@ -289,3 +290,33 @@ assembly, cancellation, launch and controller composition remain later work.
 The small capture helper temporarily renders the same public boot expectation
 as the existing equality validator; consolidating that pure rendering can be
 reviewed with GREEN without changing the original validator in the RED commit.
+
+## Bounded stage-1 GREEN and deferred authority
+
+The stage-1 GREEN adds only the distinct selected data-validation branch.
+`request()` requires the exact eight-role version and equality of every job
+field and FC digest with the captured expectation. Coordinator validation
+requires mutual exclusion with `minimalL7`, the actual request runtime ID,
+measured FC digest, exact NIC/six raw static fields and opaque shared BootConfig
+equality. Existing strict resource/path/PCI/vsock checks still run afterward;
+ordinary seven-role/no-NIC behavior remains unchanged. No runtime constructor,
+root gate, executable consumer, launch, cleanup FSM or controller is activated.
+
+The full-payload digest is checked only for nonzero shape in this stage. It is
+not compared with a second redundant copy inside the same expectation. Actual
+constructor assembly must independently correlate `admission.configDigest`, the
+original `admission.recovery`, genesis/record store and namespace binder before
+allocation. Changed full-payload correlation against that separately retained
+owner/store belongs to the constructor stage. Arbitrary same-package pointer
+forgery is not denied by this data-only handoff and is not claimed as verified.
+
+The original 153-line RED remains byte-identical. Its focused command is now
+green. New regressions first require successful selected coordinator validation,
+then exercise both/missing expectations, mismatched runtime/digest/NIC/static/
+shared boot and preserved strict byte/path/mode/PCI/support checks. Separate
+request-assembly cases reject wrong version and all six changed job fields.
+These are passing reachable regressions, not additional independently reproduced
+RED defects. The focused `^TestMinimalRuntimeRequest` race selector at count 3
+passes 123 test/subtest events with no failures or skips. The temporary pure
+renderer duplication is unchanged; consolidating it is not needed for this
+bounded handoff and would add unrelated validator churn.

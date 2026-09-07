@@ -40,7 +40,7 @@ type strictJailerCoordinatorRequest struct {
 	support    []jailerStagingResourceInput
 	enablePCI  bool
 	minimalL7  *minimalL7ConfigExpectation
-	// Selected handoff only; validation/consumption remains unavailable.
+	// Independently admitted public inputs, not the producer's live L7 proof.
 	minimalControl *minimalControlConfigExpectation
 }
 
@@ -484,7 +484,11 @@ func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorReques
 	if err != nil {
 		return err
 	}
-	if err := validateMinimalL7Config(rendered, request.minimalL7); err != nil {
+	if request.minimalControl != nil {
+		if request.minimalL7 != nil || validateMinimalControlRequestConfig(rendered, request.minimalControl, request.runtimeID, request.config.SHA256) != nil {
+			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
+		}
+	} else if err := validateMinimalL7Config(rendered, request.minimalL7); err != nil {
 		return err
 	}
 	if rendered.MachineConfig.VCPUCount <= 0 || rendered.MachineConfig.MemSizeMiB <= 0 ||

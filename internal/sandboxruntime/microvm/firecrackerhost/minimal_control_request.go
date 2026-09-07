@@ -10,7 +10,8 @@ import (
 
 // A value-only snapshot of independently admitted public inputs. It is neither
 // an L7 launch descriptor nor runtime, namespace, cleanup or readiness authority.
-// The coordinator does not consume this selected handoff yet.
+// The later constructor must independently bind its full correlation to the
+// admitted owner/store. A nonzero digest here is only data-shape validation.
 type minimalControlConfigExpectation struct {
 	configCorrelation [32]byte
 	job               jailerRecoveryJob
@@ -18,6 +19,18 @@ type minimalControlConfigExpectation struct {
 	nic               minimalL7NetworkInterface
 	static            [6]string
 	boot              minimalcontrol.BootConfig
+}
+
+func validateMinimalControlRequestConfig(actual strictJailerConfigFile, expected *minimalControlConfigExpectation, runtimeID, configSHA256 string) error {
+	if expected == nil || expected.configCorrelation == ([32]byte{}) || expected.job.RuntimeID != runtimeID ||
+		expected.configSHA256 != configSHA256 || validateMinimalL7ConfigProjection(actual, expected.nic, expected.static) != nil {
+		return invalidMinimalL7Config()
+	}
+	boot, present, err := minimalcontrol.ParseBootCommandLine(actual.BootSource.BootArgs)
+	if err != nil || !present || boot != expected.boot {
+		return invalidMinimalL7Config()
+	}
+	return nil
 }
 
 // Called only after actual sealed FC equality admission. Expected boot pins

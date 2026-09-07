@@ -129,6 +129,13 @@ func newJailerRecoveryLifecycle(runner *strictJailerNamespaceRunner) (*strictJai
 func (selected *jailerRecoveryRuntime) request() (strictJailerCoordinatorRequest, error) {
 	c := selected.config
 	p := c.Policy
+	if c.Version == minimalControlSupervisorConfigVersion || selected.minimalControl != nil {
+		expected := selected.minimalControl
+		if c.Version != minimalControlSupervisorConfigVersion || expected == nil ||
+			expected.configCorrelation == ([32]byte{}) || expected.job != c.Job || expected.configSHA256 != c.Config.SHA256 {
+			return strictJailerCoordinatorRequest{}, errL8RuntimeOwnerInvalid
+		}
+	}
 	request := strictJailerCoordinatorRequest{runtimeID: c.Job.RuntimeID, jailPaths: c.Paths, enablePCI: c.EnablePCI, cgroup: &strictJailerCgroupResources{anchor: p.CgroupAnchor, cpuQuota: p.CPUQuota, cpuPeriod: p.CPUPeriod, memoryMax: p.MemoryMax, swapMax: p.SwapMax, pidsMax: p.PidsMax}, inspection: strictJailerHostInspectionRequest{jailerPath: p.JailerPath, firecrackerPath: p.FirecrackerPath, trustedFilesystemAnchor: p.TrustedAnchor, runtimeUID: p.UID, runtimeGID: p.GID, chrootBaseDir: p.ChrootBase}}
 	if selected.minimalControl != nil {
 		projection := *selected.minimalControl
