@@ -5,8 +5,9 @@ The accepted [controller design](sandbox-runtime-v2-minimal-host-controller.md),
 [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) govern.
 This note proposes the next transcript/lifetime consumer, not another protocol,
-runtime owner, readiness issuer or completed production route. No RED or
-production implementation is included in this checkpoint.
+runtime owner, readiness issuer or completed production route. The original
+design checkpoint was `0549144d`; its approved compiling RED adds only unavailable
+wrapper/types and dedicated fixture tests, not a working controller.
 
 ## Available concrete dependencies
 
@@ -173,10 +174,22 @@ the same existing cleanup owner after the barrier.
 
 ## Staged compiling RED and ownership
 
-After design approval, the first RED adds only the minimum unavailable private
-wrapper/type declarations needed to compile the real transcript test. It must
-fail at the missing consumer, not at socket setup or a deliberately wrong key.
-Later assertions are reported as unexecuted until that boundary is GREEN.
+The approved first RED adds only the minimum unavailable private wrapper/type
+declarations needed to compile the real transcript test. It fails at the missing
+consumer, not at socket setup or a deliberately wrong key. An independent
+test-only reference transcript completes the actual retained Unix transport and
+shared guest bootstrap. The fixture listener closes only pending acceptance at
+readiness, retaining the active guest stream and pinned socket until owned cleanup.
+Later assertions inside the unavailable consumer remain unexecuted until GREEN.
+
+```sh
+go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalControlController'
+```
+
+At the first RED this selects one missing-consumer failure per repetition, while
+the real fixture control and seven early-rejection/key-wipe cases pass. The early
+controls pass because the boundary is wholly unavailable; they are not evidence
+of a completed admission validator or the later deadline/lifetime fault matrix.
 
 Prospective owned files:
 
@@ -189,12 +202,13 @@ Prospective owned files:
 - `firecrackerhost/minimal_control_controller_*_test.go`: adjacent default Linux
   tests, with no CLI/VM/KVM/privilege dependency.
 
-First positive test combines the actual `minimalTransportFixture`, original
-manager/handle, ordinary private Unix socket, real CONNECT/ACK and
+First positive test combines the existing production-bridge/strict-owner fixture
+components, original manager/handle, ordinary private Unix socket, real CONNECT/ACK and
 `minimalcontrol.NewBootstrap` server plus unchanged session cryptography. It
 requires one completed transcript, an exact session-bound readiness digest,
 one transport generation, no legacy bridge session, key clearing and joined Close.
-Fake owner/peer observations are disclosed; this is not a live Jailer proof.
+The process record is fake, while peer/parent observations use the actual
+nonzero caller UID; this does not prove dedicated UID ownership or live Jailer.
 
 Follow-on reachable REDs cover:
 
@@ -215,12 +229,13 @@ Use actual transport integration as the primary positive. Narrow per-instance
 clock/I/O fault observations can exercise precise boundaries after it is working;
 they must not substitute for an accepted concrete owner or bypass its currentness.
 Focused/race tests and adjacent package/source guards, vet and Darwin compile
-follow GREEN. No test runs or source edits are authorized by this design note.
+follow GREEN. This note is not authorization for GREEN or runtime wiring.
 
 ## Explicit next coupled handoff
 
-Composition owns the distinct config/record/store correlation and selected runtime
-constructor. This slice must not edit those files or change the unavailable
+Composition owns the distinct config/record/store foundation. The selected runtime
+constructor is a separately assigned later dependency. This slice must not edit
+those files or change the unavailable
 production dispatch. Later wiring must supply the actual manager/process only
 after the gated release, retain this scope while cleanup reconnect is served,
 and recheck the same coordinator generation plus original owner channel before
