@@ -400,3 +400,24 @@ The first actual tagged run entered the user namespace and passed the
 failure, no skips). The two default refusal controls passed with no skips.
 The post-construction assertions above did not execute. This is a reproduced
 constructor-entry RED, not an assembly/boot pass.
+
+### Initial constructor GREEN
+
+The selected constructor now re-reads and validates the sealed eight-role public
+config, checks exact callback metadata and the full admitted digest/recovery/
+namespace/request snapshots, and validates the still-borrowed signing key against
+the independently decoded public key. The temporary derived key is cleared;
+the original signing key is neither consumed nor retained by construction.
+Only then does it call the shared concrete assembly extracted from the existing
+seven-role constructor. That legacy entry retains its original root/config/
+control/directory checks. Asset/key checks and resource validation remain shared.
+
+Assembly retains one existing store, manager, namespace runner and coordinator,
+copies the original eight-role projections, sets the full digest in genesis and
+calls the existing namespace binder. The first actual tagged run now passes
+both prerequisites and the original construction/owned-FD/key-cleanup assertions.
+The original 209-line tagged and 32-line default RED files are unchanged.
+Additional corruption and partial-failure regressions are not yet claimed by
+this initial checkpoint. The executable still selects its unavailable delegate;
+no bootstrap, resource reservation, process launch, controller or cleanup-FSM
+behavior is activated, and no terminal/absence proof is created by construction.

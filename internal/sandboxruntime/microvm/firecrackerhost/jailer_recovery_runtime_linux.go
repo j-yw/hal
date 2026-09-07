@@ -35,7 +35,18 @@ func newJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorCo
 	if os.Geteuid() != 0 || validateJailerRecoverySupervisorConfig(config) != nil || validateL8RuntimeOwnerSeqpacketFD(fds[0]) != nil || validateL8RuntimeOwnerDirectoryFD(fds[1]) != nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
+	return assembleJailerRecoveryLinuxRuntime(fds, config, configFD, nil)
+}
+
+// Only the exact seven-role or independently revalidated eight-role root
+// constructor calls this concrete assembly. No injected host operations or
+// alternative root observation participates in either entrypoint.
+func assembleJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorConfig, configFD int, minimal *minimalControlSupervisorAdmission) (*l8RuntimeOwnerLinuxRuntime, error) {
 	selected := &jailerRecoveryRuntime{config: config, starter: &jailerRecoveryStarter{}}
+	if minimal != nil {
+		projection := minimal.request
+		selected.minimalControl = &projection
+	}
 	keep := false
 	defer func() {
 		if !keep {
@@ -103,17 +114,33 @@ func newJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorCo
 	if err != nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
-	owned := &l8RuntimeOwnerLinuxRuntime{selected: selected, config: l8RuntimeOwnerSupervisorConfigV1{DaemonUID: config.DaemonUID}, store: &l8RuntimeOwnerLinuxRecordStore{directoryFD: fds[1], bootID: bootID, selected: &jailerRecoveryStore{config: config}}, commitKey: key, listenerFD: listenerFD, listenerKey: listenerKey, configFD: fds[2], assetFDs: [2]int{fds[3], fds[4]}}
+	defer func() {
+		if !keep {
+			_ = unix.Close(listenerFD)
+			_ = unix.Unlinkat(fds[1], listenerKey, 0)
+		}
+	}()
+	store := &jailerRecoveryStore{config: config}
+	var correlation string
+	if minimal == nil {
+		correlation = jailerRecoveryConfigDigest(config)
+	} else {
+		projection := minimal.recovery
+		store.minimal = &projection
+		correlation = hex.EncodeToString(minimal.configDigest[:])
+	}
+	owned := &l8RuntimeOwnerLinuxRuntime{selected: selected, config: l8RuntimeOwnerSupervisorConfigV1{DaemonUID: config.DaemonUID}, store: &l8RuntimeOwnerLinuxRecordStore{directoryFD: fds[1], bootID: bootID, selected: store}, commitKey: key, listenerFD: listenerFD, listenerKey: listenerKey, configFD: fds[2], assetFDs: [2]int{fds[3], fds[4]}}
 	selected.store = owned.store
 	j := config.Job
-	owned.genesis = firecrackerRuntimeOwnerRecordV1{ContractVersion: jailerRecoveryRecordVersion, State: "starting", ControllerState: "none", HostBootID: bootID, SeedCorrelationDigest: jailerRecoveryConfigDigest(config), SupervisorGeneration: generation, SupervisorPID: supervisor.PID, SupervisorStartTime: supervisor.StartTime, ReconnectListenerIdentity: listenerIdentity, ReconnectSecret: secret, SandboxID: j.SandboxID, ExecutionID: j.ExecutionID, WorkerID: j.WorkerID, HostID: j.HostID, RuntimeID: j.RuntimeID, RuntimeGeneration: j.RuntimeGeneration}
+	owned.genesis = firecrackerRuntimeOwnerRecordV1{ContractVersion: jailerRecoveryRecordVersion, State: "starting", ControllerState: "none", HostBootID: bootID, SeedCorrelationDigest: correlation, SupervisorGeneration: generation, SupervisorPID: supervisor.PID, SupervisorStartTime: supervisor.StartTime, ReconnectListenerIdentity: listenerIdentity, ReconnectSecret: secret, SandboxID: j.SandboxID, ExecutionID: j.ExecutionID, WorkerID: j.WorkerID, HostID: j.HostID, RuntimeID: j.RuntimeID, RuntimeGeneration: j.RuntimeGeneration}
+	if minimal != nil && bindMinimalControlNamespaces(owned, minimal) != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
 	runner, err := newStrictJailerNamespaceRunner(strictJailerNamespaceRunnerOptions{namespace: owned, starter: selected.starter})
 	if err == nil {
 		selected.lifecycle, err = newJailerRecoveryLifecycle(runner)
 	}
 	if err != nil {
-		_ = unix.Close(listenerFD)
-		_ = unix.Unlinkat(fds[1], listenerKey, 0)
 		return nil, errL8RuntimeOwnerInvalid
 	}
 	policy := config.Policy
