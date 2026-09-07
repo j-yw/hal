@@ -254,9 +254,10 @@ func (selected *jailerRecoveryRuntime) startChildForPreparation(prep *minimalCon
 	}
 	child := l8RuntimeOwnerStartedChild{Observation: selected.starter.observation, Release: selected.starter.release, Abort: func() error { _, err := selected.contain(); return err }}
 	if prep != nil {
+		snapshot := selected.captureMinimalRelease(prep)
 		release := child.Release
 		child.Release = func() error {
-			if !prep.current() {
+			if snapshot.current() != nil {
 				return errL8RuntimeOwnerInvalid
 			}
 			return release()
