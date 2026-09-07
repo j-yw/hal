@@ -253,6 +253,20 @@ reachable regression coverage before controller acceptance. No selected runtime
 constructor, config/store/admission, producer, shared protocol or cryptography
 was changed; the production supervisor still has no controller consumer.
 
+The first follow-on tests-only checkpoint passes without a production change;
+these are regression controls, not newly reproduced defects. Alias-observing
+readers check partial prefix/body clearing on errors and panics, exact allocation
+caps, and single-attempt short-write rejection. Entropy wrong-extent rejection
+clears supplied scratch without a syscall test seam. Actual retained Unix/shared
+bootstrap tests check owner versus waiter cancellation, callback return/panic
+before and after readiness, concurrent Close/WaitReady, guest EOF, fake recorded
+process exit, ordinary socket/parent replacement, and stale/key rejection.
+Preparation cancellation uses the transport's existing private dial observation
+before a real Unix dial; replacement tests preserve successor paths. No new
+production dependency or clock/I/O seam was added. Unsolicited-byte and malformed
+transcript integration, blocked authenticated writes, delayed absolute A/D/H and
+entropy syscall failures remain separate fault-test work.
+
 ## Explicit next coupled handoff
 
 Composition owns the distinct config/record/store foundation. The selected runtime
