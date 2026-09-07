@@ -93,8 +93,12 @@ type JobCredentialRuntimeRecoveryCommitReceipt struct {
 }
 
 func ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt JobCredentialRuntimeRecoveryCommitReceipt) error {
-	commitID := receipt.CommitID
-	if len(commitID) != 43 || receipt.FinalizedRevision == 0 {
+	return validateJobCredentialRuntimeRecoveryCommitFields(receipt.CommitID, receipt.FinalizedRevision)
+}
+
+// Shared scalar syntax checks do not construct or attest a cleanup receipt.
+func validateJobCredentialRuntimeRecoveryCommitFields(commitID string, finalizedRevision uint64) error {
+	if len(commitID) != 43 || finalizedRevision == 0 {
 		return ErrJobCredentialProofInvalid
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(commitID)

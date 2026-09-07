@@ -104,7 +104,7 @@ func (owner *MinimalLaunchOwnerBinding) callFinalize(ctx context.Context, cached
 	if !identityMatches || receipt != (MinimalLaunchCleanupReceipt{}) && receipt.Identity != owner.identity {
 		return MinimalLaunchCleanupReceipt{}, ErrMinimalLaunchUnavailable, true
 	}
-	if err != nil || !minimalLaunchCleanupContextCurrent(ctx) || receipt.Identity != owner.identity || ValidateJobCredentialRuntimeRecoveryCommitReceipt(JobCredentialRuntimeRecoveryCommitReceipt{CommitID: receipt.OwnerCommitID, FinalizedRevision: receipt.FinalizedRevision}) != nil {
+	if err != nil || !minimalLaunchCleanupContextCurrent(ctx) || receipt.Identity != owner.identity || validateJobCredentialRuntimeRecoveryCommitFields(receipt.OwnerCommitID, receipt.FinalizedRevision) != nil {
 		return MinimalLaunchCleanupReceipt{}, ErrMinimalLaunchUnavailable, false
 	}
 	return receipt, nil, false

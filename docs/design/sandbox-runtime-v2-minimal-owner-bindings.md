@@ -272,3 +272,21 @@ Use pinned Go with task-owned home TMPDIR/GOTMPDIR/GOCACHE and low parallelism.
 This revision is also checked by source inspection and `git diff --check`.
 Neither neutral callback tests nor syntactically valid receipts prove a live
 runtime or cleanup. Independent review remains an exact-commit acceptance gate.
+
+## Integration correction: reuse fields without constructing a legacy receipt
+
+At integration `efb89042`, the full default suite and a separate focused run
+reproduce `TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection`:
+the new wrapper constructs the legacy guarded receipt solely for syntax checks.
+The scoped package gates missed this command-owned repository guard.
+
+Keep that guard, its fixtures and the legacy receipt API unchanged. Extract only
+the existing pure string/revision checks into a private scalar helper, called
+by both the legacy validator and the minimal wrapper. This preserves canonical
+43-byte raw-URL-base64 encoding of 32 bytes and a nonzero finalized revision,
+without constructing, retaining or projecting a legacy receipt on a new path.
+It adds no cleanup proof, type exemption, store or terminal behavior.
+
+Verify the unchanged failing guard, legacy receipt tests and all minimal owner,
+recovery and attempt tests under race, followed by the whole default suite.
+The original RED files and receipt serialization/ownership restrictions remain.
