@@ -252,7 +252,17 @@ func (selected *jailerRecoveryRuntime) startChildForPreparation(prep *minimalCon
 	if err != nil {
 		return l8RuntimeOwnerStartedChild{}, errL8RuntimeOwnerInvalid
 	}
-	return l8RuntimeOwnerStartedChild{Observation: selected.starter.observation, Release: selected.starter.release, Abort: func() error { _, err := selected.contain(); return err }}, nil
+	child := l8RuntimeOwnerStartedChild{Observation: selected.starter.observation, Release: selected.starter.release, Abort: func() error { _, err := selected.contain(); return err }}
+	if prep != nil {
+		release := child.Release
+		child.Release = func() error {
+			if !prep.current() {
+				return errL8RuntimeOwnerInvalid
+			}
+			return release()
+		}
+	}
+	return child, nil
 }
 
 func (selected *jailerRecoveryRuntime) contain() (l8RuntimeOwnerAbsenceObservation, error) {

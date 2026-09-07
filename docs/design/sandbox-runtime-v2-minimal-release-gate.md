@@ -1,6 +1,6 @@
 # Selected minimal revision-1 release gate
 
-DESIGN plus first compiling RED checkpoint, based on accepted
+DESIGN, first compiling RED and initial narrow GREEN, based on accepted
 `f98ee83658856d16a20a4cdaa90ac4dfd437e0db`. This refines only the second
 checkpoint of [preparation composition](sandbox-runtime-v2-minimal-runtime-preparation.md).
 The [constructor](sandbox-runtime-v2-minimal-runtime-constructor.md),
@@ -8,15 +8,16 @@ The [constructor](sandbox-runtime-v2-minimal-runtime-constructor.md),
 [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
 [minimal L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md)
 remain binding. The original DESIGN commit changed no behavior; the initial
-tests-only RED evidence is recorded below. No production behavior is changed.
+tests-only RED and narrow observed-loss fix are recorded below. The complete
+second preparation checkpoint is not yet implemented.
 
 ## Actual seam and unchanged boundaries
 
 `jailerRecoveryRuntime.startChildForPreparation` already passes the admitted
 preparation context, capped by the unchanged 30-second stage limit, into the
-existing coordinator. It still returns `selected.starter.release` directly.
+existing coordinator. At DESIGN it returned `selected.starter.release` directly.
 `HandleBootstrap` publishes/readbacks revision 1 and then invokes that closure.
-The current closure checks only starter flags, gate presence and pidfd ownership;
+The starter method checks only flags, gate presence and pidfd ownership;
 it neither verifies the current record/resources nor observes preparation loss.
 It holds `starter.mu` over an uninterruptible selected send. The same starter's
 arming receive also holds that mutex and uses a fresh five-second socket timeout.
@@ -243,3 +244,17 @@ arming/send, Close concurrency and prepared-host parent/child observations are
 not exercised or implemented by this first RED. Existing Abort may genuinely
 finish the fake coordinator's cleanup after failure; the test makes no new
 absence, terminal, idle or quarantine claim from that behavior.
+
+## Initial narrow GREEN: reject already-observed loss
+
+After RED `0a27f806`, only the selected eight-role returned Release closure checks
+the same retained preparation's `current()` before calling its captured starter
+release. That existing predicate checks sticky cancellation, the owned context
+and synchronous absolute P. Six-/seven-role behavior retains the original
+starter callback. All 264 new RED/fixture lines and previous tests are unchanged.
+
+This fixes only loss observed before entry to the old release operation. It does
+not make the check atomic with admission or send, check current resources, retain
+R/D, interrupt blocked gate I/O or reject cancellation first observed while
+waiting for the starter mutex. Those remain separately reproduced/approved
+work; no full release-gate or runtime acceptance is claimed.
