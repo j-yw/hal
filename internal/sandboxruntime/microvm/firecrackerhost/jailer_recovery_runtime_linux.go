@@ -228,7 +228,7 @@ func (selected *jailerRecoveryRuntime) startChildForPreparation(prep *minimalCon
 		return l8RuntimeOwnerStartedChild{}, errL8RuntimeOwnerInvalid
 	}
 	if selected.config.Version == minimalControlSupervisorConfigVersion {
-		if prep == nil || prep != selected.minimalPreparation || !prep.current() {
+		if prep == nil || prep != selected.minimalPreparation || !prep.current() || !selected.starter.minimalGate.matches(selected.starter, prep) {
 			return l8RuntimeOwnerStartedChild{}, errL8RuntimeOwnerInvalid
 		}
 	} else if prep != nil {
@@ -255,9 +255,10 @@ func (selected *jailerRecoveryRuntime) startChildForPreparation(prep *minimalCon
 	child := l8RuntimeOwnerStartedChild{Observation: selected.starter.observation, Release: selected.starter.release, Abort: func() error { _, err := selected.contain(); return err }}
 	if prep != nil {
 		snapshot := selected.captureMinimalRelease(prep)
+		gate := selected.starter.minimalGate
 		release := child.Release
 		child.Release = func() error {
-			if snapshot.current() != nil {
+			if snapshot.current() != nil || snapshot.starter.minimalGate != gate || !gate.matches(snapshot.starter, prep) {
 				return errL8RuntimeOwnerInvalid
 			}
 			return release()

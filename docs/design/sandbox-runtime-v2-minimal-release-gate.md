@@ -413,3 +413,58 @@ there is no production relaxation. The corrected preparation/release/legacy
 reconnect selector passes race times three (292 events, zero failures/skips).
 Vet and Darwin compilation pass. Whole-package race evidence is required
 separately; these tests still do not prove real supervisor-child containment.
+
+## Bounded gate GREEN: release and Close only
+
+After unchanged gate RED `7eadcca1` and its updated-currentness reproduction at
+`a3a6ba65`, the selected preparation binder now binds one private gate lifetime
+to its exact starter before start. Missing, foreign or replaced bindings reject
+selected work; they cannot choose the legacy release branch. The six-/seven-role
+starter body and arming receive remain unchanged, as do packet/schema/guard and
+default-off executable boundaries.
+
+The selected release registers one local attempt under `starter.mu`, validates
+the retained seqpacket/CLOEXEC descriptor, and obtains an exact owned duplicate.
+It releases that mutex before sending with the existing packet encoder and
+original-P-capped, at-most-five-second timeout. No send retry occurs. Its watcher
+uses only the existing preparation context and shuts down the duplicate on loss.
+The writer stops/joins that watcher before closing the duplicate and completing
+the operation. Post-I/O cancellation or cleanup uncertainty prevents success.
+
+Selected Close publishes through the same preparation cancellation latch before
+waiting for `starter.mu`; it then marks closing and joins only the gate operation
+outside that mutex. It never calls `prep.close` or joins its enclosing bootstrap.
+Concurrent Close callers share the original completion/error; exact gate/pidfd
+cleanup occurs once. Failed duplicate/shutdown/descriptor cleanup is retained as
+an error, not proof of absence. Existing outer FSM/selected cleanup locking and
+their authority checks are not changed. Gate completion acquires neither lock.
+
+The pre-armed legacy-derived fixture was first run unchanged against the new
+binder: its tracked positive control failed at pre-assembly binding, not a gate
+behavior assertion. The approved setup-only correction adds five lines just
+before selected preparation binding to clear the unused fake started marker
+under its mutex. Six lines in the original tracked fake starter set it under
+that mutex only after successful real `withLaunchFD` against the fake cgroup.
+All behavior assertions, the legacy fixture and 324-line gate RED stay unchanged.
+
+The unchanged RED plus new binding/concurrent-operation/Close/peer-error/owned-FD
+regressions pass race times three: 72 test/subtest events, zero failures/skips.
+The initial broader preparation/release/legacy selector passed 101 events under
+race. New forward tests are regression coverage, not additional original RED
+defects. A draft test observation raced `Fd()` against operation completion;
+test-only `SyscallConn.Control` now retains that descriptor while inspecting it,
+with no production observer or callback seam.
+
+```text
+go test -race -p 2 ./internal/sandboxruntime/microvm/firecrackerhost \
+  -run '^(TestMinimalGateIO|TestMinimalRelease|TestMinimalPreparation|TestJailerRecoveryActualSelectedOwnerRetainsCoordinatorAcrossReconnect)' -count=3 -json
+go test -race -p 2 ./internal/sandboxruntime/microvm/firecrackerhost -count=3 -json
+go test -p 2 ./cmd -run '^Test(L8D6RuntimeOwner|L8D2ImageProfileMintAuthorityStaysNarrow|L8D6SSHRelayActivatorRemainsDefaultOff|Phase33Firecracker)' -count=1 -json
+go vet -p 2 ./internal/sandboxruntime/microvm/firecrackerhost
+```
+
+The local operation slot prevents concurrent/repeated gate I/O only; it is not
+the still-required atomic canceled/release-admitted transition or immutable R/D.
+Arming receive interruption, later cleanup/quarantine composition, controller
+event handoff and executable/provider activation remain separate dependencies.
+Ordinary socket/fake-resource tests do not establish live Jailer/KVM acceptance.

@@ -80,6 +80,11 @@ func withMinimalPreparationFixture(t *testing.T, deadline time.Time, use func(*m
 		if bindMinimalControlNamespaces(owned, admission) != nil {
 			t.Fatal("actual eight-role namespace/store binding prerequisite")
 		}
+		// The inherited legacy fixture is pre-armed without launching. Selected
+		// setup binds first; its tracked fake starter marks start after withLaunchFD.
+		selected.starter.mu.Lock()
+		selected.starter.started = false
+		selected.starter.mu.Unlock()
 		if bindMinimalControlPreparation(owned, prep) != nil {
 			t.Fatal("matching pre-assembly lifetime binding prerequisite")
 		}
