@@ -421,3 +421,38 @@ Additional corruption and partial-failure regressions are not yet claimed by
 this initial checkpoint. The executable still selects its unavailable delegate;
 no bootstrap, resource reservation, process launch, controller or cleanup-FSM
 behavior is activated, and no terminal/absence proof is created by construction.
+
+### Reachable constructor regression matrix
+
+The follow-up tests are passing regressions against the initial GREEN, not new
+reproduced failures. Ordinary sealed-file tests reach the concrete admission
+validator and reject changed callback maps/roles/policy/deadline, all six job
+fields independently in callback/recovery/request, full and coherently copied
+correlations, namespace/NIC/static projections, malformed/replaced/noncanonical/
+overlimit/unsealed/closed/aliased config input, and changed/cleared borrowed key.
+Repeated validation preserves that key and every borrowed FD and allocates no
+owner entries. This is below-root validation coverage only.
+
+The additional tagged namespace-root child first executes the original positive
+constructor prerequisite, then tests actual constructor rejection and cleanup.
+It covers callback/projection mismatches, closed/replaced kernel/rootfs/FC,
+cleanup-key extent/mode, and an actual late listener failure reached by removing
+only the empty task-owned directory while retaining its valid directory FD.
+Descriptor identity snapshots before/after each invocation prove these cases do
+not leak owned duplicates/pidfds/listeners or close unrelated borrowed handles.
+Successful assembly is immune to later callback map/slice/projection mutation,
+does not create a record/generation/terminal assertion, and cleans its listener.
+An independent real seven-role constructor control uses a canonical seven-role
+config and no-NIC FC input; it keeps the old digest/nil projections and rejects
+an eight-role discriminator. No observer, generic operation seam or host setup
+is injected into either constructor.
+
+Additional command for this actual matrix:
+
+```
+go test -p 2 -race -count=3 -tags=minimal_runtime_constructor_integration ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalRuntimeAssemblyNamespace'
+```
+
+No synthetic duplicate-syscall exhaustion, post-bind injected error, every
+possible kernel failure, prepared-host root ownership, resource release,
+daemon recovery or live launch proof is claimed by this bounded matrix.
