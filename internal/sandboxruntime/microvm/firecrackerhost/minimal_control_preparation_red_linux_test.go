@@ -15,9 +15,10 @@ import (
 )
 
 // Actual sealed eight-role admission, namespace SCM_RIGHTS/kind checks, selected
-// file store and starter gate send; identity/cgroup/process allocation is the
-// existing fake coordinator fixture. This does not pass the root constructor,
-// enter namespaces or prove a live process/Jailer/L7/KVM boundary.
+// file store and starter gate send; identity/cgroup/process allocation remains
+// fake, with the real strict manager and read-only self pidfd observation. This
+// does not pass the root constructor, enter namespaces or prove a live
+// supervisor-child/Jailer/L7/KVM boundary.
 type minimalPreparationFixture struct {
 	owned     *l8RuntimeOwnerLinuxRuntime
 	owner     *l8RuntimeOwnerSupervisor
@@ -27,6 +28,7 @@ type minimalPreparationFixture struct {
 	files     []*os.File
 	packet    l8RuntimeOwnerPacketV1
 	order     []string
+	tracked   *minimalReleaseFakeStarter
 }
 
 func withMinimalPreparationFixture(t *testing.T, deadline time.Time, use func(*minimalPreparationFixture)) {
@@ -140,6 +142,7 @@ func withMinimalPreparationFixture(t *testing.T, deadline time.Time, use func(*m
 			}
 			_ = owned.closeNamespaces()
 		}()
+		minimalReleaseUseTrackedFixture(t, fixture)
 		use(fixture)
 		return nil
 	})

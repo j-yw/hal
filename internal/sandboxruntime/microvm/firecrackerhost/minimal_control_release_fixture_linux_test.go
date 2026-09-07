@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Only fixture setup changes: the old preparation RED remains byte-identical.
+// Only fixture setup changes; all earlier behavior assertions are preserved.
 // This uses the real strict manager, pure launch planner and original namespace
 // duplicate, but a fake HostProcess and fake cgroup filesystem. Self pidfd/proc
 // reads prove only that read-only observation works, not a supervisor-created
@@ -21,6 +21,17 @@ func minimalReleaseUseTrackedFixture(t *testing.T, f *minimalPreparationFixture)
 	selected := f.owned.selected
 	if selected.attempted || selected.coordinator.generation != nil {
 		t.Fatal("tracked fixture correction must precede all launch attempts")
+	}
+	if retained := f.tracked; retained != nil {
+		if retained.selected != selected || selected.lifecycle != retained.lifecycle || retained.lifecycle.manager != retained.manager ||
+			selected.coordinator.deps.lifecycle != retained.lifecycle || selected.starter != retained.ownerStarter ||
+			retained.lifecycle.runner.namespace != f.owned || retained.lifecycle.runner.starter != retained || retained.calls != 0 {
+			t.Fatal("repeated tracked fixture setup changed its original owner")
+		}
+		return retained
+	}
+	if selected.lifecycle != nil {
+		t.Fatal("tracked fixture setup cannot replace an existing lifecycle")
 	}
 	observation, err := inspectL8RuntimeOwnerProcess(uint32(os.Getpid()))
 	if err != nil {
@@ -49,6 +60,8 @@ func minimalReleaseUseTrackedFixture(t *testing.T, f *minimalPreparationFixture)
 	selected.lifecycle = lifecycle
 	selected.coordinator.deps.lifecycle = lifecycle
 	selected.coordinator.deps.plan = planStrictJailerLaunch
+	starter.selected, starter.lifecycle, starter.manager, starter.ownerStarter = selected, lifecycle, lifecycle.manager, selected.starter
+	f.tracked = starter
 	return starter
 }
 
@@ -59,10 +72,14 @@ type minimalReleaseSelfProcess struct{ *atomicJailerTestProcess }
 func (*minimalReleaseSelfProcess) HostPID() int { return os.Getpid() }
 
 type minimalReleaseFakeStarter struct {
-	process *minimalReleaseSelfProcess
-	cgroup  *strictJailerCgroupLease
-	launch  *os.File
-	calls   int
+	selected     *jailerRecoveryRuntime
+	lifecycle    *strictJailerLifecycle
+	manager      *ProcessLifecycleManager
+	ownerStarter *jailerRecoveryStarter
+	process      *minimalReleaseSelfProcess
+	cgroup       *strictJailerCgroupLease
+	launch       *os.File
+	calls        int
 }
 
 func (starter *minimalReleaseFakeStarter) startStrictJailerNamespaceProcess(ctx context.Context, request strictJailerNamespaceProcessStartRequest) (HostProcess, error) {
