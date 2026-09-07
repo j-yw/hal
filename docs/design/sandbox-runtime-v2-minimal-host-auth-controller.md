@@ -287,6 +287,15 @@ protocol, OK value, missing/unknown fields and a validly encrypted event kind ar
 rejected before admission expiry. These are semantic regression controls, not
 raw ciphertext corruption, production guest behavior or a new runtime consumer.
 
+The entropy regression checkpoint extracts only the existing single-draw
+algorithm into a private helper; the concrete reader passes `unix.Getrandom`
+directly, not a configured or global dependency. Exact 32-byte extent,
+`GRND_NONBLOCK`, one call, zero/short/invalid counts, EINTR/EAGAIN, full count with
+error, and panic-after-fill are checked through aliases of the actual scratch.
+Failures wipe before returning the sanitized error; panic propagation is unchanged
+and also wipes. These are already-green algorithm regressions, not evidence of
+an existing entropy defect or successful host random-source provisioning.
+
 ## Explicit next coupled handoff
 
 Composition owns the distinct config/record/store foundation. The selected runtime

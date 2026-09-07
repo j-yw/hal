@@ -9,6 +9,10 @@ import "golang.org/x/sys/unix"
 type minimalControlControllerEntropy struct{}
 
 func (minimalControlControllerEntropy) Read(buffer []byte) (int, error) {
+	return readMinimalControllerEntropy(buffer, unix.Getrandom)
+}
+
+func readMinimalControllerEntropy(buffer []byte, getrandom func([]byte, int) (int, error)) (int, error) {
 	complete := false
 	defer func() {
 		if !complete {
@@ -18,7 +22,7 @@ func (minimalControlControllerEntropy) Read(buffer []byte) (int, error) {
 	if len(buffer) != 32 {
 		return 0, errMinimalControlController
 	}
-	n, err := unix.Getrandom(buffer, unix.GRND_NONBLOCK)
+	n, err := getrandom(buffer, unix.GRND_NONBLOCK)
 	if err != nil || n != len(buffer) {
 		return 0, errMinimalControlController
 	}
