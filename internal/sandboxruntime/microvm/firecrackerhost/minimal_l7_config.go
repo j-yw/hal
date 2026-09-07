@@ -62,7 +62,17 @@ func validateMinimalL7Config(config strictJailerConfigFile, expected *minimalL7C
 		return nil
 	}
 	nic, values, err := minimalL7Mapping(expected)
-	if err != nil || len(config.NetworkInterfaces) == 0 {
+	if err != nil {
+		return invalidMinimalL7Config()
+	}
+	return validateMinimalL7ConfigProjection(config, nic, values)
+}
+
+// Equality with a frozen public projection is not a live L7 descriptor proof.
+// The opaque-descriptor caller above still validates its independent expected
+// generations before reaching this shared, pure comparison.
+func validateMinimalL7ConfigProjection(config strictJailerConfigFile, nic minimalL7NetworkInterface, values [6]string) error {
+	if len(config.NetworkInterfaces) == 0 {
 		return invalidMinimalL7Config()
 	}
 	decoder := json.NewDecoder(bytes.NewReader(config.NetworkInterfaces))

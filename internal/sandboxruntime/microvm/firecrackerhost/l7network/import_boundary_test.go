@@ -113,7 +113,7 @@ func validateMinimalL7ConfigSource(payload []byte) error {
 	// session, namespace, factory, process, or network lifecycle operations.
 	const fields = "descriptor runtimeGeneration topologyGeneration NetworkInterfaces BootSource BootArgs"
 	const methods = "ProofGenerations NetworkInterface StaticNetwork Decode DisallowUnknownFields InterfaceName IPv4Address IPv4Gateway IPv6Address IPv6Gateway ProxyURL"
-	const functions = "len make new invalid minimalL7Mapping minimalL7BootFields minimalL7BootFragment invalidMinimalL7Config newStrictJailerCoordinatorError"
+	const functions = "len make new invalid minimalL7Mapping minimalL7BootFields minimalL7BootFragment invalidMinimalL7Config newStrictJailerCoordinatorError validateMinimalL7ConfigProjection"
 	typeReferences := make(map[ast.Expr]bool)
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch node := node.(type) {

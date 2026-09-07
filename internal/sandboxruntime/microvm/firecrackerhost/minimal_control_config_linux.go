@@ -86,6 +86,10 @@ func withMinimalControlSupervisorAdmission(fds [6]int, openFD func(uintptr, stri
 			return true, errL8RuntimeOwnerInvalid
 		}
 	}
+	actualConfig, err := readMinimalControlFirecrackerConfig(imported[0], config.Config)
+	if err != nil || validateMinimalControlFirecrackerConfig(actualConfig, config, public) != nil {
+		return true, errL8RuntimeOwnerInvalid
+	}
 	// Transfer consumption before calling the seed helper: it always closes.
 	seedFD := imported[1]
 	imported = imported[:1]

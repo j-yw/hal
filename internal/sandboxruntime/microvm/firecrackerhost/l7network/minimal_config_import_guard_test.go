@@ -50,6 +50,10 @@ func TestMinimalL7ConfigSourceGuardAcceptsOnlyPureDescriptorMapping(t *testing.T
 		"goroutine":                 source + "\nfunc hidden() { go minimalL7Mapping(nil) }",
 		"deferred work":             source + "\nfunc hidden() { defer minimalL7Mapping(nil) }",
 		"malformed source":          source + "\nfunc",
+		"projection alias":          source + "\nfunc hidden() { validateMinimalL7ConfigProjection := minimalL7Mapping; validateMinimalL7ConfigProjection(nil) }",
+		"impure projection body": strings.Replace(source,
+			"func validateMinimalL7ConfigProjection(config strictJailerConfigFile, nic minimalL7NetworkInterface, values [6]string) error {",
+			"func validateMinimalL7ConfigProjection(config strictJailerConfigFile, nic minimalL7NetworkInterface, values [6]string) error { owner.Release()", 1),
 	}
 	for _, path := range []string{"net", "net/http", "os", "os/exec", "reflect", "syscall", "unsafe", "golang.org/x/sys/unix"} {
 		mutations["forbidden import "+path] = strings.Replace(source, "import (", "import (\n\t\""+path+"\"", 1)
