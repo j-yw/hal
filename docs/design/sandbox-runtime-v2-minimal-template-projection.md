@@ -309,6 +309,17 @@ there is no new typed-call exemption. Existing route, cancellation, durable
 readback and scope guards remain required. Fixed-head verification commands,
 counts, exact pin review and remaining limits accompany the immutable handoff.
 
+At the first frozen implementation `cb968ea6`, full-package checks exposed a
+second guard prerequisite: the new pure worker helper file was not enrolled as
+a dedicated audited root. The handler pin had previously stopped traversal
+before that file. Three full-suite guard cases failed on this same missing
+enrollment, with 4,317 passing events and no behavioral failures. The separately
+reviewed follow-up adds only that exact file to the dedicated-root list and the
+existing per-root negative matrix. Its entire declaration closure now undergoes
+the existing checks, including process, unbounded-reader, callback, secret-schema
+and indirect-call rejection. No mixed root, wildcard, typed-call or surface
+exception is granted. The failing evidence remains part of the handoff.
+
 The provider still lacks its trusted OCI/template-to-B1 association and concrete
 host allocation, readiness, cleanup and persistence consumers. Valid original
 template intent alone does not enable any of them. No native build, OCI pull,

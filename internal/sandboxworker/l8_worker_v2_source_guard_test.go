@@ -4511,6 +4511,7 @@ func l8WorkerV2ProductionGuardPolicy() l8WorkerV2GuardPolicy {
 			"minimal_launch_file_unix.go":      true,
 			"minimal_launch_store.go":          true,
 			"minimal_launch_store_ops.go":      true,
+			"minimal_launch_template.go":       true,
 			"protocol_decode.go":               true,
 		},
 		mixed: map[string]bool{
