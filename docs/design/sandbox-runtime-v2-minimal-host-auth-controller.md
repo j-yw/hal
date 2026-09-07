@@ -267,6 +267,17 @@ production dependency or clock/I/O seam was added. Unsolicited-byte and malforme
 transcript integration, blocked authenticated writes, delayed absolute A/D/H and
 entropy syscall failures remain separate fault-test work.
 
+The second tests-only checkpoint also passes unchanged production. Its guest-side
+wrapper uses the real shared bootstrap and crypto, after explicitly joining the
+original unconnected fixture and preserving the unused transport, original
+manager/process identity, retained parent and displaced socket. A positive
+transcript control precedes length/magic/truncation/Hello-identity/ciphertext
+corruption, owner cancellation at three guest writes, and an unsolicited byte
+emitted only after host readiness. Oversized declarations keep the peer open to
+require rejection before body read or admission expiry. These tests do not
+replace authenticated semantic readiness mutations or prove blocked host
+`WriteApplication`, delayed A/D/H observation, or entropy syscall failure handling.
+
 ## Explicit next coupled handoff
 
 Composition owns the distinct config/record/store foundation. The selected runtime
