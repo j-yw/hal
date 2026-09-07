@@ -259,16 +259,17 @@ Verification of the original design at `5c6bccee`: source inspection and
 `git diff --check`, without executable tests. No OCI fetch/cache mutation, build,
 native-stage access, provisioning, VM or credential lookup runs in this slice.
 
-## Approved compiling RED checkpoint: currentness before transfer
+## Currentness before transfer: RED and implemented GREEN
 
-First expose `VerifiedL8MinimalDistribution.ConfirmCurrent(ctx) error` in
-`localresolver/l8_minimal_currentness.go` with an unavailable implementation.
-No existing method or caller changes. This does not construct a provider or
+The compiling RED exposed `VerifiedL8MinimalDistribution.ConfirmCurrent(ctx) error`
+in `localresolver/l8_minimal_currentness.go` with an unavailable
+implementation. GREEN changes only that new method; no existing method or
+caller changes. This does not construct a provider or
 implement acquisition. It makes the genuine existing retained ownership usable
 by a future read-only selection without borrowing the launch-transfer capability.
 
-The eventual small GREEN will lock the same `minimalDistributionState`, reject
-nil/zero/closed/transferred input and nil context, then reuse the actual
+The implemented GREEN locks the same `minimalDistributionState`, rejects
+nil/zero/closed/transferred input and nil context, then reuses the actual
 `state.confirmLaunchCurrent(ctx)` already used by the lease. Distribution copies
 continue sharing exactly one state; do not impose a new self-pointer rule or
 mint another owner. Successful Current neither transfers nor closes anything.
@@ -287,7 +288,7 @@ Separate invalid/closed/transferred and actual existing lease controls execute
 even while new valid admission fails. Original/copy availability and canceled/
 expired error identity are the first reachable failures. Preservation and
 post-transfer assertions after valid ConfirmCurrent are not RED evidence yet.
-Later GREEN tests must reach cancellation after waits/readback, parent/child
+The separate GREEN tests reach cancellation after waits/readback, parent/child
 replacement and in-place mutation, Close/transfer races and no authority reuse.
 
 Parent/child context-aware verification remains a separate coupled slice, not
@@ -300,7 +301,7 @@ inventory uses ReadDir(-1), and digestDistributionFile uses io.Copy; do not
 describe those legacy operations as already context-aware or strictly bounded.
 Review context-aware loop/inventory variants and compatibility wrappers before
 changing them; never just check ctx around the whole old verification call.
-No such parent/child implementation or source-guard change is part of this RED.
+No such parent/child implementation or source-guard change is part of this slice.
 
 Frozen RED verification command:
 
@@ -314,3 +315,32 @@ empty. Valid original/shared-copy admission and original context-error identity
 fail at the intended unavailable method after the real fixture prerequisites.
 The package failure event is additional, not a nineteenth failed test. All test
 processes joined; no parent/child verification or provider code was changed.
+
+GREEN preserves the original 167-line RED file byte-for-byte. Reached follow-up
+tests compare original retained file handles after rejection and check every
+handle closes; byte-identical inode replacements, parent/child directory
+replacement, in-place mutation and symlinks never become new accepted inputs.
+Holding the existing parent mutex exercises cancellation and real fixed expiry
+after the new method acquires the shared state lock. Close and transfer serialize
+with that same check; caller cancellation does not consume ownership.
+
+The read-cancellation fixture wraps an immutable real Context, forwarding
+Deadline/Done/Err/Value unchanged. It observes one bounded caller frame at the
+existing Err checks, never logs stacks, and calls only the real parent cancel.
+A successful control hashes all twelve nonempty, at-most-32KiB retained files:
+exactly 24 reader observations (data then EOF per file) and both outer checks.
+The early case cancels before the second Read, after the first real retained
+file data read; the final case cancels after all 24 observations and exact
+digest checks. Both return the original context.Canceled, retain the original
+files and pass a fresh uncanceled check. This is observation of the existing
+regular-file reader, not injected bytes, a mutable Deadline, arbitrary Err-call
+counting, or production caller-tag behavior. Mutex waits and in-progress OS
+calls are still not promised to be interruptible.
+
+GREEN verification: the focused command above passes 90 test/subtest events;
+whole localresolver default tests pass 209, and whole-package race ×3 passes
+627, all with zero failures/skips. Existing command guards selected by
+`^Test(Phase41|L8D2ImageProfileMintAuthorityStaysNarrow)` pass 221 events;
+no guard or source pin changed. Localresolver vet and formatting/diff checks
+pass. These are synthetic local-file tests, not acquired OCI content, accepted
+native build evidence, live runtime readiness or provider activation.
