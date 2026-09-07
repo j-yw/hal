@@ -229,7 +229,29 @@ Use actual transport integration as the primary positive. Narrow per-instance
 clock/I/O fault observations can exercise precise boundaries after it is working;
 they must not substitute for an accepted concrete owner or bypass its currentness.
 Focused/race tests and adjacent package/source guards, vet and Darwin compile
-follow GREEN. This note is not authorization for GREEN or runtime wiring.
+follow GREEN. Runtime wiring remains separately assigned.
+
+## Initial controller GREEN checkpoint
+
+The dedicated controller now executes the real shared transcript from the
+retained transport, completes the exact two late generations, clears the
+borrowed signing key after the shared handshake takes its scoped copy, and
+publishes only a transient local readiness handle. A single armed idle reader
+retires that handle on any byte, EOF or error. `Close` first retires/cancels and
+closes stream I/O outside its mutex, then joins the transcript/idle task and
+transport watcher before the task revokes its private session state. Returning
+from the callback always joins that scope; the wrapper's successful return is
+historical local transcript completion, not current runtime readiness.
+
+The original RED file is unchanged. Its real Unix transport/guest-bootstrap
+positive, exact readiness binding, one CONNECT, early invalid-scope/key clearing,
+no legacy readiness and joined Close assertions now execute and pass. This
+initial checkpoint does not establish the later fault matrix listed above.
+In particular delayed deadline observations, partial reads/writes, entropy
+failure, callback panic, idle loss and concurrent shutdown need independently
+reachable regression coverage before controller acceptance. No selected runtime
+constructor, config/store/admission, producer, shared protocol or cryptography
+was changed; the production supervisor still has no controller consumer.
 
 ## Explicit next coupled handoff
 
