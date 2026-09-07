@@ -305,6 +305,17 @@ not in the filler callback. Explicit Close and owner cancellation both join and
 wipe before D. This exercises close-I/O-before-join/Revoke ordering without a
 new production I/O dependency; it is an already-green shutdown regression.
 
+Absolute-bound regressions use the existing per-instance owner observation and
+real time, not a production clock seam. They delay prelude/final-publication
+checks past original D, and delay the final check past prelude+5s while original
+D remains open and a matching authenticated response has completed. No transient
+ready event may be published. Ready sessions independently expire at retained
+transport/owner H without extending it at authentication. In-transcript panic
+tests select the actual application write with shared State held, and the final
+publication observation; both sanitize failure, close/join and wipe without
+readiness. Together with the earlier callback and partial-buffer panic controls,
+these pass existing behavior; they are not newly reproduced defects.
+
 ## Explicit next coupled handoff
 
 Composition owns the distinct config/record/store foundation. The selected runtime
