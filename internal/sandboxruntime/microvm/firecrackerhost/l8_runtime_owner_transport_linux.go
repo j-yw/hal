@@ -74,8 +74,13 @@ func receiveL8RuntimeOwnerSeqpacket(fd int) (l8RuntimeOwnerReceivedPacketV1, err
 	buf := make([]byte, l8RuntimeOwnerPacketLimit)
 	oob := make([]byte, unix.CmsgSpace(4*4))
 	n, oobn, flags, _, err := unix.Recvmsg(fd, buf, oob, unix.MSG_CMSG_CLOEXEC)
-	files, fileErr := l8RuntimeOwnerFilesFromControl(oob[:oobn])
-	if err != nil || flags&unix.MSG_TRUNC != 0 || flags&unix.MSG_CTRUNC != 0 || n < l8RuntimeOwnerPacketHeaderSize {
+	return decodeL8RuntimeOwnerReceive(buf, oob[:oobn], n, flags, err)
+}
+
+// Shared bounded packet/rights decoding; the caller owns syscall policy.
+func decodeL8RuntimeOwnerReceive(buf, oob []byte, n, flags int, receiveErr error) (l8RuntimeOwnerReceivedPacketV1, error) {
+	files, fileErr := l8RuntimeOwnerFilesFromControl(oob)
+	if receiveErr != nil || flags&unix.MSG_TRUNC != 0 || flags&unix.MSG_CTRUNC != 0 || n < l8RuntimeOwnerPacketHeaderSize {
 		closeL8RuntimeOwnerFiles(files)
 		return l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerProtocol
 	}

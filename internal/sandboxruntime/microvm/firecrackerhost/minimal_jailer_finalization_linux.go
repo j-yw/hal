@@ -189,11 +189,11 @@ func (completion *minimalJailerFinalization) run(ctx context.Context, commit boo
 	}
 }
 
-func (attempt *minimalJailerFinalizationAttempt) attach(socket *os.File) error {
+func (attempt *minimalJailerFinalizationAttempt) attach(socket *os.File, ops *minimalJailerSocketOps) error {
 	if attempt.stream != nil {
 		return errL8RuntimeOwnerInvalid
 	}
-	stream, err := newMinimalJailerIO(attempt.ctx, socket)
+	stream, err := newMinimalJailerIO(attempt.ctx, socket, ops)
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
@@ -267,7 +267,7 @@ func (completion *minimalJailerFinalization) execute(attempt *minimalJailerFinal
 		if client.authenticateWithMinimal(attempt.ctx, attempt) != nil {
 			return result, errL8RuntimeOwnerInvalid
 		}
-	} else if attempt.attach(client.socket) != nil {
+	} else if attempt.attach(client.socket, client.ops.minimalIO) != nil {
 		return result, errL8RuntimeOwnerInvalid
 	}
 	record, err := attempt.readRecord(client)

@@ -19,6 +19,7 @@ type jailerRecoveryReconnectOps struct {
 	inspect        func(uint32) (l8RuntimeOwnerProcessObservation, error)
 	connect        func(*os.File, firecrackerRuntimeOwnerRecordV1) (*os.File, error)
 	connectMinimal func(context.Context, *os.File, firecrackerRuntimeOwnerRecordV1) (*os.File, error)
+	minimalIO      *minimalJailerSocketOps
 }
 
 func reconnectJailerRecoverySupervisor(ctx context.Context, directory *os.File, expected jailerRecoveryJob) (*jailerRecoveryClient, error) {
@@ -150,7 +151,7 @@ func (client *jailerRecoveryClient) authenticateWithMinimal(ctx context.Context,
 	if attempt == nil {
 		response, err = jailerRecoveryClientExchange(ctx, int(socket.Fd()), packet)
 	} else {
-		if attempt.attach(socket) != nil {
+		if attempt.attach(socket, client.ops.minimalIO) != nil {
 			return errL8RuntimeOwnerInvalid
 		}
 		response, err = attempt.stream.exchange(packet)

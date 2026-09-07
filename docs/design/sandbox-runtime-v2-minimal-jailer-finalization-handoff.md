@@ -390,6 +390,100 @@ observation. Targeted repeated controls passed; the original failing logs are
 retained. No assertion is relaxed, automatic protocol retry added, or shared
 legacy transport changed to hide this unresolved interruption boundary.
 
+## Selected transport correction: DESIGN and compiling RED
+
+The frozen `7ea5d155` review confirmed two bounded defects, not an unsafe
+retirement shortcut. First, an actual selected receive interrupted by SIGURG
+returns EINTR and makes otherwise usable cleanup unavailable. A finite external
+diagnostic retained one locked test thread, rechecked its exact task inode before
+each signal, and joined its sender before thread/FD release. All three attempts
+observed one signal, actual EINTR and unavailable with a still-current caller;
+matching no-signal actual protocol controls succeeded. Second, cancellation
+after an exact Commit reply is received, or after its envelope validation, drops
+that acknowledgment even though the genuine peer has already retired its record.
+The independent review reproduced both cancellation windows using observation
+overlays that neither replace packets nor perform retirement.
+
+The correction is selected-only. It does not change legacy syscall/retry/error
+semantics, automatic reconnect, packet/ACK schemas, the cleanup FSM or durable
+crash recovery. This checkpoint implements only a behavior-preserving seam and
+RED; the retry/ACK-retention changes below await GREEN approval.
+
+### Smallest shared boundary
+
+`minimalJailerSocketOps` contains exactly the concrete sendmsg and recvmsg
+signatures. An optional private slot on the existing per-client reconnect ops
+is copied once into each newly attached selected stream. Nil selects fixed
+`unix.Sendmsg`/`unix.Recvmsg`; a nonnil partial pair fails before descriptor
+duplication or watcher creation. No global replacement, public option, decoded
+reply callback, context-value observer or authority constructor is added.
+Ordinary tests may return syscall errors or observe actual returned bytes;
+such injected errors are not claimed as measured signals or live owner proof.
+
+The shared transport extracts only its current receive-result decoder and SCM
+cleanup. The client extracts only its current pure role/opcode/sequence/status
+reply validation. Both legacy wrappers still make one syscall per direction,
+reject EINTR, and preserve their existing context-check order. The selected
+single-attempt RED body reuses those exact helpers and existing packet encoder,
+with the same timeout and cancellation behavior as the reviewed checkpoint.
+The actual default, legacy transcripts and old 113-line RED remain controls.
+
+### Proposed GREEN
+
+At selected exchange entry, freeze one absolute deadline equal to the smaller
+of entry plus five seconds and the original caller deadline. Before each syscall,
+check caller currentness and remaining absolute time, then set a positive bounded
+socket timeout from that remaining time. Never rebase after an interruption or
+between directions. Retry only EINTR with no delivered bytes, flags or ancillary
+data. An interrupted receive still disposes any received rights with the existing
+decoder/cleanup path; ambiguous partial or truncated observations fail rather
+than retry. Every other syscall error retains existing unavailable behavior.
+A successful send permanently advances to receive: no repeated request, sequence,
+exchange or reconnect. Retain the exact FD until the existing watcher/I/O joins.
+
+A canonical selected response must not be erased just because its caller is now
+unavailable. Preserve the validated packet as an internal observation alongside
+the unavailable result. Only the Commit consumer may correlate its exact
+eight-byte body to the independently pinned finalized target and latch the
+actual ACK before applying caller-currentness to the returned result. The same
+original handle then remembers that ACK, while the canceled caller still gets
+unavailable. Invalid envelopes, rights, changed target, short/trailing body or
+absent responses never latch. Finalize still requires its existing fresh record
+readback, and no operation is started because a caller has expired.
+
+This covers both receipt/validation cancellation windows without adding an
+after-validation production hook. The review's unchanged external test is run
+with a one-line observation immediately after shared reply validation as a
+separate reached RED and later GREEN gate. Lost ACKs, ACKs lost to process crash,
+missing-record inference, L7 cleanup, worker receipt persistence and terminal
+composition remain unresolved dependencies, not newly cached success.
+
+### RED and subsequent gates
+
+The new default tests exercise the actual existing client/FSM/store, inject one
+selected send or receive EINTR, and require explicit same-owner Commit to finish
+with exactly three successful packets (handshake, Finalize, Commit). They also
+cancel immediately after observing the genuine exact Commit response and assert
+actual retirement, unavailable to that caller and a retained same-handle ACK.
+The original external signal diagnostic remains preserved; its committed
+adaptation observes only the real selected recvmsg result through the two-op
+seam and expects the real peer reply to finish despite that interruption.
+Signal targets remain private, locked and inode-rechecked, with bounded attempts
+and sender/operation/peer joins. No-signal and partial-op/default-retry controls
+are independent passing cases. Assertions after the first failed successful-
+Commit requirement are not claimed as reached until GREEN.
+
+```sh
+go test -p 2 -race -count=3 -timeout=60s ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalJailerFinalizationTransport'
+go test -p 2 -race -count=3 -timeout=120s ./internal/sandboxruntime/microvm/firecrackerhost -run '^(TestJailerRecovery|TestMinimalJailerFinalizationActualPauseThenSameOwnerCommit|TestMinimalJailerFinalizationLeavesRecordBeforeCommit|TestMinimalJailerFinalizationLegacyStopAndCommitControl|TestL8RuntimeOwnerSeqpacket)'
+```
+
+GREEN also needs fixed absolute-budget exhaustion across repeated interruptions,
+no resend after successful send, current-caller/cancel/Close behavior, actual
+rights cleanup on rejection, malformed replies and unchanged legacy transcripts.
+The old source guards, race, vet and cross-platform compile gates remain active;
+this plan grants no guard exception or production selection.
+
 ## Bounded future ownership
 
 Proposed host implementation: new `minimal_jailer_finalization_linux.go` and

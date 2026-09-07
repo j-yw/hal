@@ -142,8 +142,15 @@ func jailerRecoveryClientExchange(ctx context.Context, fd int, packet l8RuntimeO
 	}
 	response, err := receiveL8RuntimeOwnerSeqpacket(fd)
 	defer closeL8RuntimeOwnerFiles(response.Files)
-	if err != nil || ctx.Err() != nil || validateL8RuntimeOwnerPacketRole(response.Packet, true, len(response.Files)) != nil || response.Packet.Opcode != packet.Opcode || response.Packet.Sequence != packet.Sequence || response.Packet.Status != l8RuntimeOwnerStatusOK {
+	if err != nil || ctx.Err() != nil || validateJailerRecoveryClientReply(packet, response) != nil {
 		return l8RuntimeOwnerPacketV1{}, errL8RuntimeOwnerInvalid
 	}
 	return response.Packet, nil
+}
+
+func validateJailerRecoveryClientReply(request l8RuntimeOwnerPacketV1, response l8RuntimeOwnerReceivedPacketV1) error {
+	if validateL8RuntimeOwnerPacketRole(response.Packet, true, len(response.Files)) != nil || response.Packet.Opcode != request.Opcode || response.Packet.Sequence != request.Sequence || response.Packet.Status != l8RuntimeOwnerStatusOK {
+		return errL8RuntimeOwnerInvalid
+	}
+	return nil
 }

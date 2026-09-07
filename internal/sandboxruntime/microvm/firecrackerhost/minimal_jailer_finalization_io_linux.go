@@ -39,17 +39,25 @@ type minimalJailerIO struct {
 	file        *os.File
 	stop, done  chan struct{}
 	shutdownErr error
+	ops         minimalJailerSocketOps
 }
 
-func newMinimalJailerIO(ctx context.Context, socket *os.File) (*minimalJailerIO, error) {
+func newMinimalJailerIO(ctx context.Context, socket *os.File, selectedOps *minimalJailerSocketOps) (*minimalJailerIO, error) {
 	if !minimalJailerCallerCurrent(ctx) || socket == nil {
 		return nil, errL8RuntimeOwnerInvalid
+	}
+	ops := minimalJailerSocketOps{sendmsg: unix.Sendmsg, recvmsg: unix.Recvmsg}
+	if selectedOps != nil {
+		if selectedOps.sendmsg == nil || selectedOps.recvmsg == nil {
+			return nil, errL8RuntimeOwnerInvalid
+		}
+		ops = *selectedOps
 	}
 	file, err := duplicateJailerRecoveryFile(socket)
 	if err != nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
-	stream := &minimalJailerIO{ctx: ctx, file: file, stop: make(chan struct{}), done: make(chan struct{})}
+	stream := &minimalJailerIO{ctx: ctx, file: file, ops: ops, stop: make(chan struct{}), done: make(chan struct{})}
 	fd := int(file.Fd())
 	go func() {
 		defer close(stream.done)
@@ -83,7 +91,7 @@ func (stream *minimalJailerIO) exchange(packet l8RuntimeOwnerPacketV1) (l8Runtim
 	if budget < time.Microsecond || setL8RuntimeOwnerSocketTimeout(int(stream.file.Fd()), budget) != nil || !minimalJailerCallerCurrent(stream.ctx) {
 		return l8RuntimeOwnerPacketV1{}, errL8RuntimeOwnerInvalid
 	}
-	return jailerRecoveryClientExchange(stream.ctx, int(stream.file.Fd()), packet)
+	return stream.exchangeOnce(packet)
 }
 
 // The selected connector never enters a blocking connect syscall. AF_UNIX may
