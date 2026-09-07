@@ -43,7 +43,13 @@ func TestMinimalLaunchFIFOReadbackCannotBlockCancellationAndClose(t *testing.T) 
 	select {
 	case path = <-created:
 	case <-requestDone:
-		t.Fatal("actual readback FIFO seam was not reached")
+		// Fast nonblocking rejection may complete with the earlier FIFO event
+		// still buffered. Completion alone does not mean setup was bypassed.
+		select {
+		case path = <-created:
+		default:
+			t.Fatal("actual readback FIFO seam was not reached")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("readback fixture did not reach rename")
 	}
