@@ -1,17 +1,18 @@
 # Retained controller admission deadline
 
-DESIGN/RED only, based on `2d91b1d18671c8a2721dd01ead69f0e22c129bab`.
+Based on `2d91b1d18671c8a2721dd01ead69f0e22c129bab`, with compiling RED frozen at
+`2c6723ebf87159595ae2ac2395dd2e6e28093961` and the narrow GREEN described below.
 The accepted [controller contract](sandbox-runtime-v2-minimal-host-auth-controller.md)
 already distinguishes absolute admission A/D from authenticated hard lifetime H.
 
 `minimalControlController.authenticate` returns the exact final A after the
-original caller/transport D and prelude five-second clamp. `run` currently checks
-that A before local readiness publication, then discards it. A later first
+original caller/transport D and prelude five-second clamp. At the RED base, `run`
+checked that A before local readiness publication, then discarded it. A later first
 original-channel `HLMINRD1` readiness handoff must still enforce the remaining A/D;
 reconstructing A from `WaitReady`, a receipt timestamp or a fresh five seconds
 would enlarge the original budget.
 
-The smallest proposed GREEN copies the returned A, unchanged and before local
+The GREEN copies the returned A, unchanged and before local
 publication, into private `minimalControlReadiness.admissionDeadline`. No accessor,
 clock injection, new timer, codec field or generic readiness authority is needed.
 The field is immutable with the other published readiness scalars. The later
@@ -31,13 +32,16 @@ observations bracket that clamp and delay actual prelude delivery, distinguishin
 it from a later Hello/Ready-time reconstruction without a production clock seam.
 Repeated waits must return the same deadline and handle. A separate passing
 control waits beyond short D and checks that local `Current` still uses H.
-The original 354-line controller RED and all protocol/runtime code stay unchanged.
+The dedicated 120-line RED and original 354-line controller RED remain unchanged,
+as do wire/crypto, `Current`, lifetime handling and unavailable runtime dispatch.
 
 ```sh
 go test -race -p 2 -count=3 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalControlControllerReadiness(RetainsAdmissionDeadline|CurrentUsesHardLifetime)$'
 ```
 
-Expected RED: both retained-deadline cases complete actual authentication and
+Observed RED: both retained-deadline cases complete actual authentication and
 then observe the absent zero deadline; the H-lifetime control passes. Fake process
 bookkeeping and caller-UID Unix fixtures are not prepared-Linux Jailer evidence.
-Stop after freezing this RED for review; production GREEN is separately approved.
+The only GREEN production change stores the exact returned A alongside the other
+readiness scalars before publication. Event-deadline enforcement remains absent;
+the future first handoff must consume this deadline, not create a new budget.

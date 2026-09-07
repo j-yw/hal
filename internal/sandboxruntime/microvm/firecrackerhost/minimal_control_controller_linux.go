@@ -250,6 +250,7 @@ func (c *minimalControlController) run(pins minimalControlControllerPins, key ed
 		return
 	}
 	ready.controller, ready.self, ready.hardExpiry = c, ready, hard
+	ready.admissionDeadline = admissionDeadline
 	c.mu.Lock()
 	published := !c.retired && c.ctx.Err() == nil && time.Now().Before(admissionDeadline) && time.Now().Before(hard)
 	if published {
