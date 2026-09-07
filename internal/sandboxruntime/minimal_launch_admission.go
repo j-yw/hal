@@ -40,7 +40,7 @@ type MinimalLaunchOwnerBinding struct {
 	quarantined bool
 }
 
-func (authorizer *MinimalLaunchAuthorizer) ResolveSelection(ctx context.Context, principal AuthenticatedWorkerPrincipal, workerID string, hints MinimalLaunchSelectionHints) (result *MinimalLaunchPreparedSelection, err error) {
+func (authorizer *MinimalLaunchAuthorizer) ResolveSelection(ctx context.Context, principal AuthenticatedWorkerPrincipal, workerID string, hints MinimalLaunchSelectionHints, template ...MinimalLaunchTemplateIdentity) (result *MinimalLaunchPreparedSelection, err error) {
 	if authorizer == nil || !authorizer.MatchesDependencies(authorizer.authority, authorizer.provider) || ctx == nil || ctx.Err() != nil || !ValidMinimalLaunchID(workerID) || !validMinimalLaunchHints(hints) {
 		return nil, ErrMinimalLaunchUnavailable
 	}
@@ -210,6 +210,11 @@ func (reservation *MinimalLaunchReservation) RequestCorrelation() (MinimalLaunch
 
 func validMinimalLaunchRequestCorrelation(value MinimalLaunchRequestCorrelation) bool {
 	return ValidMinimalLaunchID(value.AdmissionGrantID) && value.AdmissionGrantRevision != 0
+}
+
+// TemplateIdentity is unavailable until original selected intent is retained.
+func (reservation *MinimalLaunchReservation) TemplateIdentity() (MinimalLaunchTemplateIdentity, error) {
+	return MinimalLaunchTemplateIdentity{}, ErrMinimalLaunchUnavailable
 }
 
 // ArmDispatch is called only by the manager after exact durable dispatch

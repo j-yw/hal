@@ -1,11 +1,13 @@
 # Original selected template identity for minimal launch
 
-DESIGN ONLY at `2dab1770e7fcc08260bb8cbce247a3111736d8ed`, including the frozen
+Design base `2dab1770e7fcc08260bb8cbce247a3111736d8ed`, including the frozen
 original credential request-correlation dependency. This refines the provider
 proposal at `7144680c2d8b8ce1112a7a599c64da34e93d6cfc`, not its missing trusted
 asset association. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md)
 and [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) govern.
-No production code, test, guard, provider, issuer or runtime is changed here.
+The design at `5cd88b14` is approved for the compiling RED below, not GREEN.
+Only the type/signature/unavailable accessor scaffold and new tests are added;
+no worker production behavior, guard, provider, issuer or runtime is changed.
 
 ## Actual gap and digest meanings
 
@@ -224,5 +226,45 @@ References below are relative to the exact base above, not moving line numbers:
 - `internal/sandboxruntime/microvm/assets/minimalprofile/bundle_linux.go`: trusted PublishRequest (25), separately retained Receipt (39).
 - `internal/sandboxruntime/microvm/assets/localresolver/l8_minimal_distribution.go`: trusted expected identity (18), verification (70), exact measured comparison (135).
 
-Verified by actual source inspection and `git diff --check` only. No executable
-tests, source edits, acquisition, native build, runtime or cleanup ran here.
+The original design was verified by source inspection and `git diff --check`.
+Compiling RED evidence follows; no acquisition, native build or live runtime ran.
+
+## Compiling RED boundary
+
+The neutral scaffold is exactly the four-string type, an ignored optional final
+ResolveSelection argument and an accessor always returning zero/unavailable.
+There is no private template storage or validation yet. All old tests, worker
+production declarations, source pins, provider hints/interface and Reserve's
+credential signature remain unchanged.
+
+Two new RED files exercise actual neutral and authenticated worker calls:
+
+- `internal/sandboxruntime/minimal_launch_template_red_test.go` (199 lines).
+- `internal/sandboxworker/minimal_launch_template_red_test.go` (247 lines).
+
+```sh
+go test -race -p 2 ./internal/sandboxruntime ./internal/sandboxworker -run '^(TestMinimalReservationTemplateIdentity|TestMinimalLaunchServiceTemplateIdentity)' -count=1 -json
+```
+
+Initial run: exit 1, 42 intended failing cases (45 test/subtest failure events
+including parents), 14 passing controls, zero skips or race reports. One neutral
+and three worker positives reach original Claim; each fails at the unavailable
+tuple. Worker positives also reach the independent actual-file dispatch oracle,
+all three Current calls and original request-key equality. Resolve/last-Current
+mutations change only a separate caller metadata copy, not that oracle. Ten
+invalid neutral arguments still enter Resolve; 28 malformed provided worker
+image/lock cases still reach callbacks/publication. These are separate reachable
+failures, not assertions behind the missing accessor.
+
+Later return-copy/loss/failed-Start accessor assertions remain unreached at RED.
+Passing controls independently execute omitted and valid-three-role Start,
+issuer/principal/scope rejection, unavailable nil/zero/copy observations and
+four existing canonical request-key distinctions. A valid fixture's three role
+digests are different and survive the actual metadata sanitizer unchanged; its
+candidate trust labels are not treated as acquired OCI/B1 proof.
+
+Existing compatibility/dispatch/cancel/request-correlation/source-guard tests
+are selected separately for passing regression evidence; logs and exact frozen
+head results accompany the handoff. No source-guard exemption is needed to
+compile or reproduce this RED. `go vet` on both packages and formatting/diff
+checks pass. Stop here until independent RED review and explicit GREEN approval.

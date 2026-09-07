@@ -51,6 +51,14 @@ type MinimalLaunchRequestCorrelation struct {
 	AdmissionGrantRevision uint64
 }
 
+// MinimalLaunchTemplateIdentity is original request correlation, not asset trust.
+type MinimalLaunchTemplateIdentity struct {
+	RuntimeImage           string
+	TemplateDocumentSHA256 string
+	TemplateManifestSHA256 string
+	RuntimeImageSHA256     string
+}
+
 // MinimalLaunchReservation is a live one-shot dispatch latch. Only its original
 // manager-owned handle may arm it after exact durable dispatch readback.
 type MinimalLaunchReservation struct {
