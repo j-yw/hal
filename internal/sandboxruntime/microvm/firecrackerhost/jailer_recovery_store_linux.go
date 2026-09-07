@@ -21,6 +21,7 @@ import (
 type jailerRecoveryStore struct {
 	mu                          sync.Mutex
 	config                      jailerRecoverySupervisorConfig
+	minimal                     *minimalControlRecoveryProjection // DESIGN/RED: ignored by the existing store.
 	publication                 *jailerRecoveryRecordPublicationOps
 	file                        *os.File
 	record                      firecrackerRuntimeOwnerRecordV1
