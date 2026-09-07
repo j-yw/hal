@@ -1,0 +1,235 @@
+# Selected host authenticated controller: bounded implementation slice
+
+Design only, inspected at `99b58782390f0805efbdaf01d4eadbb52f70bb79`.
+The accepted [controller design](sandbox-runtime-v2-minimal-host-controller.md),
+[Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
+[L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) govern.
+This note proposes the next transcript/lifetime consumer, not another protocol,
+runtime owner, readiness issuer or completed production route. No RED or
+production implementation is included in this checkpoint.
+
+## Available concrete dependencies
+
+Paths below are relative to `internal/sandboxruntime/microvm/`.
+
+| Existing seam | What the new consumer can reuse |
+| --- | --- |
+| `firecrackerhost/minimal_control_startup.go`, `OpenWhenAvailable` | One claimed connector, original retained manager/process/UID/parent authority, bounded pre-ACK retries, one transport generation and effective absolute admission deadline |
+| `firecrackerhost/minimal_control_transport.go`, `minimalControlStream` | Actual Unix connection, owner/process/socket watcher, `Correlation`, hard deadline, deadline-aware I/O, close plus watcher join |
+| `firecrackerhost/minimal_control_config_linux.go`, `withMinimalControlSupervisorAdmission` | Selected sealed byte admission; seed FD already consumed; callback-scoped signing-key allocation cleared when the callback returns |
+| `firecrackerhost/minimal_control_config.go`, `minimalControlSupervisorAdmission` | Validated public config, complete config digest and borrowed key; explicitly not runtime/store/readiness authority |
+| `guestagent/minimalcontrol` | `NewBinding`, `BootstrapPrelude`, `EncodeReadinessRequest`, `ValidateReadinessResponse`; immutable copied binding and existing canonical 25/27-field rules |
+| `guestagent/session` | Existing exact-identity Ed25519/X25519 handshake, Finished ordering, encrypted records/counters, five-second handshake and hard expiry |
+
+The accepted design's earlier statements that startup retry/shared host codec are
+absent are historical at its recorded base: both APIs exist here. Their behavior
+must be consumed, not duplicated. The selected executable still calls
+`unavailableMinimalControlSupervisor`; this slice does not change that gate.
+
+## Smallest input and lifetime boundary
+
+Proposed private API, entirely within `firecrackerhost`:
+
+```text
+withMinimalControlController(ownerCtx, transport, admission, D, consume) -> error
+    transport: *minimalControlTransport, original concrete retained connector
+    admission: *minimalControlSupervisorAdmission, borrowed inside its callback
+    consume: func(*minimalControlController) error, a scoped owner-loop consumer
+
+controller.WaitReady(waitCtx) -> *minimalControlReadiness, error
+controller.Loss() -> closed-channel notification
+controller.Close() -> error                 // cancel, close I/O, join; idempotent
+readiness.Current() -> bool                 // transient local session correlation
+```
+
+There is no `io.ReadWriteCloser`, PID/path constructor, interface-supplied readiness
+proof or caller-provided `Current` callback at this boundary. The existing concrete
+transport resolves the original manager record and enforces strict owner/socket/
+peer identity. Tests reuse its existing private ownership observations; those
+observations never become a production constructor option.
+
+The wrapper rejects absent/invalid context, connector, admission, key, deadline
+or consumer before starting the transcript. It snapshots the public prelaunch map
+and scalar pins before starting a goroutine; caller mutation is not adopted.
+Reusing `RenderBootCommandLine` with an empty base validates partial public pins
+without a second schema or late-generation placeholders. That validation is not
+new FC config rendering, descriptor issuance, L7 enforcement or launch authority.
+The key's size/public-key correlation and the transport's runtime must match the
+admitted pins. No recovery root key is accepted as entropy or signing material.
+
+`D` is mandatory input from the later selected gate-send barrier:
+`min(original preparation deadline, conservative pre-release timestamp + 15s)`.
+Reject zero/expired D and D beyond the admitted preparation deadline. This consumer
+cannot prove a caller sampled the timestamp at the real gate send; the later
+runtime integration must provide that exact source. It must not calculate D from
+controller construction, successful Open, bootstrap reply or readiness time.
+
+The wrapper borrows the admitted signing-key slice; it does not retain the seed FD
+or make a second long-lived key copy. The outer admission callback remains active
+for the entire nested controller scope. On callback return/panic, the wrapper first
+closes and joins its controller, then returns to the loader's existing deferred
+wipe. Thus loader cleanup cannot race an escaped transcript using that allocation.
+Every wrapper rejection clears the borrowed key too. The transcript clears it
+earlier as described below; callback completion is only the final safety net.
+
+One controller is constructed for one claimed connector. Concurrent WaitReady
+calls share the same result/loss latch; canceled waiters do not cancel an accepted
+owner. Callback return, explicit Close or ownerCtx loss does cancel the controller.
+The caller must not supply the initiating CLI's context or an admission-only
+context that is canceled at readiness. No retry uses a second connector or key.
+
+The private readiness handle retains its controller pointer and immutable binding,
+session ID, exact process handle and transport generation. It is unmarshalable and
+not independently constructible from a returned value struct. Currentness checks
+its latch, original stream correlation, context and earliest hard expiry. It is
+not a `JobCredentialIdentitySeed`, v1 readiness record, credential grant, original-
+channel ready event or terminal cleanup receipt.
+
+## Transcript and exact budgets
+
+1. Call the existing `OpenWhenAvailable(ownerCtx, D)` exactly once. It may shorten
+   D; retain the returned `stream.admissionDeadline` and never extend it. No second
+   local retry loop, v1 probe or fixed readiness prelude is used.
+2. Read `stream.Correlation`, require the original transport handle/source and
+   nonzero counter, and fill only the two late fields. Process generation is the
+   actual handle ID; vsock generation is the canonical decimal counter. Construct
+   `session.Identity` and `minimalcontrol.NewBinding` from the copied public pins.
+3. Immediately before the bootstrap prelude, set one absolute
+   `A = min(original D, effective stream D, now + session.HandshakeDeadline)`.
+   Set the stream deadline to A and use A for the rest of admission. Check the
+   half-open bound after each potentially delayed observation and immediately
+   before local readiness publication, independently of timer callback delivery.
+4. Send the shared `Binding.BootstrapPrelude` through bounded frame encoding.
+   Read one four-byte-length GuestHello, at most 4096 inner bytes. Construct the
+   unchanged `session.NewControllerHandshake` using the exact completed identity
+   and borrowed key. Immediately install its existing consume-on-error cleanup
+   (`AcceptGuestHello(nil)`), clear the original key after constructor copying,
+   then accept the actual Hello. A constructor failure clears the original too.
+   The session's own deadline can shorten A but cannot reset it.
+5. Send ControllerAuth; receive and verify guest Finished; send controller
+   Finished; require established state. Use the existing session order/counters.
+6. Draw one canonical 16-byte request ID and use the shared readiness encoder.
+   `State.WriteApplication` sends `FrameTypeControlRequest`. Read exactly one
+   secure response and call `State.OpenApplication` with a validator requiring
+   `FrameTypeControlResponse` and the shared exact request/session/binding
+   response validator. No parallel response struct/capability list is introduced.
+7. Transfer the sole reader role from the transcript to one owned idle reader;
+   wait for its armed notification, then recheck A and exact stream correlation
+   before publishing local readiness once. Replace A only with the earliest
+   owner/transport/session hard expiry H, never an unlimited deadline or a new
+   lifetime. The idle reader performs one bounded one-byte read: any byte, EOF
+   or error retires readiness. There is no competing transcript reader or drain
+   task. A concurrently observed loss wins the local publication latch; no claim
+   is made that physical peer loss is known before its I/O observation.
+
+The controller uses the stream's socket deadlines for blocking admission/idle I/O,
+and its existing owner watcher interrupts cancellation. There is no extra
+admission timer that survives readiness or silently renews the budget. The host
+session hard expiry may differ from the guest's earlier handshake start; H is
+conservatively clamped to the existing transport hard limit, and guest EOF remains
+terminal. Key generation for producer boot inputs remains a separate owner task.
+
+The selected host random reader is concrete and bounded: one Linux nonblocking
+`getrandom` call for each 32-byte request, fail on short/error, wipe scratch, no
+fallback. Supply it through the unchanged `session.Dependencies.Random` slot.
+The readiness request uses one such draw, takes 16 bytes for lowercase hex, then
+wipes the whole draw. No arbitrary blocking entropy reader is accepted by the
+production wrapper; private deterministic observations belong only to tests.
+
+New read helpers own their buffers. Read a fixed handshake/header prefix first,
+validate its length before allocating, and clear every partial allocation on
+error. Secure records are capped at 52 + 8192 + 16 bytes, not the broader generic
+control maximum. Clear Hello/Auth/Finished/request/response/plaintext and encrypted
+record buffers on success and failure. Existing framing helpers that lose access
+to a partial buffer are not sufficient evidence of wiping. No new claim is made
+about physically wiping crypto-library internal allocations.
+
+## Close and join order
+
+Use one private lifecycle latch, one transcript/lifetime task and, after reader
+handoff, one joined idle reader; no new daemon/cleanup owner. No controller mutex
+is held across I/O, manager observations or joins.
+
+1. Atomically retire readiness/loss, cancel the controller's owned child context,
+   and close the current guest stream outside the controller mutex. If Open has
+   not returned, cancellation makes that existing connector finish/join its own
+   attempt. A returned stream is either installed in the live controller or
+   immediately closed when cancellation already won.
+2. Stream Close interrupts I/O and joins the existing transport watcher. Join the
+   controller task, which itself joins any armed idle reader before finishing.
+   The idle reader only retires the latch/cancels and returns; it never calls a
+   joining Close or containment, so it cannot wait for itself.
+3. Only after its last write/read has returned does the protocol task call
+   `State.Revoke`, clear remaining buffers/key and finish. In particular external
+   Close never calls Revoke while `WriteApplication` may hold `State.mu` across a
+   blocked write. Close returns only after revocation/wiping has completed.
+
+That describes local controller cleanup, not VM absence. The later existing
+supervisor must perform this close/join barrier before entering authenticated
+`HandleController` cleanup or any selected containment/owner mutex. The controller
+never calls containment from a reader or invents a callback that asserts it ran.
+On stream loss, the future selected lifecycle consumer receives Loss and invokes
+the same existing cleanup owner after the barrier.
+
+## Staged compiling RED and ownership
+
+After design approval, the first RED adds only the minimum unavailable private
+wrapper/type declarations needed to compile the real transcript test. It must
+fail at the missing consumer, not at socket setup or a deliberately wrong key.
+Later assertions are reported as unexecuted until that boundary is GREEN.
+
+Prospective owned files:
+
+- `firecrackerhost/minimal_control_controller_linux.go`: scope/lifetime and
+  concrete transport admission; no selected runtime constructor or store edits.
+- `firecrackerhost/minimal_control_controller_wire_linux.go`: bounded transcript,
+  scalar pin projection and clearing helpers; shared codecs/crypto unchanged.
+- `firecrackerhost/minimal_control_controller_entropy_linux.go`: concrete bounded
+  host entropy, with a narrow syscall test seam, not an exported reader option.
+- `firecrackerhost/minimal_control_controller_*_test.go`: adjacent default Linux
+  tests, with no CLI/VM/KVM/privilege dependency.
+
+First positive test combines the actual `minimalTransportFixture`, original
+manager/handle, ordinary private Unix socket, real CONNECT/ACK and
+`minimalcontrol.NewBootstrap` server plus unchanged session cryptography. It
+requires one completed transcript, an exact session-bound readiness digest,
+one transport generation, no legacy bridge session, key clearing and joined Close.
+Fake owner/peer observations are disclosed; this is not a live Jailer proof.
+
+Follow-on reachable REDs cover:
+
+- missing/stale/closed transport, wrong runtime/pins/key, original D expiry and
+  preclaimed connector: no guest readiness and no replacement/fallback;
+- wrong Hello identity, malformed/partial/oversized handshake and secure frames,
+  wrong request/binding/session/capability response and unsolicited postready byte;
+- exact D/A expiry despite delayed observation/timer, no A rebasing after Hello
+  or readiness, and earliest hard expiry after successful admission;
+- cancellation/owner/process/socket loss at Open, prelude, Hello, Finished,
+  readiness write/read and idle; original stream closed and every task joined;
+- blocked `WriteApplication` plus concurrent Close: I/O closes before Revoke,
+  completion without watchdog rescue, no self-join or duplicate publication;
+- concurrent waiters, canceled waiter versus explicit owner cancellation,
+  callback return/panic, and all key/partial-buffer cleanup paths.
+
+Use actual transport integration as the primary positive. Narrow per-instance
+clock/I/O fault observations can exercise precise boundaries after it is working;
+they must not substitute for an accepted concrete owner or bypass its currentness.
+Focused/race tests and adjacent package/source guards, vet and Darwin compile
+follow GREEN. No test runs or source edits are authorized by this design note.
+
+## Explicit next coupled handoff
+
+Composition owns the distinct config/record/store correlation and selected runtime
+constructor. This slice must not edit those files or change the unavailable
+production dispatch. Later wiring must supply the actual manager/process only
+after the gated release, retain this scope while cleanup reconnect is served,
+and recheck the same coordinator generation plus original owner channel before
+publishing the one selected ready event. Local readiness does not perform those
+two checks by accepting a generic true-returning callback.
+
+Original-channel monitoring/notification, selected startup cancellation and the
+pre-release D timestamp, authenticated cleanup dispatch before owner.mu, producer
+reservation adoption and L7 loss/terminal correlation remain required integration
+work. The L7 session/proxy stay in the original producer; J/controller closure
+does not prove network cleanup. No credential operations, reconstructed restart
+readiness, all-owner-loss recovery, strict default or live VM acceptance is added.
