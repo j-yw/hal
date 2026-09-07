@@ -1,7 +1,8 @@
 # Selected controller cleanup preflight
 
-DESIGN ONLY at `2d91b1d18671c8a2721dd01ead69f0e22c129bab`.
-No scaffold, RED, selected serving route or shutdown behavior is implemented.
+Design based on `2d91b1d18671c8a2721dd01ead69f0e22c129bab`, followed by the
+bounded compiling RED below. No selected serving route or shutdown behavior
+is implemented.
 This is the bounded dependency in section 4 of the constructor design frozen at
 `0021de07` (`sandbox-runtime-v2-minimal-runtime-constructor.md`), governed by the
 [controller handoff](sandbox-runtime-v2-minimal-host-controller.md),
@@ -117,8 +118,12 @@ a new handshake, credential token, durable field or independently issued proof.
    before selected preflight and again at unlocked barrier entry; waiting for
    the mutex/store cannot admit an already-canceled or expired shutdown callback.
    No additional bookkeeping mutex surrounds the callback or its waits.
-   It must close original/guest I/O before joining publisher/reader/controller
-   tasks, and join them before session Revoke. It must not call this FSM, contain
+   It must close original/guest I/O before joining the selected publisher,
+   original-channel monitor and controller scope. The controller already revokes
+   its own session after joining its own I/O/idle-reader tasks, before its done
+   signal; preserve that ownership/order. Do not add a third-party Revoke or
+   require controller completion before its own deferred Revoke. All selected
+   tasks must join before containment. The barrier must not call this FSM, contain
    the VM, close namespaces, retire a record or join its own caller. Those are
    later lifecycle implementation obligations, not proof supplied by this helper.
 5. **Reacquire and revalidate.** A barrier failure/panic or expired/canceled caller
@@ -126,8 +131,11 @@ a new handshake, credential token, durable field or independently issued proof.
    join, reacquire `owner.mu`, require the exact same session/latch/sequence/cache
    snapshot, and load the same retained store again. Require full record equality,
    not revision alone. Missing/poisoned store, owner loss/reconnect, same-revision
-   changed fields or another completed request rejects the old plan. No automatic
-   retry, rebase, new handshake or fallback to default dispatch is permitted.
+   changed fields or another completed request rejects the old plan. After that
+   second Load, recheck the caller's Err and half-open absolute deadline
+   immediately before applying the plan: reacquisition/readback may outlive the
+   caller even when the barrier returned in time. No automatic retry, rebase,
+   new handshake or fallback to default dispatch is permitted.
 6. **Apply and cache under the existing lock.** Dispatch the validated request
    using the shared plan and revalidated current record, without a third Load or
    re-running the barrier. Keep the normal containment, Finalize and Commit CAS/
@@ -200,6 +208,32 @@ mutations with `owner.mu`; a paused barrier allows safe concurrent changes.
 
 Run focused default/race FSM and selected tests, existing six/seven protocol,
 replay/Finalize/reconnect/store regressions, relevant unchanged source guards,
-vet and Darwin compile. Freeze/review RED before GREEN. This document runs no
-new behavioral test and enables no selected constructor, actual controller
-shutdown, producer, L7/credential cleanup, strict default or live VM acceptance.
+vet and Darwin compile. Freeze/review RED before GREEN. This plan enables no
+selected constructor, actual controller shutdown, producer, L7/credential cleanup,
+strict default or live VM acceptance.
+
+## Initial compiling RED
+
+The private `handleControllerWithCleanup` seam only delegates to unchanged
+`HandleController` and ignores its callback. No production serving path calls
+it. The 188-line `minimal_cleanup_preflight_red_test.go` uses actual encoded
+packets, role validation, `AdmitController`, its decoded ack and the existing FSM
+over `l8RuntimeOwnerTestStore`. It does not assign a successful session directly.
+The UID/containment observations remain ordinary injected fixture facts.
+
+`go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalCleanupPreflight'`
+compiles and reproduces exactly two failing tests per repetition: authenticated
+StopReap enters containment with zero shutdown callbacks, and the request returns
+success/absent before entering a blocked shutdown callback. There are six failure
+events, twelve passing control/parent events and no skips across three repetitions.
+Legacy cleanup, wrong-session rejection and cached replay are reached controls.
+
+The blocked callback's subsequent mutex/state assertions are not reached at RED;
+they are future acceptance assertions, not evidence of a reproduced lock deadlock.
+Finalize/Commit planning, admitted-only provenance, changed-store/session checks,
+post-readback deadline, real I/O shutdown and complete fault coverage remain
+unimplemented. No claims about those missing paths follow from this RED.
+
+The unchanged adjacent selector
+`^TestL8RuntimeOwner(Admission|Replay|Finalize|Stop|Protocol|Typed)` passes with
+`-race -count=3`: 177 test/subtest events, zero failures and zero skips.

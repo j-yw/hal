@@ -961,6 +961,13 @@ func (owner *l8RuntimeOwnerSupervisor) AdmitController(ctx context.Context, uid 
 	}}, nil
 }
 
+// Compiling RED seam only. The selected barrier is intentionally unused until
+// shared authenticated cleanup preflight is implemented and reviewed. No
+// production serving path calls this method; legacy handling is unchanged.
+func (owner *l8RuntimeOwnerSupervisor) handleControllerWithCleanup(ctx context.Context, received l8RuntimeOwnerReceivedPacketV1, _ func() error) (l8RuntimeOwnerControlResult, error) {
+	return owner.HandleController(ctx, received)
+}
+
 func (owner *l8RuntimeOwnerSupervisor) HandleController(ctx context.Context, received l8RuntimeOwnerReceivedPacketV1) (l8RuntimeOwnerControlResult, error) {
 	if owner == nil {
 		return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
