@@ -1,13 +1,14 @@
 # Original credential request correlation for a minimal reservation
 
-DESIGN `590e5c70` and compiling RED from `1e9b2eec247b449fdc0d7b7441058e54452df8c1`. This narrows the
+Implemented after DESIGN `590e5c70` and compiling RED `cdb5d6e9`, from
+`1e9b2eec247b449fdc0d7b7441058e54452df8c1`. This narrows the
 isolated provider design `7144680c`; it does not approve that provider or its
 trusted OCI-to-image association. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) and
 [controller design](sandbox-runtime-v2-minimal-host-controller.md) remain binding.
-The RED adds only unavailable neutral API scaffolding and dedicated tests;
-production behavior, public schemas, credential grants and runtime activation
-are unchanged. GREEN requires separate review and approval.
+The implementation adds only copied request correlation and exact selected
+worker comparisons. Public schemas, credential grants and runtime activation
+are unchanged; a concrete provider and trusted OCI association remain separate.
 
 ## Actual path and missing values
 
@@ -34,8 +35,8 @@ before ArmDispatch. Provider-binding Start performs final Current and
 `checkMinimalDispatch` before calling StartMinimalJob with the preparation
 context. The provider must ClaimLaunch before any host allocation.
 
-Neither the existing hints nor `MinimalLaunchIdentity` exposes the original
-credential admission pair. `LaunchGrantID/LaunchPolicyRevision` are separately
+At DESIGN, neither hints nor the reservation exposed the original credential
+admission pair. `LaunchGrantID/LaunchPolicyRevision` are separately
 issued launch correlation, not substitutes. The existing selected store rejects
 equal launch and credential grant IDs. Matching revision numbers may occur by
 coincidence; they must not be required equal or artificially made different.
@@ -241,4 +242,24 @@ wrong issuer/principal and malformed admission controls execute independently.
 Those controls plus unchanged dispatch/cancel/binding/lifetime/selected guard
 tests pass race three times: 783 passing events, zero failures/skips. Scoped vet
 and both actual production-source audits pass (six test/subtest events).
-No existing RED file, worker production code or guard digest is edited.
+At that checkpoint, no existing RED file, worker production code or guard digest
+was edited.
+
+## GREEN scope and verification boundary
+
+The approved four production files now copy exactly one valid supplied pair at
+Reserve, retain omission compatibility, and expose only immutable original
+correlation after loss. The three selected worker declarations compare the
+original pair and request key without changing their existing identity, store,
+publication, cancellation or partial-owner ordering. No new typed-call exemption
+was needed: only their three exact declaration digests changed, with 14 added
+bypass cases and every existing guard retained.
+
+Both frozen RED files remain byte-identical and all 27 original test/subtest
+events now pass under race, including the previously unreached copy/revocation
+and failed-Start assertions. Separate tests cover post-P/real-parent expiry,
+service/authority loss, populated copies/concurrent readers, syntax/revision
+boundaries, exact duplicate/conflicting requests, retained-memory mismatch,
+disk-only corruption, and caller mutation/partial Start. Fixed-head broader
+race, package, source-guard, vet and cross-platform results belong in the handoff.
+No live credential, runtime, terminal or OCI acceptance is claimed.

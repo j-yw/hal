@@ -57,6 +57,7 @@ type MinimalLaunchReservation struct {
 	self                               *MinimalLaunchReservation
 	mu                                 sync.Mutex
 	identity                           MinimalLaunchIdentity
+	requestCorrelation                 MinimalLaunchRequestCorrelation
 	selection                          *MinimalLaunchPreparedSelection
 	ctx                                context.Context
 	cancel                             context.CancelFunc

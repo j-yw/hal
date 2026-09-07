@@ -130,6 +130,13 @@ func (selection *MinimalLaunchPreparedSelection) Close() error {
 // Reserve binds caller-allocated IDs to the exact checked selection. It does
 // not arm dispatch; the manager must first persist and read back both phases.
 func (selection *MinimalLaunchPreparedSelection) Reserve(ctx, ownerContext context.Context, workerJobID, jobGeneration, requestKey string, deadline time.Time, correlation ...MinimalLaunchRequestCorrelation) (*MinimalLaunchReservation, error) {
+	if len(correlation) > 1 || len(correlation) == 1 && !validMinimalLaunchRequestCorrelation(correlation[0]) {
+		return nil, ErrMinimalLaunchUnavailable
+	}
+	var requested MinimalLaunchRequestCorrelation
+	if len(correlation) == 1 {
+		requested = correlation[0]
+	}
 	if selection == nil || selection.self != selection || ctx == nil || ctx.Err() != nil || ownerContext == nil || ownerContext.Err() != nil || !ValidMinimalLaunchID(workerJobID) || !ValidMinimalLaunchID(jobGeneration) || workerJobID == jobGeneration || !validMinimalLaunchRequestKey(requestKey) || !time.Now().Before(deadline) {
 		return nil, ErrMinimalLaunchUnavailable
 	}
@@ -147,6 +154,9 @@ func (selection *MinimalLaunchPreparedSelection) Reserve(ctx, ownerContext conte
 	}
 	grantID := "launch-" + hex.EncodeToString(entropy[:])
 	clear(entropy[:])
+	if requested.AdmissionGrantID == grantID {
+		return nil, ErrMinimalLaunchUnavailable
+	}
 	identity := MinimalLaunchIdentity{
 		WorkerJobID: workerJobID, JobGeneration: jobGeneration, WorkerID: selection.identity.WorkerID, HostID: selection.identity.HostID, PrincipalID: selection.principal,
 		SandboxID: selection.hints.SandboxID, ExecutionID: selection.hints.ExecutionID, SubmissionID: selection.hints.SubmissionID, RuntimeID: selection.identity.RuntimeID,
@@ -155,7 +165,7 @@ func (selection *MinimalLaunchPreparedSelection) Reserve(ctx, ownerContext conte
 	}
 	owned, ownedCancel := context.WithCancel(ownerContext)
 	preparation, cancel := context.WithDeadline(owned, deadline)
-	value := &MinimalLaunchReservation{identity: identity, selection: selection, ctx: preparation, cancel: cancel,
+	value := &MinimalLaunchReservation{identity: identity, requestCorrelation: requested, selection: selection, ctx: preparation, cancel: cancel,
 		ownedContext: owned, ownedCancel: ownedCancel, deadline: deadline}
 	value.self = value
 	value.stopAuthority = context.AfterFunc(selection.authorizer.ctx, ownedCancel)
@@ -189,9 +199,17 @@ func (reservation *MinimalLaunchReservation) OwnedContext() context.Context {
 	return reservation.ownedContext
 }
 
-// RequestCorrelation is the compiling RED seam; no request value is retained yet.
+// RequestCorrelation returns original intent even after revocation or expiry.
+// It grants no launch, credential or cleanup authority.
 func (reservation *MinimalLaunchReservation) RequestCorrelation() (MinimalLaunchRequestCorrelation, error) {
-	return MinimalLaunchRequestCorrelation{}, ErrMinimalLaunchUnavailable
+	if reservation == nil || reservation.self != reservation || !validMinimalLaunchRequestCorrelation(reservation.requestCorrelation) || reservation.requestCorrelation.AdmissionGrantID == reservation.identity.LaunchGrantID {
+		return MinimalLaunchRequestCorrelation{}, ErrMinimalLaunchUnavailable
+	}
+	return reservation.requestCorrelation, nil
+}
+
+func validMinimalLaunchRequestCorrelation(value MinimalLaunchRequestCorrelation) bool {
+	return ValidMinimalLaunchID(value.AdmissionGrantID) && value.AdmissionGrantRevision != 0
 }
 
 // ArmDispatch is called only by the manager after exact durable dispatch

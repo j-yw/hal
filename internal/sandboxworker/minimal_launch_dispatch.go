@@ -117,7 +117,8 @@ func (manager *jobManagerV2) checkMinimalDispatch(entry *minimalLaunchEntry) err
 	}
 	identity := entry.reservation.Identity()
 	state, found := manager.states[identity.WorkerJobID]
-	if !found || manager.minimalLive[identity.WorkerJobID] != entry || state.MinimalLaunch == nil || state.MinimalLaunch.Phase != "dispatching" || state.MinimalLaunch.JobGeneration != identity.JobGeneration || state.MinimalLaunch.LaunchGrantID != identity.LaunchGrantID || entry.reservation.Context().Err() != nil || manager.store.checkMinimalAuthority(manager.stateLock) != nil {
+	correlation, correlationErr := entry.reservation.RequestCorrelation()
+	if !found || correlationErr != nil || state.RequestKey != identity.RequestKey || correlation.AdmissionGrantID != state.JobV2.CredentialIntent.AdmissionGrantID || correlation.AdmissionGrantRevision != state.JobV2.CredentialIntent.AdmissionGrantRevision || manager.minimalLive[identity.WorkerJobID] != entry || state.MinimalLaunch == nil || state.MinimalLaunch.Phase != "dispatching" || state.MinimalLaunch.JobGeneration != identity.JobGeneration || state.MinimalLaunch.LaunchGrantID != identity.LaunchGrantID || entry.reservation.Context().Err() != nil || manager.store.checkMinimalAuthority(manager.stateLock) != nil {
 		manager.minimalPoisoned = true
 		entry.reservation.Revoke()
 		return errMinimalLaunchState
@@ -184,12 +185,14 @@ func (manager *jobManagerV2) reserveMinimalLaunch(ctx context.Context, principal
 	if _, exists := manager.states[jobID]; exists {
 		return nil, JobV2{}, false, errMinimalLaunchState
 	}
-	reservation, err := selection.Reserve(ctx, manager.minimalContext, jobID, generation, requestKey, deadline)
+	requested := sandboxruntime.MinimalLaunchRequestCorrelation{AdmissionGrantID: request.AdmissionGrantID, AdmissionGrantRevision: request.AdmissionGrantRevision}
+	reservation, err := selection.Reserve(ctx, manager.minimalContext, jobID, generation, requestKey, deadline, requested)
 	if err != nil {
 		return nil, JobV2{}, false, errMinimalLaunchState
 	}
 	identity := reservation.Identity()
-	if identity.PrincipalID != principalID || identity.WorkerID != manager.workerID || identity.SubmissionID != request.SubmissionID {
+	correlation, correlationErr := reservation.RequestCorrelation()
+	if correlationErr != nil || correlation != requested || identity.PrincipalID != principalID || identity.WorkerID != manager.workerID || identity.SubmissionID != request.SubmissionID {
 		reservation.Revoke()
 		return nil, JobV2{}, false, errMinimalLaunchState
 	}

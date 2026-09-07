@@ -87,5 +87,6 @@ func minimalLaunchCancelIdentityMatches(entry *minimalLaunchEntry, state storedJ
 	}
 	selected := sandboxruntime.MinimalLaunchSelectionIdentity{WorkerID: job.WorkerID, HostID: job.HostID, RuntimeID: job.RuntimeID, RuntimeGeneration: m.RuntimeGeneration,
 		PlanID: job.CredentialIntent.PlanID, TemplatePolicyID: job.CredentialIntent.TemplatePolicyID, WorkspacePolicyID: job.CredentialIntent.WorkspacePolicyID, NetworkPolicyID: m.NetworkPolicyID}
-	return entry.reservation.Identity() == want && entry.selection.Identity() == selected
+	correlation, err := entry.reservation.RequestCorrelation()
+	return err == nil && correlation.AdmissionGrantID == job.CredentialIntent.AdmissionGrantID && correlation.AdmissionGrantRevision == job.CredentialIntent.AdmissionGrantRevision && entry.reservation.Identity() == want && entry.selection.Identity() == selected
 }
