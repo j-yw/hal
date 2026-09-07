@@ -103,6 +103,12 @@ func (starter *minimalReleaseFakeStarter) startStrictJailerNamespaceProcess(ctx 
 	if err != nil {
 		return nil, err
 	}
+	starter.ownerStarter.mu.Lock()
+	defer starter.ownerStarter.mu.Unlock()
+	if starter.ownerStarter.started || starter.ownerStarter.closed || !starter.ownerStarter.minimalGate.matches(starter.ownerStarter, starter.selected.minimalPreparation) {
+		return nil, errStrictJailerNamespaceStartFailed
+	}
+	starter.ownerStarter.started = true
 	return starter.process, nil
 }
 

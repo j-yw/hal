@@ -103,6 +103,9 @@ func bindMinimalControlPreparation(owned *l8RuntimeOwnerLinuxRuntime, prep *mini
 		binding.configCorrelation != hex.EncodeToString(prep.correlation[:]) || owned.genesis.SeedCorrelationDigest != binding.configCorrelation {
 		return errL8RuntimeOwnerInvalid
 	}
+	if bindMinimalControlGateIO(owned.selected.starter, prep) != nil {
+		return errL8RuntimeOwnerInvalid
+	}
 	prep.owner = owned
 	owned.minimalPreparation = prep
 	owned.selected.minimalPreparation = prep

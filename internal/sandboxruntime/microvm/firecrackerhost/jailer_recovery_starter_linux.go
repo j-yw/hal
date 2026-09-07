@@ -21,6 +21,7 @@ type jailerRecoveryStarter struct {
 	observation               l8RuntimeOwnerProcessObservation
 	started, released, closed bool
 	closeErr                  error
+	minimalGate               *minimalControlGateIO // Immutable constructor binding; nil for legacy.
 }
 
 func (starter *jailerRecoveryStarter) startStrictJailerNamespaceProcess(ctx context.Context, request strictJailerNamespaceProcessStartRequest) (process HostProcess, resultErr error) {
@@ -104,6 +105,9 @@ func (starter *jailerRecoveryStarter) startStrictJailerNamespaceProcess(ctx cont
 }
 
 func (starter *jailerRecoveryStarter) release() error {
+	if gate := starter.minimalGate; gate != nil {
+		return starter.releaseMinimalGate(gate)
+	}
 	starter.mu.Lock()
 	defer starter.mu.Unlock()
 	if !starter.started || starter.closed || starter.released || starter.gate == nil || !starter.observation.pidfdOwned {
@@ -117,6 +121,9 @@ func (starter *jailerRecoveryStarter) release() error {
 }
 
 func (starter *jailerRecoveryStarter) close() error {
+	if gate := starter.minimalGate; gate != nil {
+		return starter.closeMinimalGate(gate)
+	}
 	starter.mu.Lock()
 	defer starter.mu.Unlock()
 	if starter.closed {
