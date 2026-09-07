@@ -300,3 +300,26 @@ worker receipt→Commit, host cleanup on guest loss, credential usable-only-in-j
 tests, exact rebuilt image and L10 correlated proof consumers remain required.
 A successful injected or real Exec response is workload evidence only, never
 proof of strict readiness, credential delivery or terminal resource absence.
+
+## First compiling RED checkpoint
+
+The additive 24-line workload_transport.go scaffold delegates only the existing
+NewBootstrap/Serve and deliberately ignores the passed Handler/Limits. No
+existing constructor, server dispatch, proof flag, local inspector, host reader,
+command, image or guard changes. The explicitly injected L4 server owns its
+normal StateServing; no test writes cached state or calls v1 readiness.
+
+The first actual wire test completes bootstrap/Finished/readiness, verifies the
+enclosing server is still serving, and sends an independently encoded, small
+exact-binding/session operation carrying a valid v1 exec. Its expected backend
+call fails with calls=0 and a transport failure. This proves the missing dispatch
+boundary, not any later operation parser, proof-mode or cancellation matrix.
+The fake backend has no filesystem/process/network authority. Its fixture setup
+can later select a real proof-mode API with explicitly fake inspection without
+changing the frozen exec/readiness behavior assertions.
+
+`go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/guestagent/minimalcontrol -run '^(TestMinimalWorkload|TestHostReadinessCodecLegacyGolden)'`
+reproduced three expected failure events, twelve passing controls and zero
+skips. Controls cover actual enclosing serving/readiness without work, unchanged
+direct readiness-only rejection, nil backend rejection and the old independent
+readiness golden. No production proof or prepared-Linux acceptance was run.
