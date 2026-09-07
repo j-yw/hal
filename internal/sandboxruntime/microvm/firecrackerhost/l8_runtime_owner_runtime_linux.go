@@ -231,6 +231,9 @@ func (owned *l8RuntimeOwnerLinuxRuntime) close() {
 	if owned == nil {
 		return
 	}
+	if owned.minimalPreparation != nil && owned.shutdownMinimalControlPreparation() != nil {
+		return // Preserve unresolved owned handles; this is not terminal proof.
+	}
 	if owned.selected != nil {
 		if owned.selected.attempted {
 			_, _ = owned.selected.contain()
@@ -269,13 +272,30 @@ func (owned *l8RuntimeOwnerLinuxRuntime) serveBootstrap(owner *l8RuntimeOwnerSup
 	if owner == nil || setL8RuntimeOwnerSocketTimeout(fd, l8RuntimeOwnerHandshakeTimeout) != nil {
 		return errL8RuntimeOwnerInvalid
 	}
+	uid, received, err := owned.receiveBootstrap(owner, fd)
+	if err != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	result, err := owner.HandleBootstrap(context.Background(), uid, received)
+	if err != nil || sendL8RuntimeOwnerControlResult(fd, result) != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	return nil
+}
+
+// Shared exact receipt/namespace ownership; each caller owns its I/O budget and
+// the subsequent receive role. This helper does not start another reader.
+func (owned *l8RuntimeOwnerLinuxRuntime) receiveBootstrap(owner *l8RuntimeOwnerSupervisor, fd int) (uint32, l8RuntimeOwnerReceivedPacketV1, error) {
+	if owner == nil {
+		return 0, l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerInvalid
+	}
 	uid, err := l8RuntimeOwnerPeerUID(fd)
 	if err != nil || uid != owned.config.DaemonUID {
-		return errL8RuntimeOwnerInvalid
+		return 0, l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerInvalid
 	}
 	received, err := receiveL8RuntimeOwnerSeqpacket(fd)
 	if err != nil {
-		return errL8RuntimeOwnerInvalid
+		return 0, l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerInvalid
 	}
 	transferred := false
 	defer func() {
@@ -284,26 +304,22 @@ func (owned *l8RuntimeOwnerLinuxRuntime) serveBootstrap(owner *l8RuntimeOwnerSup
 		}
 	}()
 	if validateL8RuntimeOwnerPacketRole(received.Packet, false, len(received.Files)) != nil || received.Packet.Opcode != l8RuntimeOwnerOpcodeBootstrapStart {
-		return errL8RuntimeOwnerInvalid
+		return 0, l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerInvalid
 	}
 	correlation, err := decodeL8RuntimeOwnerNamespaceCorrelation(received.Packet.Body)
 	if err != nil || validateL8RuntimeOwnerNamespaceFiles(received.Files, correlation) != nil ||
 		owned.validateMinimalControlNamespaces(received.Files, correlation) != nil {
-		return errL8RuntimeOwnerInvalid
+		return 0, l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerInvalid
 	}
 	owned.mu.Lock()
 	if owned.namespaces[0] != nil || owned.namespaces[1] != nil {
 		owned.mu.Unlock()
-		return errL8RuntimeOwnerInvalid
+		return 0, l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerInvalid
 	}
 	copy(owned.namespaces[:], received.Files)
 	owned.mu.Unlock()
 	transferred = true
-	result, err := owner.HandleBootstrap(context.Background(), uid, received)
-	if err != nil || sendL8RuntimeOwnerControlResult(fd, result) != nil {
-		return errL8RuntimeOwnerInvalid
-	}
-	return nil
+	return uid, received, nil
 }
 
 func (owned *l8RuntimeOwnerLinuxRuntime) serveControllers(owner *l8RuntimeOwnerSupervisor) error {
@@ -381,6 +397,9 @@ func (owned *l8RuntimeOwnerLinuxRuntime) serveController(owner *l8RuntimeOwnerSu
 
 func (owned *l8RuntimeOwnerLinuxRuntime) startChild() (l8RuntimeOwnerStartedChild, error) {
 	if owned.selected != nil {
+		if owned.selected.config.Version == minimalControlSupervisorConfigVersion {
+			return owned.selected.startMinimalControlChild()
+		}
 		return owned.selected.startChild()
 	}
 	owned.mu.Lock()

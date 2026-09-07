@@ -1,6 +1,8 @@
 # Selected minimal preparation and release composition
 
-Status: first compiling RED only, based on `347331910718c4f967d27fa7b7624021152813e5`.
+Status: first preparation lifetime implementation, based on
+`347331910718c4f967d27fa7b7624021152813e5`; later release and recovery checkpoints
+below remain design-only. See the final section for implemented scope/evidence.
 This refines section 2 of the [constructor design](sandbox-runtime-v2-minimal-runtime-constructor.md)
 and the accepted [host controller design](sandbox-runtime-v2-minimal-host-controller.md).
 It follows the [Linux completion architecture](sandbox-runtime-v2-linux-completion-architecture.md)
@@ -9,6 +11,9 @@ No executable delegate, controller task, readiness event, guest, or producer is
 activated by this proposal. All six/seven-role behavior remains unchanged.
 
 ## Existing consumer and missing behavior
+
+This section records the pre-change gaps; the first checkpoint below fixes only
+selected preparation context and original-reader ownership, not release gating.
 
 The accepted `newMinimalControlLinuxRuntime` revalidates actual sealed admission,
 then `assembleJailerRecoveryLinuxRuntime` retains three asset duplicates, cleanup
@@ -355,3 +360,91 @@ consumer remain unimplemented and unverified here. GREEN must wire that exact
 placement after the real EUID gate, before shared retained allocations, with
 no nil-preparation lazy fallback. Executable activation and shared cleanup-FSM
 changes remain outside this checkpoint.
+
+## First preparation lifetime implementation
+
+The private, still-unselected `newMinimalControlLinuxRuntime` now keeps its real
+EUID-root check first, then calls `beginMinimalControlPreparation` before shared
+retained assembly. The initializer independently rereads the original bounded
+sealed public bytes, takes P from that validated config, owns one CLOEXEC
+duplicate of the original endpoint, and starts the P observer. Shared assembly
+requires this exact preparation for eight roles and nil for seven roles. It
+binds the same object to the runtime and selected owner alongside the existing
+full-correlation store/genesis and namespace projection. Constructor failure
+closes/joins its untransferred lifetime before returning to the admission
+callback; borrowed role FDs are never closed by it.
+
+Synchronous `current` checks compare wall time with immutable P after initial
+validation/duplication, at assembly boundaries, before serving, and before the
+selected coordinator call. A context whose cancellation callback has not yet
+run is not fresh deadline evidence. Nil/zero lifetime rejects. The preparation
+context has deadline P; the existing selected stage derives the earlier of P
+and its unchanged 30-second bound. No legacy StartChild/Release ABI changed.
+
+`serveMinimalControlPreparation` requires the constructor-bound lifetime; there
+is no lazy initialization. It checks full correlation, common selected config,
+P and the actual dev/inode of the borrowed original alias against its retained
+duplicate. Mismatch rejects, rather than selecting a replacement endpoint.
+After admission, every receive, reply and shutdown uses only that retained
+duplicate, even if the caller later replaces its own FD number.
+
+The original BootstrapStart receipt uses the unchanged shared peer/packet/SCM
+namespace validation. Only after valid receipt does it transfer reading to one
+monitor, before calling the existing FSM with the preparation context. Receive
+and reply send are each capped by remaining P and five seconds; clearing the
+monitor's receive timeout does not clear the bounded send. Owner cancellation
+interrupts socket I/O using shutdown on the retained duplicate, never raw close
+while an operation might still use its FD number. Any unsolicited packet,
+malformed/truncated input, EOF or receive error cancels without taking owner,
+selected, starter or FSM locks, and any received descriptor copies are closed.
+
+Returning revision-2 BootstrapPublished does not close the preparation or its
+observer/monitor. There is no HLMINRD1 publisher in this slice, so the P observer
+continues until P or explicit owner shutdown. The future successful-publication
+consumer must stop/join that observer without canceling the continuing owner;
+local controller readiness alone will not authorize that operation.
+
+The production runtime's close path first invokes the shared outside-lock
+shutdown hook. It latches cancellation, interrupts I/O, joins the active
+bootstrap operation, sole monitor and P observer, then closes only its retained
+original duplicate. Repeated concurrent shutdown callers observe the same
+result. No monitor/observer calls the hook that would join itself. A shutdown
+error is not terminal proof and prevents the close path from disposing its
+remaining owned handles. Existing independent cleanup budgets are unchanged.
+
+The c890b17b corrected RED tests and their ordering/assertions are unchanged.
+Additional ordinary-fixture tests cover post-reply observer/monitor survival,
+initial/post-reply EOF, malformed/truncated packets and descriptor cleanup,
+P/cancel interruption, concurrent close, changed admission binding and borrowed
+FD-number replacement before and after reader transfer. These fixtures really
+use sealed eight-role admission, seqpacket/SCM_RIGHTS, store and gate operations;
+identity/cgroup/process allocation remains explicitly fake. A zero-lifetime
+negative exposed a nil-context panic in the first implementation and now
+rejects without panic; the live-context/expired-P control checks time directly.
+
+The tagged namespace constructor test uses only a joined, deadline-bounded
+CLONE_NEWUSER subprocess mapping the current UID/GID to namespace zero. It
+exercises the unchanged actual EUID gate, exact eight-role assembly and owned
+preparation, expired/missing/foreign preparation, legacy-with-preparation
+refusal, actual listener failure, descriptor accounting and production close.
+Missing user-namespace support is a prerequisite failure, not acceptance or a
+fabricated root observation. No bootstrap, host identity reservation, cgroup,
+namespace entry beyond that harmless user namespace, Jailer or VM runs there.
+
+Focused commands (pinned toolchain, short task-owned TMPDIR):
+
+```sh
+GOMAXPROCS=3 go test -p 2 -race ./internal/sandboxruntime/microvm/firecrackerhost -run '^(TestMinimalPreparation|TestMinimalRuntimeRequestLegacySevenWithoutNICStillValid|TestJailerRecoveryActualSelectedOwnerRetainsCoordinatorAcrossReconnect)' -count=3
+GOMAXPROCS=3 go test -p 2 -race -tags=minimal_runtime_constructor_integration ./internal/sandboxruntime/microvm/firecrackerhost -run '^(TestMinimalPreparationNamespaceConstructor|TestMinimalRuntimeAssemblyNamespaceConstructor|TestMinimalRuntimeAssemblyNamespaceFailures)$' -count=3
+GOMAXPROCS=3 go test -p 2 -race ./internal/sandboxruntime/microvm/firecrackerhost -count=3
+GOMAXPROCS=3 go test -p 2 ./cmd -run '^Test(L8D6RuntimeOwner|L8D2ImageProfileMintAuthorityStaysNarrow|L8D6SSHRelayActivatorRemainsDefaultOff|Phase33Firecracker)' -count=1
+GOMAXPROCS=3 go vet -p 2 ./internal/sandboxruntime/microvm/firecrackerhost
+```
+
+This is not whole-runtime acceptance. Revision-1 currentness, R/D release
+admission, cancellation-interruptible armed-gate/release operations and the
+post-genesis cleanup/quarantine matrix require their separately reviewed REDs.
+The existing Release closure is deliberately unchanged. The executable loop,
+controller/event publication and concrete provider remain unselected; there is
+no readiness, actual cgroup/Jailer/KVM, host-root or all-owner-loss recovery
+claim from these tests.

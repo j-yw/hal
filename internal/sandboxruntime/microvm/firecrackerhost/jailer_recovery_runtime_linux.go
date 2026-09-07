@@ -36,13 +36,20 @@ func newJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorCo
 	if os.Geteuid() != 0 || validateJailerRecoverySupervisorConfig(config) != nil || validateL8RuntimeOwnerSeqpacketFD(fds[0]) != nil || validateL8RuntimeOwnerDirectoryFD(fds[1]) != nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
-	return assembleJailerRecoveryLinuxRuntime(fds, config, configFD, nil)
+	return assembleJailerRecoveryLinuxRuntime(fds, config, configFD, nil, nil)
 }
 
 // Only the exact seven-role or independently revalidated eight-role root
 // constructor calls this concrete assembly. No injected host operations or
 // alternative root observation participates in either entrypoint.
-func assembleJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorConfig, configFD int, minimal *minimalControlSupervisorAdmission) (*l8RuntimeOwnerLinuxRuntime, error) {
+func assembleJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorConfig, configFD int, minimal *minimalControlSupervisorAdmission, prep *minimalControlPreparation) (*l8RuntimeOwnerLinuxRuntime, error) {
+	if minimal == nil {
+		if prep != nil || config.Version != jailerRecoveryConfigVersion {
+			return nil, errL8RuntimeOwnerInvalid
+		}
+	} else if prep == nil || !prep.matchesAdmission(minimal, config) || fds[0] != prep.borrowedFD {
+		return nil, errL8RuntimeOwnerInvalid
+	}
 	selected := &jailerRecoveryRuntime{config: config, starter: &jailerRecoveryStarter{}}
 	if minimal != nil {
 		projection := minimal.request
@@ -59,6 +66,9 @@ func assembleJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervi
 		}
 	}()
 	for index, fd := range []int{fds[3], fds[4], configFD} {
+		if prep != nil && !prep.current() {
+			return nil, errL8RuntimeOwnerInvalid
+		}
 		expected := []jailerRecoveryAsset{config.Kernel, config.Rootfs, config.Config}[index]
 		identity, err := validateL8RuntimeOwnerSealedRegularFD(fd, expected.Size)
 		if err != nil || identity.Size != expected.Size || validateL8RuntimeOwnerAssetFD(fd, l8RuntimeOwnerDescriptorIdentityV1{Kind: expected.Kind, Device: expected.Device, Inode: expected.Inode, Digest: expected.SHA256}) != nil {
@@ -111,6 +121,9 @@ func assembleJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervi
 	if err != nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
+	if prep != nil && !prep.current() {
+		return nil, errL8RuntimeOwnerInvalid
+	}
 	listenerFD, listenerKey, err := openL8RuntimeOwnerReconnectListener(fds[1], listenerIdentity)
 	if err != nil {
 		return nil, errL8RuntimeOwnerInvalid
@@ -137,6 +150,9 @@ func assembleJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervi
 	if minimal != nil && bindMinimalControlNamespaces(owned, minimal) != nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
+	if prep != nil && bindMinimalControlPreparation(owned, prep) != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
 	runner, err := newStrictJailerNamespaceRunner(strictJailerNamespaceRunnerOptions{namespace: owned, starter: selected.starter})
 	if err == nil {
 		selected.lifecycle, err = newJailerRecoveryLifecycle(runner)
@@ -146,6 +162,9 @@ func assembleJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervi
 	}
 	policy := config.Policy
 	selected.coordinator = newStrictJailerCoordinator(selected.lifecycle, newStrictJailerIdentityAuthority(strictJailerIdentitySlot{directory: policy.IdentityDirectory, uid: policy.UID, gid: policy.GID}), owned.store.recoveryAuthority())
+	if prep != nil && !prep.current() {
+		return nil, errL8RuntimeOwnerInvalid
+	}
 	keep = true
 	return owned, nil
 }
@@ -199,9 +218,20 @@ func (selected *jailerRecoveryRuntime) request() (strictJailerCoordinatorRequest
 }
 
 func (selected *jailerRecoveryRuntime) startChild() (l8RuntimeOwnerStartedChild, error) {
+	return selected.startChildForPreparation(nil)
+}
+
+func (selected *jailerRecoveryRuntime) startChildForPreparation(prep *minimalControlPreparation) (l8RuntimeOwnerStartedChild, error) {
 	selected.mu.Lock()
 	defer selected.mu.Unlock()
 	if selected.attempted || selected.coordinator == nil || selected.starter == nil {
+		return l8RuntimeOwnerStartedChild{}, errL8RuntimeOwnerInvalid
+	}
+	if selected.config.Version == minimalControlSupervisorConfigVersion {
+		if prep == nil || prep != selected.minimalPreparation || !prep.current() {
+			return l8RuntimeOwnerStartedChild{}, errL8RuntimeOwnerInvalid
+		}
+	} else if prep != nil {
 		return l8RuntimeOwnerStartedChild{}, errL8RuntimeOwnerInvalid
 	}
 	selected.attempted = true
@@ -209,7 +239,14 @@ func (selected *jailerRecoveryRuntime) startChild() (l8RuntimeOwnerStartedChild,
 	if err != nil {
 		return l8RuntimeOwnerStartedChild{}, errL8RuntimeOwnerInvalid
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), l8RuntimeOwnerContainmentBudget)
+	parent := context.Background()
+	if prep != nil {
+		if !prep.current() {
+			return l8RuntimeOwnerStartedChild{}, errL8RuntimeOwnerInvalid
+		}
+		parent = prep.preparationCtx
+	}
+	ctx, cancel := context.WithTimeout(parent, l8RuntimeOwnerContainmentBudget)
 	defer cancel()
 	selected.session, err = selected.coordinator.start(ctx, request)
 	if err != nil {

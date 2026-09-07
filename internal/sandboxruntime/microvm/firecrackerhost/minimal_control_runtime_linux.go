@@ -19,13 +19,18 @@ func newMinimalControlLinuxRuntime(admission *minimalControlSupervisorAdmission)
 	if os.Geteuid() != 0 || admission == nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
-	config, err := validateMinimalControlRuntimeAdmission(admission)
+	config, prep, err := beginMinimalControlPreparation(admission)
 	if err != nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
 	var fds [6]int
 	copy(fds[:], admission.borrowed[:6])
-	return assembleJailerRecoveryLinuxRuntime(fds, config.jailerRecoverySupervisorConfig, admission.borrowed[6], admission)
+	owned, err := assembleJailerRecoveryLinuxRuntime(fds, config.jailerRecoverySupervisorConfig, admission.borrowed[6], admission, prep)
+	if err != nil {
+		_ = prep.close()
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	return owned, nil
 }
 
 // Re-read the original bounded sealed public bytes independently of mutable
