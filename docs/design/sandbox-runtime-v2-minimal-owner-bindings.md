@@ -1,9 +1,10 @@
 # Selected minimal retained cleanup bindings
 
-Status: DESIGN plus compiling behavioral RED, following approved design
-`0e03e48a` at base `ea0ae1e2f2c88300701a6fc69bbf235ff22bf4e4`.
-Only unavailable method scaffolds are present; no working wrapper, worker consumer,
-recovery activation, or cleanup proof is included. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
+Status: initial neutral binding implementation after frozen RED `a48d67da`,
+following approved design `0e03e48a` at base
+`ea0ae1e2f2c88300701a6fc69bbf235ff22bf4e4`. The original RED passes; the additional
+validation matrix below is still pending. No worker consumer, recovery activation,
+or cleanup proof is included. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md),
 [selected host handoff](sandbox-runtime-v2-minimal-host-controller.md), and
 [accepted cancellation coordination](sandbox-runtime-v2-minimal-worker-cancel.md)
@@ -182,9 +183,9 @@ stored schemas/CAS/locks, selection release, and occupied runtime slots stay
 unchanged. Recovery identity validation supplies syntax, not trusted prior-daemon
 authorization or launch permission. No default or legacy runtime route changes.
 
-## Compiling RED and later verification
+## Frozen RED and implementation verification
 
-The compiling RED adds only unavailable method scaffolds in
+The frozen RED added only unavailable method scaffolds in
 `internal/sandboxruntime/minimal_launch_owner.go` and behavioral tests in
 `minimal_launch_owner_red_test.go` and `minimal_launch_recovery_red_test.go`.
 Its fixture uses the real neutral constructor, authenticated principal, selection,
@@ -212,11 +213,11 @@ provider's Recover fixture; that is NOT wrapper or prior-epoch admission proof.
   mismatched owner stays retained/quarantined; no Resolve/Start/Claim/Close/Commit
   counter changes. Sensitive error/panic canaries never reach error text.
 
-RED reachability is deliberately narrow: Finalize positives fail with unavailable
-after actual Start retained the owner; invalid-result cases fail because their
-Finalize callback counter is zero. Recovery cases fail at unavailable BindRecovery,
+RED reachability was deliberately narrow: Finalize positives failed unavailable
+after actual Start retained the owner; invalid-result cases failed because their
+Finalize callback counter was zero. Recovery cases failed at unavailable BindRecovery,
 before any wrapped provider call. Cached/repair/join/retry assertions after those
-first failures are unreached, not validation claims. Watchdogs only fail tests;
+first failures were unreached on RED; they execute in the initial GREEN. Watchdogs only fail tests;
 fixture teardown releases its gate and joins its goroutines, never product cleanup.
 The joining-waiter fixture observes its cancellation channel before cancellation
 so the later GREEN test cannot pass by rejecting a caller canceled before entry.
@@ -234,11 +235,13 @@ go test -p 2 -race -count=3 ./internal/sandboxruntime -run '^(TestMinimalLaunchO
 go test -p 2 ./internal/sandboxruntime -run '^$'
 ```
 
-The first selector is intentionally RED. Frozen expected reachability is 42
-failure events (37 leaves), eight control passes, zero skips per repetition;
-the second selector independently runs the controls plus existing attempt tests.
+At frozen RED the first selector had 42 failure events (37 leaves), eight control
+passes, zero skips per repetition. Initial GREEN has 156 passing events across
+three repetitions, zero failures/skips/races; two formerly unreached Start
+quarantine subcases now execute per repetition. The second selector independently
+runs the controls plus existing attempt tests.
 
-Expected GREEN ownership: new `minimal_launch_owner.go` and narrowly named tests;
+Implementation ownership: new `minimal_launch_owner.go` and narrowly named tests;
 only the existing owner-binding declaration/initialization in
 `minimal_launch_admission.go`, its retained-owner identity quarantine marking,
 and interface contract comments in
@@ -250,4 +253,5 @@ Run the focused neutral RED/controls, then focused race ×3, whole neutral packa
 relevant existing worker selected/source guards, vet, and Darwin compilation.
 Use pinned Go with task-owned home TMPDIR/GOTMPDIR/GOCACHE and low parallelism.
 This revision is also checked by source inspection and `git diff --check`.
-Its compiling RED is not evidence of working wrappers, a live runtime, or cleanup.
+Neither neutral callback tests nor syntactically valid receipts prove a live
+runtime or cleanup. Full review awaits the remaining matrix and adjacent gates.

@@ -30,9 +30,14 @@ type MinimalLaunchPreparedSelection struct {
 // MinimalLaunchOwnerBinding retains partial ownership without exposing runtime
 // callbacks to worker code. A retained handle is not itself cleanup proof.
 type MinimalLaunchOwnerBinding struct {
-	binding  *MinimalLaunchProviderBinding
-	owner    MinimalJobRuntimeOwner
-	identity MinimalLaunchIdentity
+	self        *MinimalLaunchOwnerBinding
+	binding     *MinimalLaunchProviderBinding
+	owner       MinimalJobRuntimeOwner
+	identity    MinimalLaunchIdentity
+	mu          sync.Mutex
+	active      *minimalLaunchFinalizeAttempt
+	receipt     MinimalLaunchCleanupReceipt
+	quarantined bool
 }
 
 func (authorizer *MinimalLaunchAuthorizer) ResolveSelection(ctx context.Context, principal AuthenticatedWorkerPrincipal, workerID string, hints MinimalLaunchSelectionHints) (result *MinimalLaunchPreparedSelection, err error) {
@@ -263,12 +268,16 @@ func (binding *MinimalLaunchProviderBinding) Start(reservation *MinimalLaunchRes
 	}
 	returned, err := binding.provider.StartMinimalJob(reservation.ctx, reservation, selection.source)
 	if !jobCredentialBindingValueIsNil(returned) {
-		owner = &MinimalLaunchOwnerBinding{binding: binding, owner: returned, identity: reservation.identity}
+		owner = retainMinimalLaunchOwner(binding, returned, reservation.identity)
 	}
 	if err != nil || owner == nil {
 		return owner, ErrMinimalLaunchUnavailable
 	}
-	if owner.owner.Identity() != reservation.identity || reservation.ctx.Err() != nil {
+	if !minimalLaunchOwnerIdentityMatches(owner.owner, reservation.identity) {
+		owner.quarantined = true
+		return owner, ErrMinimalLaunchUnavailable
+	}
+	if reservation.ctx.Err() != nil {
 		return owner, ErrMinimalLaunchUnavailable
 	}
 	reservation.mu.Lock()

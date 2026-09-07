@@ -67,6 +67,9 @@ type MinimalLaunchCleanupReceipt struct {
 	FinalizedRevision uint64
 }
 
+// MinimalJobRuntimeOwner retains its exact identity through uncertain cleanup.
+// Finalize must be bounded/context-aware and idempotent even after errors or
+// panic. The neutral binding never replaces an owner to retry its cleanup.
 type MinimalJobRuntimeOwner interface {
 	Identity() MinimalLaunchIdentity
 	Finalize(context.Context) (MinimalLaunchCleanupReceipt, error)
@@ -74,7 +77,8 @@ type MinimalJobRuntimeOwner interface {
 
 // MinimalJobRuntimeProvider is constructor-injected, never request-provided.
 // Resolve is read-only; Start must claim the reservation before allocation and
-// retain any partial owner alongside an error. Recover is cleanup-only.
+// retain any partial owner alongside an error. Recover is cleanup-only,
+// context-aware and idempotent; it must retain partial resources on uncertainty.
 type MinimalJobRuntimeProvider interface {
 	ResolveMinimalSelection(context.Context, MinimalLaunchSelectionHints) (MinimalLaunchSelection, error)
 	StartMinimalJob(context.Context, *MinimalLaunchReservation, MinimalLaunchSelection) (MinimalJobRuntimeOwner, error)
@@ -83,7 +87,8 @@ type MinimalJobRuntimeProvider interface {
 
 // MinimalLaunchProviderBinding retains the exact constructor-injected provider.
 // A zero or copied binding is not operational. Provider callbacks are admitted
-// only through its exact authorizer/selection/reservation chain.
+// for launch only through its exact authorizer/selection/reservation chain.
+// Cleanup-only recovery uses a separately retained handle, not new launch scope.
 type MinimalLaunchProviderBinding struct {
 	self     *MinimalLaunchProviderBinding
 	provider MinimalJobRuntimeProvider
