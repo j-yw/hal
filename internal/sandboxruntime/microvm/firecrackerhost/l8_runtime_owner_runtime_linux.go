@@ -37,7 +37,8 @@ type l8RuntimeOwnerLinuxRuntime struct {
 	configFD    int
 	assetFDs    [2]int
 
-	minimalNamespaces *minimalControlNamespaceProjection
+	minimalNamespaces  *minimalControlNamespaceProjection
+	minimalPreparation *minimalControlPreparation
 
 	mu         sync.Mutex
 	namespaces [2]*os.File

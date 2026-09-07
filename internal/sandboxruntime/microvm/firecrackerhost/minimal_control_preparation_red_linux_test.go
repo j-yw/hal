@@ -48,6 +48,13 @@ func withMinimalPreparationFixture(t *testing.T, deadline time.Time, use func(*m
 	f.reseal(nil)
 	requireMinimalControlFCFixtureValid(t, f)
 	code := f.run("supervise", func(admission *minimalControlSupervisorAdmission) error {
+		// Corrected setup ordering: initialize the same below-root lifetime
+		// before constructing any fake retained runtime/store/asset resources.
+		_, prep, err := beginMinimalControlPreparation(admission)
+		if err != nil {
+			t.Fatal("pre-assembly preparation setup prerequisite", err)
+		}
+		defer prep.close() // Also covers fixture-assembly failure before binding.
 		owned, _, _, _ := jailerRecoveryRuntimeFixture(t)
 		selected := owned.selected
 		selected.config = admission.config.jailerRecoverySupervisorConfig
@@ -70,6 +77,9 @@ func withMinimalPreparationFixture(t *testing.T, deadline time.Time, use func(*m
 		owned.genesis.SeedCorrelationDigest = hex.EncodeToString(admission.configDigest[:])
 		if bindMinimalControlNamespaces(owned, admission) != nil {
 			t.Fatal("actual eight-role namespace/store binding prerequisite")
+		}
+		if bindMinimalControlPreparation(owned, prep) != nil {
+			t.Fatal("matching pre-assembly lifetime binding prerequisite")
 		}
 		request, err := selected.request()
 		if err != nil || validateStrictJailerCoordinatorConfig(request) != nil {
@@ -120,6 +130,9 @@ func withMinimalPreparationFixture(t *testing.T, deadline time.Time, use func(*m
 		}
 		defer clear(fixture.owner.opts.CommitKey)
 		defer func() {
+			if err := owned.shutdownMinimalControlPreparation(); err != nil {
+				t.Error("outside-lock preparation shutdown/join failed", err)
+			}
 			// This fixture cleans only through its fake retained coordinator;
 			// received namespace copies are closed by the real existing helper.
 			if selected.attempted {
@@ -269,7 +282,12 @@ func TestMinimalPreparationStageCapControl(t *testing.T) {
 }
 
 func TestMinimalPreparationExpiredBeforeBootstrapDoesNotAllocate(t *testing.T) {
-	withMinimalPreparationFixture(t, time.Now().Add(-time.Second), func(f *minimalPreparationFixture) {
+	withMinimalPreparationFixture(t, time.Now().Add(5*time.Second), func(f *minimalPreparationFixture) {
+		// Init now correctly precedes assembly. Expire the same sealed P only
+		// after valid setup; do not mutate/reseal/rebase the admitted deadline.
+		timer := time.NewTimer(time.Until(time.Unix(0, f.admission.config.Control.PreparationDeadlineUnixNano)))
+		defer timer.Stop()
+		<-timer.C
 		allocations := 0
 		allocate := f.owned.selected.coordinator.deps.prepareCgroup
 		f.owned.selected.coordinator.deps.prepareCgroup = func(ctx context.Context, request strictJailerCgroupRequest) (*strictJailerCgroupLease, error) {

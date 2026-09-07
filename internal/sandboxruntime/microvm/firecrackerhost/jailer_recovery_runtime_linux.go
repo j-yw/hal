@@ -19,6 +19,7 @@ type jailerRecoveryRuntime struct {
 	mu                  sync.Mutex
 	config              jailerRecoverySupervisorConfig
 	minimalControl      *minimalControlConfigExpectation
+	minimalPreparation  *minimalControlPreparation
 	files               [3]*os.File
 	starter             *jailerRecoveryStarter
 	lifecycle           *strictJailerLifecycle

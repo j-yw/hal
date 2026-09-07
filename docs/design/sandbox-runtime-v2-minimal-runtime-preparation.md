@@ -317,3 +317,41 @@ before this evidence; it is not counted as a product RED.
 This checkpoint does not yet demonstrate monitor lifetime after the bootstrap
 reply, cancellation-interruptible gate I/O, release currentness, or the later
 failure/recovery matrix. Those remain explicit requirements before acceptance.
+
+### Explicit setup correction before GREEN
+
+The original 305-line RED assembled an ordinary fake owner before entering the
+new serving method. That cannot become a production lazy-initialization path.
+The compiling follow-up therefore introduces `beginMinimalControlPreparation`,
+which independently revalidates admission, rejects expired P and retains one
+CLOEXEC original-socket duplicate plus cancellation lifetime. It grants no
+launch/root authority. The ordinary fixture invokes it BEFORE constructing its
+fake owner/store/asset resources, binds exactly one matching full-correlation
+object to owner and selected runtime, and calls the shared outside-lock
+`shutdownMinimalControlPreparation` hook before its handle-cleanup defers.
+
+The exact edits to the original RED are setup-only: initialization/failure
+cleanup before fake assembly; explicit matching binding; shared shutdown first
+in fixture cleanup; and replacing past-P setup in the expired-bootstrap leaf
+with one future sealed P followed by its actual expiry after valid setup. The
+three original failure assertions and positive ordering assertions are unchanged.
+No P is mutated, resealed or rebased. Separate controls cover already-expired
+initialization, missing owner/selected binding, and retained setup context/FD
+after bootstrap return followed by explicit joined shutdown.
+
+The setup object tracks the active bootstrap operation so shutdown interrupts
+its retained socket, joins outside its mutex, and closes only its own duplicate.
+It does NOT yet start the P observer or original monitor, or propagate its
+context to the existing startChild. The new post-reply control proves only setup
+lifetime retention, not nonexistent goroutine survival. The same focused race
+command now yields nine intended failures, 45 passing test/subtest events,
+zero skips/race reports, and joined fixtures.
+
+Production constructor and close functions are unchanged; only private pointer
+fields were added to their owned structs. Consequently actual root constructor
+init-before-assembly ordering, mandatory selected-eight preparation versus
+legacy-seven nil, constructor failure cleanup and the production close-hook
+consumer remain unimplemented and unverified here. GREEN must wire that exact
+placement after the real EUID gate, before shared retained allocations, with
+no nil-preparation lazy fallback. Executable activation and shared cleanup-FSM
+changes remain outside this checkpoint.
