@@ -114,3 +114,27 @@ ongoing currentness uses the retained hard lifetime H. The receiver then owns
 the revocable readiness handle, not this decoded value. Reconnect cleanup Inspect,
 a copied event or a successful codec result cannot restore readiness, authorize
 credentials/workload, prove L7 ownership or establish terminal cleanup.
+
+## Compiling RED checkpoint
+
+The approved private value type and three fail-unavailable functions now
+compile, without changing any existing codec, dispatcher or runtime consumer.
+The focused race run reproduced six expected test failures: independent golden
+encode/decode, then the valid prerequisites for malformed-wire, value-vocabulary,
+ownership/stateless and Linux datagram matrices. The two independent controls
+passed: golden offsets/canonical supervisor bytes and the existing exact
+revision-2 bootstrap reply/legacy role validation. No tests skipped.
+
+The later mutation, extent, ownership and ancillary assertions are deliberately
+unreached at these positive prerequisites in RED; they are not yet verification
+of an implemented validator. The unchanged existing owner-protocol/typed-body
+selector passed 114 test/subtest events across three race repetitions, zero skips.
+
+```text
+go test -p 2 -race -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalReadinessEvent'
+go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(L8RuntimeOwnerProtocol|L8RuntimeOwnerTypedBodies)'
+```
+
+The first command is intentionally RED. Neither command performs socket I/O,
+namespace/process operations, launch or credential activation. GREEN remains a
+separate reviewed implementation of these bounded pure interfaces only.
