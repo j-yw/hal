@@ -25,6 +25,10 @@ import (
 // unchanged session cryptography so wrong plaintext/record kinds remain
 // authenticated and cannot pass merely because a ciphertext tag was corrupted.
 func runMinimalControllerSemanticPeer(parent context.Context, f *minimalControllerFixture, public ed25519.PublicKey, mutation string, sent chan<- struct{}) error {
+	return runMinimalControllerObservedPeer(parent, f, public, mutation, sent, nil)
+}
+
+func runMinimalControllerObservedPeer(parent context.Context, f *minimalControllerFixture, public ed25519.PublicKey, mutation string, sent chan<- struct{}, afterFinished func() error) error {
 	ctx, cancel := context.WithCancel(parent)
 	var mu sync.Mutex
 	var current io.ReadWriteCloser
@@ -118,6 +122,11 @@ func runMinimalControllerSemanticPeer(parent context.Context, f *minimalControll
 	defer clear(controllerFinished)
 	if err != nil || state.OpenFinished(controllerFinished) != nil || !state.Established() {
 		return errors.New("fixture controller Finished")
+	}
+	if afterFinished != nil {
+		if err := afterFinished(); err != nil {
+			return err
+		}
 	}
 	request, err := l8D6ReadSecureWire(stream)
 	defer clear(request)

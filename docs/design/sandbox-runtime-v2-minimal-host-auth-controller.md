@@ -296,6 +296,15 @@ Failures wipe before returning the sanitized error; panic propagation is unchang
 and also wipes. These are already-green algorithm regressions, not evidence of
 an existing entropy defect or successful host random-source provisioning.
 
+The blocked authenticated-write regression uses the same retained Unix transport
+and a scripted real-crypto peer that stops reading only after validating
+Finished. Its test-only observation fills the actual socket send buffer with
+bounded uninterpreted filler, restores the original D, and confirms the host
+task is blocked in `State.WriteApplication` and the real kernel-backed write,
+not in the filler callback. Explicit Close and owner cancellation both join and
+wipe before D. This exercises close-I/O-before-join/Revoke ordering without a
+new production I/O dependency; it is an already-green shutdown regression.
+
 ## Explicit next coupled handoff
 
 Composition owns the distinct config/record/store foundation. The selected runtime
