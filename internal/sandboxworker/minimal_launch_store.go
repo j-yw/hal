@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 const minimalLaunchPrivateVersion = "sandboxjob-minimal-launch-private-v1"
@@ -38,9 +40,9 @@ func validateStoredMinimalLaunchV1(state storedJobStateV2) error {
 		return errMinimalLaunchState
 	}
 	for _, id := range []string{state.JobV2.ID, state.JobV2.WorkerID, state.JobV2.HostID, state.JobV2.RuntimeID, state.PrincipalID,
-		state.JobV2.CredentialIntent.PlanID, state.JobV2.CredentialIntent.TemplatePolicyID, state.JobV2.CredentialIntent.WorkspacePolicyID,
+		state.JobV2.CredentialIntent.PlanID, state.JobV2.CredentialIntent.AdmissionGrantID, state.JobV2.CredentialIntent.TemplatePolicyID, state.JobV2.CredentialIntent.WorkspacePolicyID,
 		m.JobGeneration, m.SandboxID, m.ExecutionID, m.SubmissionID, m.RuntimeGeneration, m.LaunchGrantID, m.LaunchPolicyID, m.NetworkPolicyID} {
-		if len(id) > 64 || !validWorkerV2SafeID(id) {
+		if !sandboxruntime.ValidMinimalLaunchID(id) {
 			return errMinimalLaunchState
 		}
 	}
@@ -191,7 +193,7 @@ func (store *jobStoreV2) saveMinimalLaunch(state storedJobStateV2) error {
 }
 
 func (store *jobStoreV2) readMinimalLaunchFile(path string) (storedJobStateV2, error) {
-	if store == nil || store.minimalOps == nil || store.checkMinimalAuthority(store.minimalOps.lock) != nil || !strings.HasSuffix(path, ".json") || !validWorkerV2SafeID(strings.TrimSuffix(path, ".json")) {
+	if store == nil || store.minimalOps == nil || store.checkMinimalAuthority(store.minimalOps.lock) != nil || !strings.HasSuffix(path, ".json") || !sandboxruntime.ValidMinimalLaunchID(strings.TrimSuffix(path, ".json")) {
 		return storedJobStateV2{}, errMinimalLaunchState
 	}
 	file, err := openMinimalLaunchRelative(store.minimalOps.root, path, false)

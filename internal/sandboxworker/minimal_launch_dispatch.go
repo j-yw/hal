@@ -51,6 +51,12 @@ func (service *L8Service) handleMinimalLaunch(ctx context.Context, principal san
 		return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeMalformedRequest, "malformed worker minimal job start request")
 	}
 	start := cloneJobStartRequestV2(*request.JobStartV2)
+	for _, id := range []string{service.workerID, principalID, workerV2RequestSandboxID(start.Exec.Target), start.Exec.OperationID, start.SubmissionID,
+		start.Exec.Target.Runtime.RuntimeID, start.PlanID, start.AdmissionGrantID, start.TemplatePolicyID, start.WorkspacePolicyID} {
+		if !sandboxruntime.ValidMinimalLaunchID(id) {
+			return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeMalformedRequest, "malformed worker minimal job start request")
+		}
+	}
 	key, err := jobRequestKeyV2(request.DriverID, principalID, service.daemonGeneration, start)
 	if err != nil {
 		return l8ServiceFailureResponse(request)

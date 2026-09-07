@@ -36,11 +36,11 @@ type MinimalLaunchOwnerBinding struct {
 }
 
 func (authorizer *MinimalLaunchAuthorizer) ResolveSelection(ctx context.Context, principal AuthenticatedWorkerPrincipal, workerID string, hints MinimalLaunchSelectionHints) (result *MinimalLaunchPreparedSelection, err error) {
-	if authorizer == nil || !authorizer.MatchesDependencies(authorizer.authority, authorizer.provider) || ctx == nil || ctx.Err() != nil || !validMinimalLaunchID(workerID) || !validMinimalLaunchHints(hints) {
+	if authorizer == nil || !authorizer.MatchesDependencies(authorizer.authority, authorizer.provider) || ctx == nil || ctx.Err() != nil || !ValidMinimalLaunchID(workerID) || !validMinimalLaunchHints(hints) {
 		return nil, ErrMinimalLaunchUnavailable
 	}
 	principalID, err := authorizer.authority.AuthenticatedWorkerPrincipalID(principal)
-	if err != nil || !validMinimalLaunchID(principalID) {
+	if err != nil || !ValidMinimalLaunchID(principalID) {
 		return nil, ErrMinimalLaunchUnavailable
 	}
 	eligible := false
@@ -125,7 +125,7 @@ func (selection *MinimalLaunchPreparedSelection) Close() error {
 // Reserve binds caller-allocated IDs to the exact checked selection. It does
 // not arm dispatch; the manager must first persist and read back both phases.
 func (selection *MinimalLaunchPreparedSelection) Reserve(ctx, ownerContext context.Context, workerJobID, jobGeneration, requestKey string, deadline time.Time) (*MinimalLaunchReservation, error) {
-	if selection == nil || selection.self != selection || ctx == nil || ctx.Err() != nil || ownerContext == nil || ownerContext.Err() != nil || !validMinimalLaunchID(workerJobID) || !validMinimalLaunchID(jobGeneration) || workerJobID == jobGeneration || !validMinimalLaunchRequestKey(requestKey) || !time.Now().Before(deadline) {
+	if selection == nil || selection.self != selection || ctx == nil || ctx.Err() != nil || ownerContext == nil || ownerContext.Err() != nil || !ValidMinimalLaunchID(workerJobID) || !ValidMinimalLaunchID(jobGeneration) || workerJobID == jobGeneration || !validMinimalLaunchRequestKey(requestKey) || !time.Now().Before(deadline) {
 		return nil, ErrMinimalLaunchUnavailable
 	}
 	// Provider Current runs outside the bookkeeper lock before this cheap
@@ -292,13 +292,25 @@ func closeMinimalLaunchSelection(selection MinimalLaunchSelection) (err error) {
 	return nil
 }
 
-func validMinimalLaunchID(value string) bool {
-	return len(value) <= 64 && validJobCredentialSafeID(value)
+// ValidMinimalLaunchID checks syntax only, not identity or launch authority.
+// Selected minimal IDs must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}.
+func ValidMinimalLaunchID(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for i := range len(value) {
+		ch := value[i]
+		if ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || i > 0 && (ch == '.' || ch == '_' || ch == '-') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validMinimalLaunchHints(hints MinimalLaunchSelectionHints) bool {
 	for _, value := range []string{hints.SandboxID, hints.ExecutionID, hints.SubmissionID, hints.RuntimeID, hints.PlanID, hints.TemplatePolicyID, hints.WorkspacePolicyID} {
-		if !validMinimalLaunchID(value) {
+		if !ValidMinimalLaunchID(value) {
 			return false
 		}
 	}
@@ -307,7 +319,7 @@ func validMinimalLaunchHints(hints MinimalLaunchSelectionHints) bool {
 
 func validMinimalLaunchSelection(identity MinimalLaunchSelectionIdentity) bool {
 	for _, value := range []string{identity.WorkerID, identity.HostID, identity.RuntimeID, identity.RuntimeGeneration, identity.PlanID, identity.TemplatePolicyID, identity.WorkspacePolicyID, identity.NetworkPolicyID} {
-		if !validMinimalLaunchID(value) {
+		if !ValidMinimalLaunchID(value) {
 			return false
 		}
 	}

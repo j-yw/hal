@@ -119,7 +119,7 @@ func NewMinimalLaunchAuthorizer(authority *AuthenticatedWorkerPrincipalAuthority
 			return nil, ErrMinimalLaunchUnavailable
 		}
 		for _, id := range []string{scope.PolicyID, scope.PrincipalID, scope.WorkerID, scope.HostID, scope.TemplatePolicyID, scope.WorkspacePolicyID, scope.NetworkPolicyID} {
-			if len(id) > 64 || !validJobCredentialSafeID(id) {
+			if !ValidMinimalLaunchID(id) {
 				return nil, ErrMinimalLaunchUnavailable
 			}
 		}

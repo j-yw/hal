@@ -27,6 +27,7 @@ func TestMinimalLaunchSourceGuardLocksRetainedStoreAndLifetime(t *testing.T) {
 		{"omitted byte readback", "minimal_launch_store.go", "saveMinimalLaunch", "!bytes.Equal(readback, payload)", "false"},
 		{"cleanup consumed name", "minimal_launch_store.go", "saveMinimalLaunch", "defer file.Close()", "defer file.Close(); defer store.minimalOps.root.Remove(name)"},
 		{"unbounded decoder", "minimal_launch_store.go", "readMinimalLaunchFile", "maxStoredJobStateV2Bytes, &state", "1<<30, &state"},
+		{"legacy stored ID validation", "minimal_launch_store.go", "readMinimalLaunchFile", "sandboxruntime.ValidMinimalLaunchID(strings.TrimSuffix(path, \".json\"))", "validWorkerV2SafeID(strings.TrimSuffix(path, \".json\"))"},
 		{"foreign decode input", "minimal_launch_store.go", "readMinimalLaunchFile", "bytes.NewReader(payload)", "foreignReader"},
 		{"foreign output", "minimal_launch_store.go", "readMinimalLaunchFile", "maxStoredJobStateV2Bytes, &state", "maxStoredJobStateV2Bytes, &foreign"},
 		{"unconditional retained close", "minimal_launch_store.go", "requireMinimalLaunchEmpty", "if !retained {", "if true {"},

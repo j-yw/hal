@@ -141,6 +141,10 @@ func TestMinimalLaunchSourceGuardLocksActualDispatchComposition(t *testing.T) {
 		t.Fatal("actual audited manager reservation composition changed")
 	}
 	for _, fixture := range []struct{ name, old, replacement string }{
+		{"skip selected ID validation", "!sandboxruntime.ValidMinimalLaunchID(id)", "false"},
+		{"legacy selected ID validation", "sandboxruntime.ValidMinimalLaunchID(id)", "validWorkerV2SafeID(id)"},
+		{"omit credential intent grant validation", "start.PlanID, start.AdmissionGrantID, start.TemplatePolicyID", "start.PlanID, start.TemplatePolicyID"},
+		{"omit execution ID validation", "start.Exec.OperationID, start.SubmissionID", "start.SubmissionID"},
 		{"detached context", "beginMinimalPreparation(ctx, deadline)", "beginMinimalPreparation(context.Background(), deadline)"},
 		{"rebased deadline", "beginMinimalPreparation(ctx, deadline)", "beginMinimalPreparation(ctx, time.Now().Add(service.minimalLaunch.PreparationTimeout))"},
 		{"reassigned context", "start := cloneJobStartRequestV2", "ctx = context.Background(); start := cloneJobStartRequestV2"},

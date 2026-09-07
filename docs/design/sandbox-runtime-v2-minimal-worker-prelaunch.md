@@ -103,8 +103,14 @@ Their presence in a request fingerprint or later public boot binding does not
 authorize credential access; the later credential authorizer must independently
 approve them. Keep the new internal launch grant in a distinct namespace/schema.
 
-All guest-bound IDs retain the minimal protocol's 1–64 byte syntax; reject rather
-than truncate broader values. Scope and authorizer handles are trusted local
+All guest-bound IDs retain the minimal protocol's syntax
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; reject rather than truncate broader values.
+The shared neutral `ValidMinimalLaunchID` checks syntax only, not authority.
+Selected request admission checks guest-bound fields, including the unchanged
+credential-intent `AdmissionGrantID`, before provider calls or durable reservation.
+Selected scope, selection, allocation and stored metadata use the same syntax;
+legacy credential/source/binding and daemon-generation validators remain unchanged.
+Scope and authorizer handles are trusted local
 constructor inputs, with no worker JSON construction path. Service construction
 checks the authorizer uses its exact principal issuer and configured provider.
 
