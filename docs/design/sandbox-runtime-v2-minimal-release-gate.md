@@ -390,3 +390,24 @@ acceptance. No production fallback is justified by that fixture limitation.
 Atomic one-attempt admission, original R/D, interruptible arming/send, later
 cleanup/quarantine composition and executable/controller activation remain
 unimplemented. Currentness alone is not an atomic snapshot of all resources.
+
+## Reviewed setup-only correction
+
+The failing pre-correction source is frozen at `3eaccdbc`. The approved follow-up
+changes only setup: `minimalPreparationFixture` gains one retained test-starter
+field and `withMinimalPreparationFixture` calls the existing tracked helper
+once before `use(fixture)`. Its comment now names the real manager/read-only
+self observation. The helper retains its exact original selected runtime,
+lifecycle, manager and protocol starter; a repeated pre-attempt call returns
+that same test starter only when every retained selection still matches.
+Foreign or already-attempted setup fails. Existing explicit helper calls remain
+in the original release tests.
+
+All original preparation behavior assertions, cgroup-allocation cancellation
+callbacks, P/stage timing and control ordering remain unchanged. The 152-line
+release behavior RED and 87-line currentness RED are byte-identical. Only the
+previous 112-line fixture helper receives the approved idempotency extension;
+there is no production relaxation. The corrected preparation/release/legacy
+reconnect selector passes race times three (292 events, zero failures/skips).
+Vet and Darwin compilation pass. Whole-package race evidence is required
+separately; these tests still do not prove real supervisor-child containment.
