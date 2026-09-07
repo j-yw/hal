@@ -332,6 +332,64 @@ wrong replies and restored contradictory records need their separate REDs and
 review before final acceptance. Whole-job cleanup and durable lost-ACK convergence
 remain the dependencies already listed above.
 
+### Initial reachable fault coverage
+
+The follow-up tests leave the original RED and production checkpoint unchanged.
+Actual seqpacket send queues are filled under a fixed byte/count bound, or an
+ordinary peer withholds a handshake response. A bounded local stack observation
+confirms the selected exchange is inside the actual sendmsg/recvmsg path before
+caller cancellation, fixed one-second deadline expiry, or concurrent client
+Close. Each case joins the admitted operation, checks returned-socket disposal
+and independent-peer retention, preserves the actual finalized record, and
+uses an explicit same-owner retry after cancellation where permitted.
+
+Actual canonical record mutations cover process, finalization/absence, listener,
+supervisor, boot, full-config and finalizing-regression identities before
+reconnect. Every candidate must first pass the existing canonical decoder.
+Each contradiction blocks the connector and remains quarantined after original
+bytes are restored. A separate pure comparison matrix locks every field of the
+complete in-memory record and the three expressly permitted reconnect fields;
+it does not present invalid synthetic metadata as an admitted owner.
+
+A test-only peer uses the actual handshake, FSM and selected store, modifying
+only the response after genuine Stop/Finalize/Commit work. Missing, short,
+trailing, wrong-sequence/opcode/status and changed-body responses fail. Explicit
+retry resumes real surviving cleanup without another Stop. A decoded conflicting
+Finalize ACK quarantines. Real Commit retirement with missing/corrupt ACK remains
+unresolved on retry; no file-absence or fake receipt grants success.
+
+Same-attempt waiter tests pause only the private connector callback, not a live
+connect syscall. They demonstrate callbacks outside both bookkeeping mutexes,
+one admitted attempt/connection, independently canceled waiters, joined active
+cancellation/Close, static error/panic sanitation and sticky panic quarantine.
+This is distinct from the actual send/receive checks above.
+
+The actual full-backlog test binds only a task-private ordinary AF_UNIX endpoint
+through a retained directory. It proves EAGAIN before exercising the selected
+nonblocking helper, then cancellation, fixed deadline, Close and independently
+freed backlog outcomes. The callback returns its actual partial socket on
+failure so cleanup ownership is exercised. The availability control tests only
+that helper and its blocking-mode restoration, not root SO_PEERCRED admission
+or a successful authentication. No host-root or live supervisor is manufactured.
+
+Additional actual-client checks cover partial-error/nil-success connector
+results, nil/typed-nil/panicking/expired callers and nonoriginal client fields.
+They preserve caller-owned handles and the legacy route after invalid calls.
+Concurrent first legacy success/failure reaches the original mutex-held Stop
+before selected admission waits; canceling that selected waiter does not
+interrupt or migrate the already-admitted legacy cleanup.
+
+Stress verification is not yet a full green acceptance result. One combined
+race repetition failed during the basic initial Finalize prerequisite before
+the planned record mutation. A bounded external diagnostic later observed an
+actual Recvmsg EINTR followed by unavailable Finalize exchange before reply
+decoding. The shared helper currently rejects syscall interruption; there is
+no unsafe success, but this can prevent reaching the intended assertion. The
+exact cause of the first prerequisite failure is not inferred from the later
+observation. Targeted repeated controls passed; the original failing logs are
+retained. No assertion is relaxed, automatic protocol retry added, or shared
+legacy transport changed to hide this unresolved interruption boundary.
+
 ## Bounded future ownership
 
 Proposed host implementation: new `minimal_jailer_finalization_linux.go` and
