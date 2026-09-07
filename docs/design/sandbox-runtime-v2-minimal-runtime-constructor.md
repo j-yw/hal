@@ -320,3 +320,83 @@ RED defects. The focused `^TestMinimalRuntimeRequest` race selector at count 3
 passes 123 test/subtest events with no failures or skips. The temporary pure
 renderer duplication is unchanged; consolidating it is not needed for this
 bounded handoff and would add unrelated validator churn.
+
+## Stage-1 constructor refinement and compiling RED
+
+This refinement starts at accepted `38e16732af8e6b61f69e7327ff5c16c36ad897d9`.
+It does not activate the executable's eight-role delegate. The first constructor
+checkpoint adds only `newMinimalControlLinuxRuntime(admission)`, preserving an
+actual `os.Geteuid() == 0` requirement and returning unavailable after that gate.
+Shared supervisor cleanup/preflight, preparation/release, controller, event and
+original-channel behavior remain separately owned later stages. No existing
+seven-role constructor or validator changes in this RED.
+
+The GREEN must use the actual admission, not a reconstructed public config or
+an arbitrary digest. Before allocation it must independently read the bounded
+sealed public-config FD, decode the exact eight-role version, and verify its
+full digest against `admission.configDigest`, original recovery and namespace
+correlations, and captured request expectation. Compare recovery's entire job,
+UID/GID and FC digest with those independently decoded bytes; recapture the pure
+FC/NIC/shared BootConfig expectation from that same authenticated public input.
+Do not trust a callback-mutated map or manufacture a copied L7 descriptor.
+
+Share only the existing constructor's concrete assembly where necessary, with
+distinct seven/eight validation entrypoints. Preserve the three measured sealed
+CLOEXEC duplicates and independent cleanup key, actual boot/self-process
+observation, sole reconnect listener and one manager/runner/coordinator. Store
+the original eight-role recovery projection and full digest in genesis, then
+use the accepted namespace binder before any bootstrap. No userns operation is
+added to production; the Jailer runner still requires its prepared initial-host
+root context for eventual launch. The admission's controller key stays borrowed
+inside its outer callback and is not retained by this constructor.
+
+### Honest constructor test reachability
+
+Default tests provide only absent-admission and actual unprivileged-root-refusal
+controls. The latter uses the ordinary admission fixture's caller-UID seed
+observation and cannot be reported as positive root-constructor coverage.
+
+An explicitly tagged `minimal_runtime_constructor_integration` test starts just
+one copy of the test binary using **CLONE_NEWUSER only**, mapping the parent's
+current UID/GID to namespace UID/GID zero, with setgroups disabled. The parent
+passes a clean child environment containing only its task-private TMPDIR and a
+small Go parallelism limit, imposes a 15-second context/10-second test deadline,
+and joins the child. No other namespace, mount, account, host setting, cgroup,
+identity reservation, jail, helper/VM launch or installed container tool is used.
+
+Inside that child the positive prerequisite is actual Geteuid/Getegid zero and
+real eight-role sealed admission with **fixed expected seed UID zero**, actual
+FD/ownership/seal/digest checks and no injected UID/stat/key observer. Before the
+constructor assertion, a separate passing subtest checks the actual cleanup
+key loader, boot ID, self pidfd/process observation, private reconnect-listener
+creation/cleanup, sealed duplicates and accepted NIC/resource request validation.
+The initial RED must then fail specifically at the unavailable selected
+constructor. Failure to enter the user namespace or to pass a prerequisite is
+reported separately as incomplete infrastructure, never as that product RED.
+
+Post-construction assertions specify exact eight-role store/genesis/namespace
+correlation, one original manager/runner/coordinator, distinct CLOEXEC asset
+duplicates, separate recovery-key ownership, no generation/start, and cleanup
+that clears owned key/FDs while leaving all borrowed roles intact. These are
+**unexecuted** at the initial unavailable boundary. Mutation, partial-duplicate/
+listener failure and currentness negatives require reachable GREEN and a
+separately reviewed test checkpoint; this RED does not claim those defects.
+
+Commands select the boundary explicitly:
+
+```
+go test -p 2 -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalRuntimeAssembly'
+go test -p 2 -count=1 -tags=minimal_runtime_constructor_integration ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalRuntimeAssemblyNamespaceConstructor$'
+```
+
+Successful later tagged construction is **namespace-root constructor coverage**,
+not initial-host-root, live Jailer, cgroup, KVM, namespace isolation, genuine L7
+descriptor, credential or worker acceptance. Missing userns prerequisites remain
+an unverified gate. Prepared-host launch and the concrete producer stay required.
+
+The first actual tagged run entered the user namespace and passed the
+`real_prerequisites` child subtest, then failed only
+`actual_eight_constructor` at the unavailable constructor (one parent test
+failure, no skips). The two default refusal controls passed with no skips.
+The post-construction assertions above did not execute. This is a reproduced
+constructor-entry RED, not an assembly/boot pass.
