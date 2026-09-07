@@ -89,7 +89,13 @@ func canonicalize(ctx context.Context, input, output string, epoch int64) (strin
 			continue
 		}
 		name, ok := archiveName(h.Name)
-		if !ok || seen[name] {
+		// Two pinned BusyBox applets need literal bracket names, not a wider
+		// archive/link alphabet. Admit only their exact canonical symlink tuple.
+		applet := name == "usr/bin/[" || name == "usr/bin/[["
+		if (!ok && !applet) || seen[name] {
+			return "", pins, errInput
+		}
+		if applet && ((h.Name != name && h.Name != "./"+name) || h.Typeflag != tar.TypeSymlink || h.Mode != 0777 || h.Uid != 0 || h.Gid != 0 || h.Size != 0 || h.Linkname != "../../bin/busybox") {
 			return "", pins, errInput
 		}
 		seen[name] = true

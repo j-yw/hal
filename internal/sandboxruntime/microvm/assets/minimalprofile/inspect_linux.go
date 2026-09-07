@@ -82,7 +82,7 @@ func inspect(query imageQuery, pins Pins) (Measurement, error) {
 			if line == "/0/000000/0/0//0/" {
 				continue
 			}
-			name, e, err := parseDirectoryRecord(line)
+			name, e, err := parseDirectoryRecord(line, dir.name)
 			if err != nil {
 				return Measurement{}, errImage
 			}
@@ -233,6 +233,14 @@ func inspect(query imageQuery, pins Pins) (Measurement, error) {
 			return Measurement{}, errImage
 		}
 	}
+	for _, name := range []string{"/usr/bin/[", "/usr/bin/[["} {
+		if e, present := entries[name]; present {
+			resolved, ok := resolveEntry(entries, name)
+			if !ok || e.link != "../../bin/busybox" || entries[resolved].inode != entries["/bin/busybox"].inode || !traversable(name) {
+				return Measurement{}, errImage
+			}
+		}
+	}
 	for _, name := range []string{"/etc/passwd", "/etc/group", "/etc/shadow"} {
 		mode := uint32(0644)
 		if name == "/etc/shadow" {
@@ -293,9 +301,15 @@ func inspect(query imageQuery, pins Pins) (Measurement, error) {
 var secretContent = regexp.MustCompile(`(?i)BEGIN ([A-Z0-9_-]+[ \t]+)*PRIVATE KEY|(?:_authToken|aws_secret_access_key)[ \t]*=|HAL_[A-Z0-9_]*CANARY`)
 var fastLink = regexp.MustCompile(`(?m)^Fast link dest: "([A-Za-z0-9._@+/-]+)"$`)
 var directoryRecord = regexp.MustCompile(`^/([1-9][0-9]*)/([0-7]{6})/([0-9]+)/([0-9]+)/([A-Za-z0-9._@+-]+)/([0-9]*)/$`)
+var busyboxDirectoryRecord = regexp.MustCompile(`^/([1-9][0-9]*)/([0-7]{6})/([0-9]+)/([0-9]+)/(\[{1,2})/([0-9]*)/$`)
 
-func parseDirectoryRecord(line string) (string, imageEntry, error) {
+func parseDirectoryRecord(line, directory string) (string, imageEntry, error) {
 	m := directoryRecord.FindStringSubmatch(line)
+	applet := false
+	if m == nil && directory == "/usr/bin" {
+		m = busyboxDirectoryRecord.FindStringSubmatch(line)
+		applet = m != nil
+	}
 	if m == nil {
 		return "", imageEntry{}, errImage
 	}
@@ -325,6 +339,9 @@ func parseDirectoryRecord(line string) (string, imageEntry, error) {
 			return "", imageEntry{}, errImage
 		}
 	} else if kind != "directory" {
+		return "", imageEntry{}, errImage
+	}
+	if applet && (mode != 0120777 || uid != 0 || gid != 0 || size != int64(len("../../bin/busybox"))) {
 		return "", imageEntry{}, errImage
 	}
 	return m[5], imageEntry{inode: ino, mode: uint32(mode & 07777), uid: uint32(uid), gid: uint32(gid), size: size, kind: kind}, nil

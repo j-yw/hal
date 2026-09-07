@@ -205,6 +205,12 @@ func safeRelative(s string) bool {
 	return s != "." && path.Clean(s) == s && !strings.HasPrefix(s, "/") && !strings.HasPrefix(s, "../") && safeName.MatchString(s)
 }
 
+// This image-only tuple exception does not widen public names, account
+// locations or generic symlink targets.
+func busyboxTestApplet(name string) bool {
+	return name == "/usr/bin/[" || name == "/usr/bin/[["
+}
+
 func extractStage(archive, root string, epoch int64) ([]stageEntry, int64, error) {
 	file, err := os.Open(archive)
 	if err != nil {
@@ -224,7 +230,11 @@ func extractStage(archive, root string, epoch int64) ([]stageEntry, int64, error
 			return nil, 0, errImage
 		}
 		name := strings.TrimSuffix(h.Name, "/")
-		if !safeRelative(name) || seen[name] != 0 || len(entries) >= maxInodes-2 || h.Size < 0 || h.Size > maxContent-content || len(h.PAXRecords) > 0 || len(h.Xattrs) > 0 || h.Mode & ^int64(07777) != 0 || h.Mode&06000 != 0 {
+		applet := busyboxTestApplet("/" + name)
+		if (!safeRelative(name) && !applet) || seen[name] != 0 || len(entries) >= maxInodes-2 || h.Size < 0 || h.Size > maxContent-content || len(h.PAXRecords) > 0 || len(h.Xattrs) > 0 || h.Mode & ^int64(07777) != 0 || h.Mode&06000 != 0 {
+			return nil, 0, errImage
+		}
+		if applet && (h.Name != name || h.Typeflag != tar.TypeSymlink || h.Mode != 0777 || h.Uid != 0 || h.Gid != 0 || h.Size != 0 || h.Linkname != "../../bin/busybox") {
 			return nil, 0, errImage
 		}
 		if seen[path.Dir(name)] != tar.TypeDir || forbiddenName(path.Base(name)) {

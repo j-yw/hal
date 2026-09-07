@@ -1,7 +1,7 @@
 # Native Buildroot metadata compatibility
 
-Status: DESIGN and compiling RED only. No production correction or new image
-acceptance is included in this checkpoint.
+Status: the reviewed bounded recipe/path correction is implemented. The frozen
+RED tests remain unchanged. This is not acceptance of a new native-built image.
 
 ## Observed failure and authority
 
@@ -110,5 +110,27 @@ transformations and exercise the full-size ext4 pipeline. Keep the original
 tar/stage/source untouched; name all output explicitly diagnostic. Such a probe
 can expose later real-image mismatches before another expensive clean build,
 but cannot mint a B1 publication request, accepted source identity or receipt.
-It never substitutes for the two fresh final-source builds. No such probe runs
-in this DESIGN/RED checkpoint.
+It never substitutes for the two fresh final-source builds. No such probe has
+run for this correction.
+
+## Implemented verification boundary
+
+The actual canonicalizer, extractor and contextual inode inspector now pass
+the original recipe/applet regressions. The real small-ext4 baseline and applet
+case both pass; the latter retains exactly two additional inodes and directory
+records without changing logical file bytes or installed Pi-tree pins. This
+exercises real ownership commands and inode inspection, not guest execution.
+Additional tests reject raw trailing-slash/dot spellings and verify that a
+shared symlink inode cannot bypass the applet's per-path target validation.
+The ordinary shared-inode control still passes. Generic archive, public-name,
+link-target, account-location and default-test tool guards remain unchanged.
+
+Focused command: `go test -p 2 -race -count=3
+./tools/microvm/l8-minimal/assembler
+./internal/sandboxruntime/microvm/assets/minimalprofile
+-run '^(TestNativeMetadata|TestCanonicalNative|TestMinimalBusybox|TestMinimalDefault)'`.
+Run the whole adjacent tools/image suites with `-tags=microvm_assets_integration`
+for required real local ext4 and fake runtime/Git checks, plus scoped vet and
+format/diff checks. Required image tools must be present, not skipped. Actual
+full-size diagnostic inspection, final-source clean builds and live acceptance
+remain separate, unperformed gates.

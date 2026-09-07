@@ -1,4 +1,5 @@
 /bin/busybox f 0755 0 0 - - - - -
 /etc/shadow f 0600 0 0 - - - - -
+/var/www d 0755 0 0 - - - - -
 /workspace d 0700 1000 1000 - - - - -
 /run/agent d 0700 1000 1000 - - - - -
