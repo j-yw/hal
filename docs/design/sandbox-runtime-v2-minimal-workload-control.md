@@ -323,3 +323,48 @@ reproduced three expected failure events, twelve passing controls and zero
 skips. Controls cover actual enclosing serving/readiness without work, unchanged
 direct readiness-only rejection, nil backend rejection and the old independent
 readiness golden. No production proof or prepared-Linux acceptance was run.
+
+## Shared codec and work-only server compiling RED
+
+The second checkpoint adds only unavailable codec methods and an inert server
+entry seam. It does not implement the workload transport or select it in the
+guest command. The original 196-line authenticated transport RED is unchanged.
+
+The pure Binding methods are EncodeWorkload(payload, ordinal, sessionID),
+DecodeWorkloadRequest(kind, payload, ordinal, sessionID), and
+DecodeWorkloadResponse(kind, payload, ordinal, sessionID). They all return
+ErrInvalid in this RED. Fixed plaintext/inner bounds and an independently written
+golden reuse the existing 27-field readiness digest vector, not a paired new
+encoder's output. Empty/non-JSON inner bytes are opaque at this layer; the
+existing server parser rejects invalid requests later. Exact decoded max+1 must
+fail even when padded base64 still fits the maximum outer length.
+
+The additive server interfaces are WorkloadHandler with PrepareWorkload(ctx)
+and HandleWorkload(ctx, Request), and WorkloadIsolationVerifier with
+VerifyWorkloadIsolation(ctx) (IsolationProofResult, error). Options retains an
+explicit WorkloadIsolationVerifier. The sole existing constructor change permits
+either the existing legacy verifier or this local verifier to satisfy the
+required-verifier presence check. Both work-proof flags remain true in selected
+Serve fixtures. New mode-exclusivity/flag validation is deliberately missing
+and separately reached by constructor REDs; this intermediate scaffold must not
+be integrated as a usable selected mode. PrepareWorkload remains unavailable;
+HandleWorkload delegates unchanged Handle. Neither sets proof/lifecycle flags,
+invokes the retained local verifier, nor manufactures a legacy proof request.
+
+The new server fixture enters actual Server.Serve through an injected transport,
+receives its actual handler, and cancels/joins Serve before checking exact backend
+Close. No test assigns StateServing or isolationProven. Local process/network
+results are explicitly fake observations from existing L7 fixtures, not inspected
+guest or host authority. Reached failures establish legacy readiness side effects,
+missing local preparation, accepted incomplete/mixed selected options, and an
+unselected server dispatching through the new entry. Callback-dependent
+stale/canceled/fresh-proof/timing checks and the codec mutation/correlation matrix
+are guarded by valid-entry assertions which currently fail: these later checks
+are specified, not claimed as exercised acceptance. Original legacy exec,
+malformed inner parsing, absent/typed-nil verifier, pre-canceled preparation,
+independent golden and readiness-only controls are executed.
+
+`go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/guestagent/server ./internal/sandboxruntime/microvm/guestagent/minimalcontrol -run '^(TestWorkloadDispatch|TestWorkloadCodec|TestMinimalWorkload|TestHostReadinessCodecLegacyGolden)'`
+produces 114 expected test failure events, 45 passing controls, and zero skips.
+This is a compiling RED checkpoint only; shared parser/predicate extraction,
+local proof implementation and all coordinated authenticated I/O remain pending.

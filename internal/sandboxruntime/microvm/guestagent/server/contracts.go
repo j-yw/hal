@@ -72,6 +72,19 @@ type Handler interface {
 	Handle(context.Context, Request) Response
 }
 
+// WorkloadHandler is the selected-only dispatch boundary. Its compiling RED
+// methods do not yet implement local proof preparation or exclude readiness.
+type WorkloadHandler interface {
+	PrepareWorkload(context.Context) error
+	HandleWorkload(context.Context, Request) Response
+}
+
+// WorkloadIsolationVerifier inspects local process/network state without
+// accepting a legacy wire request or issuing a generation/proof by metadata.
+type WorkloadIsolationVerifier interface {
+	VerifyWorkloadIsolation(context.Context) (IsolationProofResult, error)
+}
+
 // Backend executes decoded live plans without exposing them as wire contracts.
 type Backend interface {
 	Ready(context.Context) error
@@ -202,6 +215,7 @@ type Options struct {
 	MaxOperationTime                time.Duration
 	MaxShutdownTime                 time.Duration
 	IsolationVerifier               IsolationVerifier
+	WorkloadIsolationVerifier       WorkloadIsolationVerifier
 	RequireIsolationProofBeforeWork bool
 	// RequireNetworkProofBeforeWork requires the verified process proof plus
 	// verified network isolation before exec or copy work is admitted. It

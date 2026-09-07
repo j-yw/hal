@@ -22,6 +22,7 @@ type Server struct {
 	maxShutdownTime                 time.Duration
 	admission                       chan struct{}
 	isolationVerifier               IsolationVerifier
+	workloadIsolationVerifier       WorkloadIsolationVerifier
 	requireIsolationProofBeforeWork bool
 	requireNetworkProofBeforeWork   bool
 	isolationProven                 bool
@@ -56,7 +57,10 @@ func New(options Options) (*Server, error) {
 		return nil, errors.New("guest-agent server backend is required")
 	}
 	requireIsolationProofBeforeWork := options.RequireIsolationProofBeforeWork || options.RequireNetworkProofBeforeWork
-	if requireIsolationProofBeforeWork && !configuredDependency(options.IsolationVerifier) {
+	// RED constructor-only bridge: retain an explicit local verifier so the
+	// actual Serve boundary is reachable with both work gates still required.
+	// Selected-mode validation and verifier invocation remain unimplemented.
+	if requireIsolationProofBeforeWork && !configuredDependency(options.IsolationVerifier) && !configuredDependency(options.WorkloadIsolationVerifier) {
 		return nil, errors.New("guest-agent isolation verifier is required")
 	}
 	maxRequestBytes, err := boundedInt64Option(
@@ -121,6 +125,7 @@ func New(options Options) (*Server, error) {
 		maxShutdownTime:                 maxShutdownTime,
 		admission:                       make(chan struct{}, maxConcurrent),
 		isolationVerifier:               options.IsolationVerifier,
+		workloadIsolationVerifier:       options.WorkloadIsolationVerifier,
 		requireIsolationProofBeforeWork: requireIsolationProofBeforeWork,
 		requireNetworkProofBeforeWork:   options.RequireNetworkProofBeforeWork,
 		state:                           StateNew,
