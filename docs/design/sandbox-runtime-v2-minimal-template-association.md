@@ -1,0 +1,259 @@
+# Trusted selected template to retained minimal assets
+
+DESIGN ONLY at `38f8f0b6d22a335313402219b7c25c644c821947`. This refines the
+provider proposal at `7144680c2d8b8ce1112a7a599c64da34e93d6cfc`, under the
+[Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
+[L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md).
+Original `TemplateIdentity`, `RequestCorrelation`, and `OwnedContext` are now
+accepted neutral handoffs. No provider, issuer, registry, schema, source guard,
+image, default selector, runtime entrypoint, or executable test changes here.
+
+Source paths below are under `internal/`: host helpers are in
+`sandboxruntime/microvm/firecrackerhost/`, and localresolver/minimalprofile are
+in `sandboxruntime/microvm/assets/`. The existing command composition example
+is `cmd/sandbox_template_selection.go`; this provider must not import cmd.
+
+## Source boundary and distinct objects
+
+`sandboxtemplate/selection.Workflow.Select` owns acquisition through
+`acquisition.NewOCIResolver(registry.NewResolver(...))`. The registry resolver
+measures the template OCI manifest and its single document layer, validates
+media/size/digest/origin/auth boundaries, and bounds the request context.
+`selection.Result` contains mutable pointers/slices; possession of a caller's
+Result is not evidence that this provider performed that acquisition.
+
+| Retained value | Actual meaning and source |
+| --- | --- |
+| RuntimeImage | Exact L9 selected reference plus `@sha256:` suffix; unchanged original request value |
+| TemplateDocumentSHA256 | SHA256 of acquired template document/layer bytes, `Lock.Document.Digest` |
+| TemplateManifestSHA256 | SHA256 of acquired template OCI manifest, `Result.ManifestDigest` and `metadata.reference` lock |
+| RuntimeImageSHA256 | Digest-pinned `runtime.image` reference in the authenticated template document; not independently fetched runtime bytes |
+| Expected.RootfsSHA256 | SHA256 of actual inspected raw ext4 bytes from independently retained B1 build receipt |
+
+`registry.ResolveOCIArtifact` supplies measured reference evidence only for
+`metadata.reference`. `acquisition.appendOCIReferenceLock` can lock the separate
+`runtime.image` from its declared digest. Accordingly, neither that lock nor
+strict L9 trust proves that an OCI runtime manifest was fetched, or that its
+layers equal this raw rootfs. This adapter must not imply OCI image extraction.
+`runtime.launch.descriptorRef` is also not a minimal-bundle acquisition format.
+
+The trusted association explicitly selects the local B1 artifact to implement
+one exact template/runtime reference. It is deployment configuration, not a
+new cryptographic proof that the referenced OCI image contains the ext4 file.
+Do not equate these digest roles, compute one from another, or decode RequestKey
+to recover their originals. Tests use different values for all three template
+digests and the rootfs digest; accidental equal strings alone are neither an
+error nor evidence that two roles describe the same object.
+
+## Smallest constructor-owned entry
+
+Proposed private types in a dedicated
+`firecrackerhost/minimal_launch_template_association_linux.go`:
+
+```go
+type minimalTemplateAssociation struct {
+    scope sandboxruntime.MinimalLaunchScope
+    template sandboxruntime.MinimalLaunchTemplateIdentity
+    templateSource string
+    bundleDir, parentL7Dir string
+    expected localresolver.L8MinimalExpectedIdentity
+}
+
+// Proposed private constructor; no Result/descriptor input or default caller.
+func newMinimalLaunchProvider(minimalTemplateAssociation, registry.Options) (*minimalLaunchProvider, error)
+```
+
+Use one immutable association per configured policy/provider instance first,
+not a request-keyed registry, lookup service, mutable map, or generic cloning
+framework. The instance remains multi-job: every successful Resolve owns fresh
+verified files and a distinct private selection; no transferred lease is reused.
+All fields above are comparable scalar values, including `expected.Runtime`.
+The private prepared-host constructor copies them before retaining them.
+
+The prepared-host caller supplies:
+
+- the exact original four-string template tuple;
+- one canonical, digest-pinned OCI template source (validated with existing
+  `registry.ValidateReference`), whose digest equals TemplateManifestSHA256;
+- configured absolute bundle and L7 parent locations, never request paths;
+- exactly `minimalprofile.Receipt.Expected`, independently retained from a
+  successful, accepted source build/publication; and
+- the same complete `MinimalLaunchScope` used by the original authorizer:
+  PolicyID/Revision, PrincipalID, WorkerID, HostID, TemplatePolicyID,
+  WorkspacePolicyID, NetworkPolicyID.
+
+Receipt and Expected are plain values, not unforgeable tokens. Their authority
+depends on this trusted constructor boundary and its reviewed provenance.
+Never fill Expected by decoding candidate `final-inspection.json`, provenance,
+source catalog, diagnostic image, worker metadata, or a candidate receipt next
+to the bundle. Do not run Publish or another issuer during selection. Receipt's
+archive/tree fields remain build evidence outside this association because the
+actual consumer uses only Expected. The retained Expected pins the provenance,
+inspection and source-lock documents that bind the exact measured L7 parent.
+
+Proposed provider construction accepts this entry plus prepared-host registry
+transport/origin/credential capabilities using existing `registry.Options`;
+it constructs and keeps the actual registry Resolver and Workflow itself.
+It never accepts a `selection.Result`, caller Workflow, or preselected launch
+descriptor as authority. Existing NewResolver copies origin-policy collections;
+borrowed transport/credential capabilities remain trusted constructor inputs,
+must honor context, and never derive from a job's Exec/env. Their owner closes
+them only after provider operations finish; the provider does not close another
+component's client or credential provider. Initial Resolve can use nil Cache
+(already supported) so read-only selection does not publish cache entries.
+No new cache implementation is needed; later use of existing cache publication
+requires an explicit lifecycle/side-effect decision, not an accidental write.
+
+Require selected driver `microvm`, isolation `vm`, strict/trusted L9 result,
+strictly-enforced trust policy and zero warnings/errors. These are fixed
+selection requirements, not active isolation/network/credential claims. Compare
+the entire constructor scope, not just TemplatePolicyID. Reject missing fields,
+invalid selected IDs, zero revision, incomplete Expected, unsafe configured
+paths, mutable template source, and mismatched manifest pin before acquisition.
+Existing validators remain authoritative; no broader public name grammar.
+
+## Actual selection and claimed transfer
+
+1. `ResolveMinimalSelection(ctx, hints)` checks its original provider and
+   configured policy, valid hints and live bounded context. Only hint IDs are
+   correlation; they cannot choose a source, location or Expected. The neutral
+   authorizer authenticates principal/scope before this callback and checks the
+   returned worker/host/template/workspace/network identity afterward.
+2. Run the provider-owned Workflow with its pinned source and fixed strict
+   trust. Check actual Result lock roles/algorithms/status, measured document
+   and manifest, exact selected image/runtime digest, trust, driver and isolation
+   against the trusted entry. Reuse `selection.Bind` for its existing binding
+   checks and separately compare the document and all four exact strings; Bind
+   alone does not establish the local asset association. Reject missing/duplicate
+   required lock roles or contradictory projections rather than picking one.
+3. Copy only the validated four-string tuple and necessary fixed trust/runtime
+   conclusions into a private selection; do not retain an externally mutable
+   Result tree. Never follow candidate descriptor paths/refs to open files.
+   The source document's other requirements are not silently applied as runtime
+   authority: resource/L7/workspace execution remains the configured producer's
+   later responsibility, correlated to this exact template/policy.
+4. Acquire a fresh genuine L7 parent with VerifyDistributionBundle, then the
+   exact seven-file child with VerifyL8MinimalDistributionBundle using the
+   independently copied Expected. The latter acquires its own L7 lease, copies
+   parent metadata, pins files and checks the parent's measured evidence.
+   Use the context-aware dependency below before exposing a usable selection.
+   Construct a private self-checked source tied to this exact provider, original
+   hints, scope and acquired tuple. A fresh selection runtime generation belongs
+   to this owned acquisition instance, not a template hash or readiness proof;
+   its bounded issuance is part of the concrete provider, not a new public issuer.
+5. `Current(ctx)` checks the original private selection, provider/lifetime,
+   immutable identity and retained distribution with context-aware currentness.
+   It never reruns OCI acquisition, switches entries, reparses candidate metadata
+   as expected, or reacquires replacement files as a new selection. After transfer
+   it checks the same owner's launch lease, not the spent distribution descriptor.
+6. Neutral Reserve/Arm/Start keeps its original checks and durable barrier.
+   `StartMinimalJob` first checks the exact private source/provider, then calls
+   the original reservation's ClaimLaunch. Compare claimed identity against the
+   complete configured policy/principal/worker/host scope and exact selection
+   identity/hints, including RuntimeGeneration/PlanID and LaunchPolicyRevision.
+   Require original TemplateIdentity equal to both the acquired and configured
+   tuples; require original RequestCorrelation for the later producer. Neither
+   accessor alone confers claim, trust or credential authority.
+7. Only after those checks may Start create/retain its exact partial owner and
+   call TakeLaunchLease. The original input must transfer once to that owner
+   before any host allocation. Selection aliases cannot close transferred files.
+   ConfirmCurrent before/after handoff and WithAssets; inside the borrow use
+   existing snapshotJailerRecoveryAsset for kernel (128 MiB limit) and rootfs
+   (4 GiB limit). Hash actual copied and sealed bytes; callback readers expire on
+   return/panic, cannot escape or reenter/Close the lease. The raw rootfs digest
+   for future boot/control binding comes from Expected and measured source,
+   never RuntimeImageSHA256. Later producer/controller code owns snapshot FDs.
+
+The provider must retain its exact partial owner before an allocating callback
+can fail or panic and return that owner with error. Before transfer, selection
+Close releases only its own acquired files. After transfer, Close cannot retire
+the owner's lease; only that owner closes its sources/snapshots through an
+idempotent outcome. Report close failure and keep uncertainty, rather than
+returning success, issuing cleanup receipt, or reacquiring a replacement.
+The current minimal verifier attempts its owned cleanup on error and returns a
+zero distribution plus error; do not pretend it returned a retained partial
+handle. Preserve that failure, including close uncertainty, and never retry it
+as successful acquisition or infer any runtime/terminal state. A successfully
+returned distribution has explicit selection ownership from that point onward.
+Use existing serialization and ownership primitives; no provider callback or
+joined wait under worker/neutral bookkeeping locks, no side registry of jobs.
+
+Original P bounds Claim/transfer/snapshot; later owner cancellation uses the
+same reservation.OwnedContext, including its true earlier parent deadline.
+Initiating waiter loss does not revoke an owned job. Explicit cancellation,
+service/authorizer loss or a failing Current never rebase lifetime or permit a
+second Start. The selected worker already retains partial owners and occupancy.
+Missing template remains neutral compatibility, but this concrete Start rejects
+the unavailable accessor before lease transfer, network/VM/workspace allocation
+or seed generation. Do not weaken existing legacy callers to require the tuple.
+
+## Necessary context-aware local dependency
+
+The current VerifyDistributionBundle, VerifyL8MinimalDistributionBundle and
+SelectL8MinimalDistribution have no context argument. They perform bounded-size
+file verification but cannot promise prompt caller cancellation while hashing.
+TakeLaunchLease/ConfirmCurrent/WithAssets do accept context and recheck retained
+parent/child identity and bytes, but TakeLaunchLease cannot be used during
+Resolve merely to get that check: transfer is after Claim and exact tuple only.
+
+The final multi-job path therefore needs a separately reviewed, compatible
+context-aware verification entry for parent and minimal child, plus an original
+untransferred distribution Current(ctx) seam reusing confirmLaunchCurrent.
+Preserve old APIs/validation and their callers; thread the supplied context
+through actual bounded hash/copy loops and check before/after each local stage.
+No goroutine timeout that abandons owned descriptors; no background-context
+fallback or unbounded successful Resolve. Ordinary local kernel filesystem I/O
+is still a trusted responsiveness prerequisite; adding context checks does not
+make an arbitrary blocked filesystem syscall interruptible.
+
+Preverifying at prepared-host construction can move initial work earlier, but
+one distribution has one transfer latch. Sharing it across selections, reopening
+by descriptor, or reusing the transferred lease is incorrect. A one-use
+preverified fixture can isolate retained admission tests; do not add a production
+one-use mode solely to bypass acquisition work. Fresh ownership per job remains
+the completed design, and the missing context-aware dependency stays visible.
+
+## Next compiling RED and acceptance boundaries
+
+No tests or production scaffolding are authorized by this note. Proposed next
+files are dedicated `firecrackerhost/minimal_launch_template_association*.go`
+and tests; localresolver context/shared-currentness files need separate approved
+ownership. No worker/neutral/schema/guard exemption is assumed.
+
+- First run independent actual Workflow controls using the real registry
+  resolver with an ordinary in-memory HTTPDoer serving measured OCI manifest
+  and layer responses, not an injected Result. Three distinct digests and raw
+  rootfs pin reach the existing lock/binding checks. Wrong manifest/layer/media,
+  strict trust, driver/isolation and source-origin controls execute independently.
+- Refine existing minimalJailerFixture's setup only as needed to expose its
+  independently prepared Expected and parent location. It constructs synthetic
+  files and genuine local verification/leases, not ext4/executables or accepted
+  build provenance. Do not obtain Expected by decoding its written candidate.
+  Keep original fixtures/assertions unchanged unless separately approved.
+- Through actual authenticated neutral ResolveSelection/Reserve/Arm/Start,
+  prove original tuple/request key, exact policy/provider/source identity and
+  Claim before transfer. A compiling unavailable private consumer is the first
+  reachable RED; independently passing acquisition/Claim controls must establish
+  that later assertions did not fail merely on invalid fixture setup.
+- Add actual mismatched/omitted tuple, wrong scope/principal/revision, copied or
+  foreign source, unarmed/replayed/revoked reservation, expired P and cancellation
+  controls. Assert zero TakeLaunchLease/host allocation before rejection; preserve
+  original intent access after loss without allowing renewed launch.
+- At the real retained handoff, replace/mutate child and parent directories,
+  metadata, kernel/rootfs before Current/transfer and during snapshot. Assert
+  rejection, no recapture, one transfer, expired borrowed readers, exact sealed
+  snapshot bytes, partial-close accounting and independent concurrent selections.
+  Canceled hash/read and close-versus-borrow tests belong to the context dependency.
+
+The first GREEN can end at validated claimed asset handoff with runtime consumer
+unavailable. No fake owner/receipt or successful worker completion fills that
+gap. Producer eight-role FD construction, real surviving supervisor, post-reply
+HLMINRD1 reception, L7 session/cleanup, credential activation, receipt-before-
+Commit, terminal persistence and no-skip Linux acceptance remain separate gates.
+Actual accepted native build/publication and trusted deployment association are
+not supplied by this design or a diagnostic image. Default production wiring
+remains inert until those dependencies and the prepared-host consumer are reviewed.
+
+Verification of this design: actual source inspection and `git diff --check`.
+No Go test, OCI fetch/cache mutation, build, native-stage access, provisioning,
+VM, credential lookup, or runtime was executed for this documentation change.
