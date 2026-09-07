@@ -138,3 +138,26 @@ go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/firecrackerhost -r
 The first command is intentionally RED. Neither command performs socket I/O,
 namespace/process operations, launch or credential activation. GREEN remains a
 separate reviewed implementation of these bounded pure interfaces only.
+
+## Bounded codec GREEN
+
+The two pure codec functions and Linux observation wrapper now implement the
+approved byte layout. Length checks precede offsets and string allocation;
+encoders return fresh bytes, decoders return copied values, and every rejection
+returns only the existing sanitized protocol error with nil bytes/zero metadata.
+The original 238-line and 47-line RED files remain unchanged. Their positive
+prerequisites now pass, reaching the previously blocked negative matrices.
+
+Additional bounded checks compare all 64 process-ID extents against independently
+assembled golden-prefix/tail bytes and exercise sparse nonzero values, canonical
+URL-base64 punctuation, maximum uint64 transport generation, and the unchanged
+legacy zero-token rule. The combined event/legacy selector passed 820 test/subtest
+events over ten race repetitions, zero failures/skips:
+
+```text
+go test -p 2 -race -count=10 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(MinimalReadinessEvent|L8RuntimeOwnerProtocol|L8RuntimeOwnerTypedBodies)'
+```
+
+This is byte/observation validation only. No receive syscall, FD ownership,
+stateful duplicate check, A/D/H enforcement, authenticated publication, runtime
+selection or credential/cleanup authority has been added.
