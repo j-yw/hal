@@ -128,7 +128,11 @@ func TestMinimalControlControllerReadyHardLifetime(t *testing.T) {
 					c.mu.Lock()
 					stream := c.stream
 					c.mu.Unlock()
-					if ready.hardExpiry.Before(latest) || ready.hardExpiry.After(latest.Add(30*time.Millisecond)) || ready.hardExpiry.After(stream.hardDeadline) {
+					wantExpiry := stream.hardDeadline
+					if source == "owner-deadline" && latest.Before(wantExpiry) {
+						wantExpiry = latest
+					}
+					if !ready.hardExpiry.Equal(wantExpiry) {
 						t.Fatal("hard expiry was rebased or enlarged")
 					}
 					select {

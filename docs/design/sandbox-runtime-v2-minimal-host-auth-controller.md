@@ -316,6 +316,11 @@ publication observation; both sanitize failure, close/join and wipe without
 readiness. Together with the earlier callback and partial-buffer panic controls,
 these pass existing behavior; they are not newly reproduced defects.
 
+The hard-lifetime assertion compares the exact retained stream deadline (clamped
+to an explicit owner deadline), not a small scheduling tolerance from a timestamp
+sampled before Open. This proactive test-stability correction followed review;
+no failure of the earlier assertion or production lifetime behavior was observed.
+
 ## Explicit next coupled handoff
 
 Composition owns the distinct config/record/store foundation. The selected runtime
