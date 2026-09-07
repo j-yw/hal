@@ -258,3 +258,32 @@ not make the check atomic with admission or send, check current resources, retai
 R/D, interrupt blocked gate I/O or reject cancellation first observed while
 waiting for the starter mutex. Those remain separately reproduced/approved
 work; no full release-gate or runtime acceptance is claimed.
+
+## Separate compiling RED: retained resource currentness
+
+After narrow GREEN `2ddb13c0`, the new 87-line
+`minimal_control_release_currentness_red_linux_test.go` reuses the unchanged
+tracked fixture and revision-1 pause. Both cases keep original P/channel live.
+One closes only the fake HostProcess Done channel and requires the real
+manager's exact handle lookup to observe termination. The other changes only
+the fake filesystem's `memory.max` from admitted 512 MiB to finite, page-aligned
+1 GiB, requiring the existing exact limit readback to reject that difference.
+Neither is a new observer, production seam or real process/cgroup mutation.
+
+Despite those independently observed changes, the current Release still sends
+the actual ChildRelease packet, marks released, advances the canonical record
+to running revision 2 and reports successful bootstrap. These are new reachable
+resource-currentness failures, not repeated evidence for the fixed cancellation
+case. Fake cleanup remains through the same owner and all blocked tasks join.
+
+```text
+go test -race -p 2 ./internal/sandboxruntime/microvm/firecrackerhost \
+  -run '^(TestMinimalRelease|TestMinimalPreparationActualBootstrapOrderControl|TestJailerRecoveryActualSelectedOwnerRetainsCoordinatorAcrossReconnect)' \
+  -count=3 -json
+```
+
+Actual RED: six intended failing leaves (nine failure events including parents),
+24 passing control events, zero skips and no race diagnostics. The initial
+EOF/P RED now passes unchanged. No positive record/identity/staging/pidfd
+revalidation, R/D admission or interruptible gate implementation is claimed;
+their remaining independent boundary cases are not covered by these two leaves.
