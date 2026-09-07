@@ -1,11 +1,13 @@
 # Original credential request correlation for a minimal reservation
 
-DESIGN only from `1e9b2eec247b449fdc0d7b7441058e54452df8c1`. This narrows the
+DESIGN `590e5c70` and compiling RED from `1e9b2eec247b449fdc0d7b7441058e54452df8c1`. This narrows the
 isolated provider design `7144680c`; it does not approve that provider or its
 trusted OCI-to-image association. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) and
 [controller design](sandbox-runtime-v2-minimal-host-controller.md) remain binding.
-No source, test, public schema, credential grant or runtime activation changes here.
+The RED adds only unavailable neutral API scaffolding and dedicated tests;
+production behavior, public schemas, credential grants and runtime activation
+are unchanged. GREEN requires separate review and approval.
 
 ## Actual path and missing values
 
@@ -189,8 +191,8 @@ Any further typed-call allowance requires concrete guard-failure review first.
 
 After separate RED review and GREEN approval: actual-service/neutral race three
 times, whole adjacent packages, original RED blob checks, full worker source
-guards, vet, Darwin compilation, gofmt and diff checks. This DESIGN was checked
-by source inspection and `git diff --check` only; no executable test ran here.
+guards, vet, Darwin compilation, gofmt and diff checks. The original DESIGN was
+checked by source inspection and `git diff --check`; RED evidence follows below.
 
 ## Still missing: immutable template identity and trusted asset association
 
@@ -212,3 +214,31 @@ template document, descriptor/distribution documents and raw rootfs are differen
 digest objects. Never equate them or infer the association from candidate JSON,
 the source catalog or a diagnostic image. No new OCI acquisition or provider
 selection is authorized by this request-correlation design.
+
+## Compiling RED evidence
+
+```text
+go test -race -p 2 ./internal/sandboxruntime ./internal/sandboxworker \
+  -run '^(TestMinimalReservationRequestCorrelation|TestMinimalLaunchServiceRequestCorrelation)' \
+  -count=1 -json
+```
+
+The actual run exits 1 with 13 intended failing leaves (16 failure events
+including parents), 11 passing controls, zero skips and no race reports.
+Three leaves reach the unavailable accessor after actual Start/Claim: two
+neutral original-value cases and one authenticated service/durable-dispatch
+case. Seven leaves show explicitly invalid optional values still issue a
+reservation. Three independently reach final Current after both actual store
+publications: coherently changing the retained memory and ordinary-file request
+key, credential grant or credential revision still enters the provider. No
+process, credential or host allocation occurs in any fixture.
+
+The later successful-accessor copy/revoke/selection-close and failed-Start
+assertions are not yet reached and are not RED evidence. The three final-barrier
+cases independently confirm retained uncertain ownership and no rewrite of
+their replacement data. Omitted-argument actual Start, nil/zero/copied observation,
+wrong issuer/principal and malformed admission controls execute independently.
+Those controls plus unchanged dispatch/cancel/binding/lifetime/selected guard
+tests pass race three times: 783 passing events, zero failures/skips. Scoped vet
+and both actual production-source audits pass (six test/subtest events).
+No existing RED file, worker production code or guard digest is edited.

@@ -45,6 +45,12 @@ type MinimalLaunchIdentity struct {
 	LaunchPolicyRevision                                      uint64
 }
 
+// MinimalLaunchRequestCorrelation is requested intent, not credential authority.
+type MinimalLaunchRequestCorrelation struct {
+	AdmissionGrantID       string
+	AdmissionGrantRevision uint64
+}
+
 // MinimalLaunchReservation is a live one-shot dispatch latch. Only its original
 // manager-owned handle may arm it after exact durable dispatch readback.
 type MinimalLaunchReservation struct {
