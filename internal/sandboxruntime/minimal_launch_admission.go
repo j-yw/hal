@@ -153,10 +153,12 @@ func (selection *MinimalLaunchPreparedSelection) Reserve(ctx, ownerContext conte
 		RuntimeGeneration: selection.identity.RuntimeGeneration, PlanID: selection.identity.PlanID, RequestKey: requestKey,
 		LaunchGrantID: grantID, LaunchPolicyID: selection.scope.PolicyID, LaunchPolicyRevision: selection.scope.Revision,
 	}
-	owned, cancel := context.WithDeadline(ownerContext, deadline)
-	value := &MinimalLaunchReservation{identity: identity, selection: selection, ctx: owned, cancel: cancel, deadline: deadline}
+	owned, ownedCancel := context.WithCancel(ownerContext)
+	preparation, cancel := context.WithDeadline(owned, deadline)
+	value := &MinimalLaunchReservation{identity: identity, selection: selection, ctx: preparation, cancel: cancel,
+		ownedContext: owned, ownedCancel: ownedCancel, deadline: deadline}
 	value.self = value
-	value.stopAuthority = context.AfterFunc(selection.authorizer.ctx, cancel)
+	value.stopAuthority = context.AfterFunc(selection.authorizer.ctx, ownedCancel)
 	if ctx.Err() != nil || selection.authorizer.ctx.Err() != nil || !time.Now().Before(deadline) {
 		value.Revoke()
 		return nil, ErrMinimalLaunchUnavailable
@@ -178,10 +180,13 @@ func (reservation *MinimalLaunchReservation) Context() context.Context {
 	return reservation.ctx
 }
 
-// OwnedContext is the compiling RED seam. It deliberately exposes the current
-// combined lifetime until owned cancellation is separated from preparation.
+// OwnedContext observes the original owner's cancellation and deadline, not
+// preparation expiry. It grants no launch, readiness or cleanup authority.
 func (reservation *MinimalLaunchReservation) OwnedContext() context.Context {
-	return reservation.Context()
+	if reservation == nil || reservation.self != reservation {
+		return nil
+	}
+	return reservation.ownedContext
 }
 
 // ArmDispatch is called only by the manager after exact durable dispatch
@@ -222,6 +227,7 @@ func (reservation *MinimalLaunchReservation) Revoke() {
 	}
 	reservation.mu.Lock()
 	reservation.revoked = true
+	reservation.ownedCancel()
 	reservation.cancel()
 	reservation.stopAuthority()
 	reservation.mu.Unlock()

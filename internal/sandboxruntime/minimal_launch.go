@@ -54,6 +54,8 @@ type MinimalLaunchReservation struct {
 	selection                          *MinimalLaunchPreparedSelection
 	ctx                                context.Context
 	cancel                             context.CancelFunc
+	ownedContext                       context.Context
+	ownedCancel                        context.CancelFunc
 	stopAuthority                      func() bool
 	deadline                           time.Time
 	armed, attempted, claimed, revoked bool

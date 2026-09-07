@@ -1,6 +1,7 @@
 # Separate owned cancellation from preparation expiry
 
-DESIGN/compiling RED from `b8b9cd2c0f0d2947947e9823c862b508d64f403f`.
+Implemented after DESIGN `325ed1f3` and compiling RED `180c55c6`, from
+`b8b9cd2c0f0d2947947e9823c862b508d64f403f`.
 The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) and
 [controller handoff](sandbox-runtime-v2-minimal-host-controller.md) remain binding.
@@ -8,8 +9,8 @@ This slice authorizes no provider, readiness, terminal receipt or restart path.
 
 ## Actual gap and preserved behavior
 
-`internal/sandboxruntime/minimal_launch_admission.go:Reserve` currently creates
-one context with `WithDeadline(ownerContext, P)`. `Context()`, `ArmDispatch`,
+At the RED checkpoint, `internal/sandboxruntime/minimal_launch_admission.go:Reserve`
+created one context with `WithDeadline(ownerContext, P)`. `Context()`, `ArmDispatch`,
 `ClaimLaunch` and provider-binding `Start` use that context; `StartMinimalJob`
 receives it. The authorizer's existing `AfterFunc` and explicit `Revoke` both
 cancel it. Those preparation semantics must remain unchanged.
@@ -22,7 +23,7 @@ unavailable, not ready. Explicit cancel and shutdown call `Revoke` while holding
 `manager.mu`; provider completion is joined outside that mutex.
 
 A future partial owner needs ongoing service/authorizer/explicit cancellation
-after P. The current single context cannot provide it: after its deadline fires,
+after P. The original single context cannot provide it: after its deadline fires,
 its Done channel cannot signal a later cancellation. Ignoring DeadlineExceeded
 or using `WithoutCancel` would lose authority loss, not extend a valid lifetime.
 
@@ -164,3 +165,18 @@ The independent new controls plus unchanged neutral attempt, worker cancel,
 client-disconnect and shutdown regressions pass race three times: 288 passing
 test/subtest events, zero failures/skips. Vet passes for both affected packages.
 These are RED checkpoint checks, not implementation or live acceptance.
+
+## GREEN scope
+
+The two-file neutral implementation retains WithCancel(ownerContext), derives
+the unchanged preparation context with WithDeadline, and cancels both on Revoke.
+The existing authority callback now cancels the retained parent. No worker
+production or source-guard changes were needed. Both original RED files are
+byte-for-byte unchanged and now pass all 24 test/subtest cases, reaching every
+previously blocked post-P assertion and the later real parent deadline.
+Separate tests cover concurrent revoke/access, a test-owned blocked cancellation
+observer without joining it in Revoke, and actual-service partial/error/authority
+loss retention. Focused lifetime, cancellation, shutdown, attempt and source-guard
+race checks pass three times: 717 passing events, zero failures/skips. Fixed-head
+adjacent package, vet and Darwin compilation results are reported in the handoff.
+None of these checks selects a concrete runtime or establishes readiness/cleanup.
