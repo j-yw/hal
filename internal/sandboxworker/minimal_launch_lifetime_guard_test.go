@@ -14,26 +14,31 @@ func l8WorkerV2MinimalDeclarationDigest(scope l8WorkerV2GuardScope) string {
 		return ""
 	}
 	return map[string]string{
-		"job_helpers.go/newOpaqueJobID":                         "456ae1476d95545e384177e3627d99d7f002a6fb818f89b01b169c903179c010",
-		"job_manager_v2.go/newJobManagerV2":                     "32e298a51b5d96bbe696079c4af3c040a04fcc4c449f60ad31b082f4181e6c17",
-		"minimal_launch_dispatch.go/beginMinimalPreparation":    "05fa4b86c84305737a351d6b08c5aba37c0a59ff65d44e1d2ce4af229b49823e",
-		"minimal_launch_dispatch.go/endMinimalPreparation":      "3ec422eef00dab736674de293a91bcff8595848f67065185462bfc7b473423b7",
-		"minimal_launch_dispatch.go/handleMinimalLaunch":        "3556251a6b0dc9fc67e497915d999008ae410cedf2660e1c683b5406a917f461",
-		"minimal_launch_dispatch.go/checkMinimalDispatch":       "e778f2819e7c6f83da8d994fe64b85ee50c9a00301768bbc4b3743a45ebb35bb",
-		"minimal_launch_dispatch.go/reserveMinimalLaunch":       "7322b175485646d9ade2851c9e3852c45d34e4b9ae31502b6a8b36f43f94e195",
-		"minimal_launch_dispatch.go/closeMinimalLaunch":         "97feb53573efa29e444e4b0614f79099e9c14dde1dc2f015b6f878e1beac0612",
-		"minimal_launch_dispatch.go/finishMinimalClose":         "146bd7b148830181f2ec00dead48752094c8341b2fd5a328c8562f767239de3a",
-		"minimal_launch_file_unix.go/openMinimalLaunchNoFollow": "1f144b986b4b4068df799248704d4d89e9a884385f3534b9d097f4e771fdf2aa",
-		"minimal_launch_file_unix.go/minimalLaunchFileOwned":    "396c924ba1b1d32dfb72e921a9a01dd5f1ce24a59e849c1fde20281e02c2294f",
-		"minimal_launch_file_unix.go/openMinimalLaunchRelative": "4852e0c27e86cae1ce079935e37f2838f07d57c6e74a4ad0d847e58b4263ca69",
-		"minimal_launch_store.go/requireMinimalLaunchEmpty":     "c0adaa0e78a2833a4a8332b0d2499de8046d3f9aa8dac68ec0900b02b07d4626",
-		"minimal_launch_store.go/saveMinimalLaunch":             "40153fe27559148d29dc3cbcff94e9beab18ac50fa92853046802143bbc4927c",
-		"minimal_launch_store.go/readMinimalLaunchFile":         "06154b3e15369f2e73e65c4fd4301cacc3da74ca3a3f3ee9edad817b250cf2df",
-		"minimal_launch_store.go/validMinimalLaunchStoredFile":  "a60ec924b8393d2e0af50cd32a40f64d84688aaf15116158df863c2ba03ffd76",
-		"minimal_launch_store_ops.go/newMinimalLaunchStoreOps":  "f3bdf632fe90bc63d8c4937d4a268633c90b30233137c27996e1f6e37b48b6fd",
-		"minimal_launch_store_ops.go/checkMinimalAuthority":     "63ed5b3fcf4cec717ab3352bbe0652773f50b49c81b65658ec4d2485853d0a75",
-		"minimal_launch_store_ops.go/closeMinimalStore":         "ed17a613690871fd7cc430077863811ca80bc423c97c312c15f84de17377bac9",
-		"minimal_launch_store_ops.go/removeMinimalTemporary":    "3ad80daaec4dce5dd7bac11d25b3fc7e7cbf893db060fc1fda50fcea767f1c5a",
+		"job_helpers.go/newOpaqueJobID":                               "456ae1476d95545e384177e3627d99d7f002a6fb818f89b01b169c903179c010",
+		"job_manager_v2.go/newJobManagerV2":                           "32e298a51b5d96bbe696079c4af3c040a04fcc4c449f60ad31b082f4181e6c17",
+		"minimal_launch_dispatch.go/beginMinimalPreparation":          "05fa4b86c84305737a351d6b08c5aba37c0a59ff65d44e1d2ce4af229b49823e",
+		"minimal_launch_dispatch.go/endMinimalPreparation":            "3ec422eef00dab736674de293a91bcff8595848f67065185462bfc7b473423b7",
+		"minimal_launch_dispatch.go/handleMinimalLaunch":              "4ff2e01144601fa002a17e126cb09411adc6230b75790ef1ac2cb639537c9eb8",
+		"minimal_launch_dispatch.go/checkMinimalDispatch":             "e778f2819e7c6f83da8d994fe64b85ee50c9a00301768bbc4b3743a45ebb35bb",
+		"minimal_launch_dispatch.go/reserveMinimalLaunch":             "d65edbcd9831cee833a3d4ce2c2d3b5f61c3bd43ea6d0d9267989b7a824180ab",
+		"minimal_launch_dispatch.go/finishMinimalDispatch":            "c4207e03f08cfe0c74c395b87feea163591cbc917b4be89181da522de8d4ebf6",
+		"minimal_launch_cancel.go/handleMinimalLaunchCancel":          "3ea91dc63f40c0a9346f7f6f045302fcd87d4e172e96dd4f7a4ab9c94d402dce",
+		"minimal_launch_cancel.go/cancelMinimalLaunch":                "d278fe364e6f760835d771e62fdad4d22b36d67b3d99f8658f8a52d3cc947700",
+		"minimal_launch_cancel.go/minimalLaunchCancelIdentityMatches": "b62f0987ed7f69431b6a9e5bdddebd45f4330475b68251f073501e870a167f88",
+		"minimal_launch_dispatch.go/closeMinimalLaunch":               "97feb53573efa29e444e4b0614f79099e9c14dde1dc2f015b6f878e1beac0612",
+		"minimal_launch_dispatch.go/finishMinimalClose":               "146bd7b148830181f2ec00dead48752094c8341b2fd5a328c8562f767239de3a",
+		"minimal_launch_file_unix.go/openMinimalLaunchNoFollow":       "1f144b986b4b4068df799248704d4d89e9a884385f3534b9d097f4e771fdf2aa",
+		"minimal_launch_file_unix.go/minimalLaunchFileOwned":          "396c924ba1b1d32dfb72e921a9a01dd5f1ce24a59e849c1fde20281e02c2294f",
+		"minimal_launch_file_unix.go/openMinimalLaunchRelative":       "4852e0c27e86cae1ce079935e37f2838f07d57c6e74a4ad0d847e58b4263ca69",
+		"minimal_launch_store.go/requireMinimalLaunchEmpty":           "c0adaa0e78a2833a4a8332b0d2499de8046d3f9aa8dac68ec0900b02b07d4626",
+		"minimal_launch_store.go/saveMinimalLaunch":                   "65ab8ab4302896d7a3e6a47c87981c470bc577a7eff7aa8895ceb5727b80baf6",
+		"minimal_launch_store.go/validateStoredMinimalLaunchV1":       "6d07f97ebb404c182cc67f3123bbffe7db430ea64380453e6e527b08a6c190c0",
+		"minimal_launch_store.go/readMinimalLaunchFile":               "06154b3e15369f2e73e65c4fd4301cacc3da74ca3a3f3ee9edad817b250cf2df",
+		"minimal_launch_store.go/validMinimalLaunchStoredFile":        "a60ec924b8393d2e0af50cd32a40f64d84688aaf15116158df863c2ba03ffd76",
+		"minimal_launch_store_ops.go/newMinimalLaunchStoreOps":        "f3bdf632fe90bc63d8c4937d4a268633c90b30233137c27996e1f6e37b48b6fd",
+		"minimal_launch_store_ops.go/checkMinimalAuthority":           "63ed5b3fcf4cec717ab3352bbe0652773f50b49c81b65658ec4d2485853d0a75",
+		"minimal_launch_store_ops.go/closeMinimalStore":               "ed17a613690871fd7cc430077863811ca80bc423c97c312c15f84de17377bac9",
+		"minimal_launch_store_ops.go/removeMinimalTemporary":          "3ad80daaec4dce5dd7bac11d25b3fc7e7cbf893db060fc1fda50fcea767f1c5a",
 	}[filepath.Base(scope.file.path)+"/"+function.Name.Name]
 }
 
@@ -62,10 +67,15 @@ func l8WorkerV2AllowedExactMinimalLifetimeCall(scope l8WorkerV2GuardScope, call 
 	if function.Name.Name == "newJobManagerV2" {
 		return path == "context" && name == "WithCancel"
 	}
+	if function.Name.Name == "handleMinimalLaunchCancel" {
+		return l8WorkerV2ExactReceiverObject(function, "L8Service", true, info) != nil && path == "context" && name == "Done"
+	}
 	if l8WorkerV2ExactReceiverObject(function, "jobManagerV2", true, info) == nil {
 		return false
 	}
 	switch function.Name.Name {
+	case "cancelMinimalLaunch":
+		return path == "context" && name == "Err"
 	case "beginMinimalPreparation":
 		return path == "context" && (name == "Err" || name == "WithDeadline" || name == "AfterFunc")
 	case "endMinimalPreparation":

@@ -10,9 +10,11 @@ import (
 )
 
 type minimalLaunchEntry struct {
-	reservation *sandboxruntime.MinimalLaunchReservation
-	selection   *sandboxruntime.MinimalLaunchPreparedSelection
-	owner       *sandboxruntime.MinimalLaunchOwnerBinding
+	reservation     *sandboxruntime.MinimalLaunchReservation
+	selection       *sandboxruntime.MinimalLaunchPreparedSelection
+	owner           *sandboxruntime.MinimalLaunchOwnerBinding
+	dispatchDone    chan struct{}
+	cancelAttempted bool
 }
 
 type minimalLaunchPreparation struct {
@@ -44,6 +46,9 @@ func (manager *jobManagerV2) endMinimalPreparation(preparation *minimalLaunchPre
 }
 
 func (service *L8Service) handleMinimalLaunch(ctx context.Context, principal sandboxruntime.AuthenticatedWorkerPrincipal, principalID string, request Request) Response {
+	if request.Operation == OperationJobCancelV2 {
+		return service.handleMinimalLaunchCancel(ctx, principalID, request)
+	}
 	if request.Operation != OperationJobStartV2 || request.JobStartV2 == nil || !request.JobStartV2.ProductionCredentialsRequested {
 		return unsupportedOperationResponse(request)
 	}
@@ -199,7 +204,7 @@ func (manager *jobManagerV2) reserveMinimalLaunch(ctx context.Context, principal
 		reservation.Revoke()
 		return nil, JobV2{}, false, errMinimalLaunchState
 	}
-	entry := &minimalLaunchEntry{reservation: reservation, selection: selection}
+	entry := &minimalLaunchEntry{reservation: reservation, selection: selection, dispatchDone: make(chan struct{})}
 	// Install pending ownership before IO. A save error may be after publish;
 	// never roll this entry back or release it as though no dispatch occurred.
 	manager.minimalLive[jobID] = entry
@@ -208,6 +213,9 @@ func (manager *jobManagerV2) reserveMinimalLaunch(ctx context.Context, principal
 	poison := func() (*minimalLaunchEntry, JobV2, bool, error) {
 		manager.minimalPoisoned = true
 		reservation.Revoke()
+		// This local handoff ended before Provider.Start. It is not a terminal
+		// no-dispatch receipt and does not release the retained reservation.
+		close(entry.dispatchDone)
 		return nil, JobV2{}, true, errMinimalLaunchState
 	}
 	if manager.store.save(state) != nil {
@@ -232,6 +240,7 @@ func (manager *jobManagerV2) finishMinimalDispatch(entry *minimalLaunchEntry, ow
 		manager.minimalPoisoned = true
 		entry.reservation.Revoke()
 	}
+	close(entry.dispatchDone) // Only after even partial returned ownership is retained.
 	manager.mu.Unlock()
 }
 

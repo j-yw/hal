@@ -194,7 +194,7 @@ func TestMinimalLaunchSourceGuardLocksActualDispatchComposition(t *testing.T) {
 // have no v2 names: every declaration in each selected file must be inspected.
 func TestMinimalLaunchSourceGuardEnrollsAuditedRoots(t *testing.T) {
 	policy := l8WorkerV2ProductionGuardPolicy()
-	for _, path := range []string{"minimal_launch_dispatch.go", "minimal_launch_file_other.go", "minimal_launch_file_unix.go", "minimal_launch_store.go", "minimal_launch_store_ops.go"} {
+	for _, path := range []string{"minimal_launch_dispatch.go", "minimal_launch_cancel.go", "minimal_launch_file_other.go", "minimal_launch_file_unix.go", "minimal_launch_store.go", "minimal_launch_store_ops.go"} {
 		t.Run(path, func(t *testing.T) {
 			if !policy.dedicated[path] || policy.mixed[path] {
 				t.Fatal("selected file is not a dedicated audited root")

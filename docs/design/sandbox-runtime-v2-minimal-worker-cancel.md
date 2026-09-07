@@ -1,7 +1,8 @@
 # Selected minimal worker cancellation coordination
 
-Status: DESIGN/compiling RED only, based on `ed32e374`. No cancellation,
-terminal cleanup, recovery, or concrete host-provider implementation is added.
+Status: selected cancellation coordination implemented after frozen DESIGN/RED
+`caa3ff7f`, based on `ed32e374`. Terminal cleanup, recovery, and the concrete
+host-provider consumer remain unavailable.
 This refines the cancellation handoff in
 [the worker prelaunch design](sandbox-runtime-v2-minimal-worker-prelaunch.md).
 
@@ -9,10 +10,10 @@ This refines the cancellation handoff in
 
 `L8Service.HandleAuthenticatedRequest` validates the exact constructor-owned
 principal issuer and request context, then sends selected minimal requests to
-`handleMinimalLaunch`. That handler supports only `job_start_v2`; an actual
-`job_cancel_v2` currently returns `unsupported_operation`, including while a
+`handleMinimalLaunch`. That handler previously supported only `job_start_v2`; an
+actual `job_cancel_v2` returned `unsupported_operation`, including while a
 provider has claimed the durable `dispatching` reservation and is still inside
-`StartMinimalJob`. The reservation remains active. The old authenticated
+`StartMinimalJob`. The reservation remained active. The old authenticated
 credential cancel handler is a different path and must not be reused.
 
 The existing entry already retains the original reservation, prepared selection,
@@ -21,7 +22,7 @@ when Start returns an error. `finishMinimalClose` revokes locally and joins acti
 preparations before releasing the held store and lock; it does not finalize an
 owner. These are the ownership foundations, not terminal-cleanup proof.
 
-## Proposed bounded GREEN
+## Implemented bounded boundary
 
 Use the existing `OperationJobCancelV2` and `JobCancelRequestV2` without new public
 fields. The selected branch validates the exact envelope, microVM driver, and
@@ -59,12 +60,15 @@ projection, not evidence that no runtime was allocated. `CancelRequested` plus
 the private pending phase records the stronger cancellation fact without a new
 public schema or fabricated completion timestamp.
 
-Each retained entry needs one dispatch-done latch, installed before dispatch and
+Each retained entry has one dispatch-done latch, installed before dispatch and
 closed exactly once only after `finishMinimalDispatch` retains the returned
 owner, including partial owner plus error. Cancel releases the manager mutex
 before waiting on that latch. No provider callback, finalizer, selection close,
 or wait may run under the manager mutex. All concurrent/repeated cancels join
 the same entry; they do not increment the revision again or restart dispatch.
+An uncertain pending publication is attempted only once; later cancels still
+revoke locally, check retained record authority, and join, without retrying the
+failed write. Only successful exact readback updates the in-memory pending state.
 
 The caller's request context bounds its wait, not the owned cancellation.
 Cancellation before request admission has no side effects. Cancellation after
@@ -79,11 +83,19 @@ selection, record, and runtime occupancy. It never calls `Finalize` or `Recover`
 creates a cleanup receipt, infers `no_dispatch` from a nil owner, or marks a job
 canceled/interrupted/succeeded/failed. There is no concrete provider yet.
 
-Expected implementation files after separate GREEN approval: dedicated
-`minimal_launch_cancel.go`, the existing dispatch route/entry/final-retention
-latch, and the selected private store validator/CAS transition. Existing exact
-source-lock guards need separately reviewed narrow updates with their bypass
-negatives retained. This RED changes none of those production files or guards.
+A failed reservation publication also ends its local handoff before any provider
+call and closes that entry's latch. Cancellation retains the reserved/uncertain
+record and returns unavailable; it does not promote `reserved/1` to pending or
+use the closed latch as a `no_dispatch` or resource-cleanup receipt.
+
+Implementation is restricted to dedicated `minimal_launch_cancel.go`, the
+existing dispatch route/entry/final-retention latch, and selected private store
+validator/CAS transition. The new file is a fully audited guard root, not an
+exemption. Exact body pins change only for the selected handler, reservation,
+and store writer; new pins lock the final owner-before-latch handoff, all three
+cancel helpers, and selected phase/flag validation. Only exact typed context
+`Done`/`Err` calls receive new lifecycle exceptions. Existing guard negatives
+remain, with added issuer/identity, revoke, join, store, and revision bypasses.
 
 ## Executable RED and controls
 
@@ -91,15 +103,16 @@ negatives retained. This RED changes none of those production files or guards.
 service. A fake provider claims the actual reservation and independently reads
 the real ordinary-file `dispatching` record, then blocks its Start callback until
 the fixture releases it. The test calls the actual authenticated cancel route.
-Its first failure is the returned unsupported response with an uncanceled
-reservation. Later pending-record, join, partial-owner retention, and occupancy
-assertions are intentionally not counted as reached on the baseline.
+Its first baseline failure was the returned unsupported response with an
+uncanceled reservation. The original 349-line RED stays unchanged. Its later
+pending-record, join, partial-owner retention, and occupancy assertions now
+execute; they were not counted as reached when documenting baseline evidence.
 
 Independent controls execute a valid complete provider-return handoff and reject
 another issuer and another principal without changing record bytes or revoking
 the claimed reservation. The same-issuer foreign-principal control establishes
 non-interference on the baseline, not an implemented selected per-job cancel
-validator: the currently unsupported route rejects that request too.
+validator: the then-unsupported route rejected that request too.
 
 The provider does not start a runtime or perform cleanup. Watchdogs only fail
 tests; teardown releases and joins fixture goroutines before service close and
@@ -112,9 +125,14 @@ Focused reproduction (Go 1.25.7, `GOMAXPROCS=3`, no network dependencies):
 go test -p 2 -race -count=3 ./internal/sandboxworker -run '^(TestMinimalLaunchCancel|TestMinimalLaunchDispatch|TestL8D6WorkerCancel|TestL8ServiceDefaultPathPreservesExactEarlyUnsupportedResponse|TestL8ServiceDoesNotBindNoIntentOrNonStartV2Operations)'
 ```
 
-The baseline result is three failures of the single missing-cancel test, 69
+The frozen baseline result was three failures of the single missing-cancel test, 69
 passing test/subtest events, zero skips, and no race or fixture-join failure.
-The later assertions do not establish implemented pending persistence or cleanup.
+Additional reachable tests cover concurrent/duplicate cancels, canceled waiters,
+scope withdrawal, partial/nil/wrong/error/panic Start results, malformed and
+foreign retained identity, root replacement, record drift/symlink/mode, uncertain
+publication/sync/readback, exact monotonic CAS, failed reservation handoff, and
+service-close joins. These prove coordination with ordinary-file fake providers,
+not live runtime cleanup or terminal receipt acceptance.
 
 ## Explicit subsequent slices
 

@@ -35,7 +35,10 @@ func validateStoredMinimalLaunchV1(state storedJobStateV2) error {
 	if m == nil || m.ContractVersion != minimalLaunchPrivateVersion || state.CredentialState != nil || state.CredentialRecoveryReceipt != nil || !state.JobV2.CredentialIntent.ProductionCredentialsRequested || state.JobV2.RuntimeDriver != RuntimeDriverMicroVM || state.JobV2.State != JobStateQueued {
 		return errMinimalLaunchState
 	}
-	if !(m.Phase == "reserved" && m.Revision == 1 || m.Phase == "dispatching" && m.Revision == 2) || m.LaunchPolicyRevision == 0 || m.JobGeneration == state.JobV2.ID || m.LaunchGrantID == state.JobV2.CredentialIntent.AdmissionGrantID ||
+	if m.Phase == "cleanup_pending" && state.JobV2.ExitCode != nil {
+		return errMinimalLaunchState
+	}
+	if !(m.Phase == "reserved" && m.Revision == 1 || m.Phase == "dispatching" && m.Revision == 2 || m.Phase == "cleanup_pending" && m.Revision == 3) || state.JobV2.CancelRequested != (m.Phase == "cleanup_pending") || m.LaunchPolicyRevision == 0 || m.JobGeneration == state.JobV2.ID || m.LaunchGrantID == state.JobV2.CredentialIntent.AdmissionGrantID ||
 		!m.PreparationStartedAt.Equal(state.JobV2.SubmittedAt) || m.PreparationStartedAt.IsZero() || !m.PreparationDeadline.After(m.PreparationStartedAt) || m.PreparationDeadline.Sub(m.PreparationStartedAt) > maxMinimalLaunchPreparationTimeout {
 		return errMinimalLaunchState
 	}
@@ -137,11 +140,15 @@ func (store *jobStoreV2) saveMinimalLaunch(state storedJobStateV2) error {
 		}
 	} else {
 		prior, err := store.readMinimalLaunchFile(path)
-		if err != nil || prior.MinimalLaunch == nil || prior.MinimalLaunch.Phase != "reserved" {
+		if err != nil || prior.MinimalLaunch == nil {
 			return errMinimalLaunchState
 		}
 		expected := cloneStoredJobStateV2(state)
 		expected.MinimalLaunch.Phase, expected.MinimalLaunch.Revision = "reserved", 1
+		if state.MinimalLaunch.Phase == "cleanup_pending" {
+			expected.MinimalLaunch.Phase, expected.MinimalLaunch.Revision = "dispatching", 2
+			expected.JobV2.CancelRequested = false
+		}
 		previous, err := encodeStoredJobStateV2(prior)
 		want, wantErr := encodeStoredJobStateV2(expected)
 		if err != nil || wantErr != nil || !bytes.Equal(previous, want) || store.checkMinimalAuthority(store.minimalOps.lock) != nil {
