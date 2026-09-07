@@ -1,6 +1,6 @@
 # Selected minimal preparation and release composition
 
-Status: design only, based on `347331910718c4f967d27fa7b7624021152813e5`.
+Status: first compiling RED only, based on `347331910718c4f967d27fa7b7624021152813e5`.
 This refines section 2 of the [constructor design](sandbox-runtime-v2-minimal-runtime-constructor.md)
 and the accepted [host controller design](sandbox-runtime-v2-minimal-host-controller.md).
 It follows the [Linux completion architecture](sandbox-runtime-v2-linux-completion-architecture.md)
@@ -56,10 +56,14 @@ clock, callback, or FD authority.
 The executable supplies no existing caller context. Creating the owned root
 once is legitimate; replacing it inside selected start/store work is not.
 Explicit owner cancellation and original-channel loss latch cancellation before
-canceling the context. A preparation-deadline observer uses that same latch
-while preparation is active. It is stopped and joined when preparation ends;
-normal timer disposal must not cancel the continuing owner context. If it has
-already run, successful preparation cannot erase its cancellation.
+canceling the context. The immutable-P observer remains active through stage
+completion, revision 2, reply and until the future HLMINRD1 notification has
+actually been published successfully. Neither stage success nor a successful
+`serveBootstrap` return completes that lifetime or disposes its watcher. Only
+successful publication may stop/join the admission observer without canceling
+the continuing owner context; owner failure instead cancels and joins it. If
+it has already run, successful work cannot erase its cancellation. The original
+channel monitor continues after publication until owner shutdown.
 
 Selected `StartChild` is a closure over this object's context. Derive its stage
 context with deadline `min(P, stageStart + 30s)`, retaining the existing bound
@@ -76,8 +80,9 @@ After release admission, retain exactly one conservative timestamp `R` and
 compute `D = min(P, R + 15s)` once. The later controller receives this original
 `D`, never a timestamp taken after send, revision 2 or reply. Its existing
 `A = min(D, prelude + 5s)` and transport-origin hard lifetime remain independent.
-Completing preparation or sending BootstrapPublished does not end owner
-lifetime. Later successful readiness ends admission timers, not loss monitoring.
+Completing staging or sending BootstrapPublished does not end owner lifetime.
+Only later successful HLMINRD1 publication ends the admission observer, not loss
+monitoring; local controller readiness alone is insufficient.
 
 Existing cleanup contexts remain independent and bounded: canceled launch
 context cannot suppress cgroup kill/empty checks, root cleanup, durable terminal
@@ -212,8 +217,9 @@ automatic reclamation is ever required.
 
 ## Smallest compiling RED sequence
 
-No tests have been added or run for this proposal. Proposed test names below
-are acceptance targets, not reported passes or current executable selectors.
+Only the first checkpoint now has compiling behavioral RED coverage. Second
+and third checkpoints remain design-only; their cases are not reported passes
+or current executable selectors.
 
 **First checkpoint: context and original-reader transfer.** Add only a narrow
 selected closure/serve scaffold which delegates to the current implementation
@@ -281,3 +287,33 @@ selected/legacy tests and race repetitions, then the affected full package,
 source guards, vet and Darwin compile. Namespace-root constructor tests retain
 their explicit tag and limited scope. No real cgroup, Jailer, KVM or live
 prepared-host acceptance is claimed by this design or its ordinary fixtures.
+
+## First compiling RED evidence
+
+`minimal_control_preparation_linux.go` contains two unselected delegates into
+the existing bootstrap and startChild. It neither activates the executable nor
+implements lifetime ownership. The adjacent RED uses actual eight-role byte
+admission with the ordinary fixture's explicit caller-UID seed observation and
+actual caller-UID socket peer; it does not bypass or exercise the root constructor.
+The PID/owned descriptor in its fake starter remains explicitly a close-ownership
+stand-in, not a live pidfd observation. No new process-currentness seam is added.
+
+Run with the pinned Go toolchain and a short task-owned TMPDIR:
+
+```sh
+GOMAXPROCS=3 go test -p 2 -race ./internal/sandboxruntime/microvm/firecrackerhost -run '^(TestMinimalPreparation|TestMinimalRuntimeRequestLegacySevenWithoutNICStillValid|TestJailerRecoveryActualSelectedOwnerRetainsCoordinatorAcrossReconnect)' -count=3
+```
+
+Observed: nine intended failure events (three tests, each repeated three times),
+30 passing test/subtest events, zero skips or race reports. The failures are
+original-peer EOF leaving the paused allocator context uncanceled, admitted
+absolute P being replaced by a later 30-second deadline, and already-expired P
+still permitting one allocation and actual gate release. Every paused fixture
+was released and its bootstrap goroutine joined before cleanup/admission return.
+The positive actual bootstrap/order, unchanged stage cap, malformed packet and
+seven-role/reconnect controls pass. Initial fixture setup failure was corrected
+before this evidence; it is not counted as a product RED.
+
+This checkpoint does not yet demonstrate monitor lifetime after the bootstrap
+reply, cancellation-interruptible gate I/O, release currentness, or the later
+failure/recovery matrix. Those remain explicit requirements before acceptance.
