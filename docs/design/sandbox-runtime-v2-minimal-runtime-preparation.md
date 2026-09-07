@@ -1,7 +1,7 @@
 # Selected minimal preparation and release composition
 
-Status: first preparation lifetime implementation held pending the pre-genesis
-review correction below, based on `347331910718c4f967d27fa7b7624021152813e5`.
+Status: first preparation lifetime implementation with the pre-genesis review
+correction below, based on `347331910718c4f967d27fa7b7624021152813e5`.
 Later release and recovery checkpoints remain design-only.
 This refines section 2 of the [constructor design](sandbox-runtime-v2-minimal-runtime-constructor.md)
 and the accepted [host controller design](sandbox-runtime-v2-minimal-host-controller.md).
@@ -528,3 +528,18 @@ fresh independent inspection on the rejected operation, are not credited as
 RED coverage. The separate successful-bootstrap/independent-cleanup and legacy
 controls passed. Unchanged command owner/Phase33 guards passed 73 events and
 package process-boundary guards passed six; no guard was edited.
+
+### Bounded genesis GREEN
+
+The follow-up implements exactly those three selected-eight checks in the
+existing store: after selected.mu acquisition, after successful flock acquisition
+with the common unlock path preserved on rejection, and immediately before
+CreateGenesis writes after readback. The private predicate checks caller Err
+and synchronous absolute Deadline; six/seven-role stores retain their prior
+behavior. There is no new stored lifetime, operation callback, FSM transition,
+record schema or guard allowance. All original and d27e5b14 RED files are
+byte-identical. The focused genesis race command now passes all 33 events across
+three repetitions with zero failures/skips, including fresh inspection after
+rejection and independent cleanup after preparation cancellation. This fixes
+the avoidable pre-genesis record only; it does not authorize rollback after a
+mutation starts or complete the deferred release/recovery checkpoints.

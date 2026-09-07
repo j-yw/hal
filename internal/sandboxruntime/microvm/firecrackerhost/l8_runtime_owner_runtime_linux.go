@@ -534,7 +534,7 @@ func (store *l8RuntimeOwnerLinuxRecordStore) CreateGenesis(ctx context.Context, 
 		if readErr != nil || present || next.Revision != 0 || next.State != "starting" || next.ControllerState != "none" {
 			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 		}
-		if store.writeRecord(next) != nil {
+		if !store.minimalOperationContextCurrent(ctx) || store.writeRecord(next) != nil {
 			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 		}
 		return next, true, nil
@@ -600,7 +600,7 @@ func (store *l8RuntimeOwnerLinuxRecordStore) withLock(ctx context.Context, opera
 		store.selected.mu.Lock()
 		defer store.selected.mu.Unlock()
 	}
-	if store == nil || store.directoryFD < 0 || fn == nil || ctx == nil {
+	if store == nil || store.directoryFD < 0 || fn == nil || ctx == nil || !store.minimalOperationContextCurrent(ctx) {
 		return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 	}
 	for {
@@ -617,11 +617,29 @@ func (store *l8RuntimeOwnerLinuxRecordStore) withLock(ctx context.Context, opera
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	record, present, err := fn()
+	// Cancellation can become observable during either mutex/flock wait.
+	// Always unlock the acquired flock, including rejection before the callback.
+	record, present, err := firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
+	if store.minimalOperationContextCurrent(ctx) {
+		record, present, err = fn()
+	}
 	if unix.Flock(store.directoryFD, unix.LOCK_UN) != nil {
 		return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 	}
 	return record, present, err
+}
+
+// Only selected-eight operations enforce this caller-local bound. Cleanup can
+// use its own independent context; no canceled preparation is stored here.
+func (store *l8RuntimeOwnerLinuxRecordStore) minimalOperationContextCurrent(ctx context.Context) bool {
+	if store.selected == nil || store.selected.minimal == nil {
+		return true
+	}
+	if ctx == nil || ctx.Err() != nil {
+		return false
+	}
+	deadline, bounded := ctx.Deadline()
+	return !bounded || time.Now().Before(deadline)
 }
 
 func writeL8RuntimeOwnerRecordAt(directoryFD int, record firecrackerRuntimeOwnerRecordV1, seed sandboxruntime.JobCredentialIdentitySeed, bootID string) error {
