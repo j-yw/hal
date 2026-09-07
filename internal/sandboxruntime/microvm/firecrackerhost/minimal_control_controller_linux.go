@@ -44,6 +44,7 @@ type minimalControlReadiness struct {
 	controller          *minimalControlController
 	self                *minimalControlReadiness
 	hardExpiry          time.Time
+	admissionDeadline   time.Time
 }
 
 type minimalControlControllerPins struct {
