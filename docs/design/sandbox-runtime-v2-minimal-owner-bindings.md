@@ -1,8 +1,9 @@
 # Selected minimal retained cleanup bindings
 
-Status: DESIGN ONLY at `ea0ae1e2f2c88300701a6fc69bbf235ff22bf4e4`.
-No executable RED, wrapper implementation, worker consumer, recovery activation,
-or cleanup proof is included. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
+Status: DESIGN plus compiling behavioral RED, following approved design
+`0e03e48a` at base `ea0ae1e2f2c88300701a6fc69bbf235ff22bf4e4`.
+Only unavailable method scaffolds are present; no working wrapper, worker consumer,
+recovery activation, or cleanup proof is included. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md),
 [selected host handoff](sandbox-runtime-v2-minimal-host-controller.md), and
 [accepted cancellation coordination](sandbox-runtime-v2-minimal-worker-cancel.md)
@@ -118,8 +119,10 @@ owner. They never authorize a new launch through these APIs.
    shape: canonical 43-byte raw-base64url encoding of 32 bytes. This reuses syntax
    only; it is neither HMAC validation nor legacy cleanup/credential proof.
 4. On accepted return, cache an immutable receipt value for same-handle repeated
-   calls without another finalization callback. That value records the checked
-   callback result, not ongoing liveness or a terminal capability.
+   calls without another finalization callback. Before returning cached metadata,
+   revalidate the same owner's Identity and current caller/context under the same
+   serialized attempt rule; identity repair cannot erase an observed quarantine.
+   That value records the checked callback result, not a terminal capability.
 
 Any error, panic, missing/invalid/partial receipt, late success, or mismatched
 result returns a ZERO receipt with `ErrMinimalLaunchUnavailable`; provider errors
@@ -179,15 +182,17 @@ stored schemas/CAS/locks, selection release, and occupied runtime slots stay
 unchanged. Recovery identity validation supplies syntax, not trusted prior-daemon
 authorization or launch permission. No default or legacy runtime route changes.
 
-## Proposed REDs and later verification
+## Compiling RED and later verification
 
-Only after design approval, add compiling unavailable method scaffolds plus
-behavioral REDs in `internal/sandboxruntime/minimal_launch_owner_red_test.go` and
-`minimal_launch_recovery_red_test.go`. Reuse the real neutral constructor,
-authenticated principal, selection, Reserve, ArmDispatch, and Start chain from
-`minimal_launch_attempt_red_test.go`; do not construct a successful owner binding
-by filling its private fields. Keep valid Start/ClaimLaunch and foreign/copy
-binding controls independently executed on the RED revision.
+The compiling RED adds only unavailable method scaffolds in
+`internal/sandboxruntime/minimal_launch_owner.go` and behavioral tests in
+`minimal_launch_owner_red_test.go` and `minimal_launch_recovery_red_test.go`.
+Its fixture uses the real neutral constructor, authenticated principal, selection,
+Reserve, ArmDispatch, and Start chain, following the existing attempt fixture.
+It does not construct a successful owner binding by filling its private fields.
+Valid/partial/wrong-identity/panicking-identity Start and foreign/copy binding
+controls execute independently. Another control directly exercises the injected
+provider's Recover fixture; that is NOT wrapper or prior-epoch admission proof.
 
 - Real returned owner: Finalize reaches that exact callback after the original
   reservation is revoked, validates its exact receipt, and repeated/concurrent
@@ -207,6 +212,32 @@ binding controls independently executed on the RED revision.
   mismatched owner stays retained/quarantined; no Resolve/Start/Claim/Close/Commit
   counter changes. Sensitive error/panic canaries never reach error text.
 
+RED reachability is deliberately narrow: Finalize positives fail with unavailable
+after actual Start retained the owner; invalid-result cases fail because their
+Finalize callback counter is zero. Recovery cases fail at unavailable BindRecovery,
+before any wrapped provider call. Cached/repair/join/retry assertions after those
+first failures are unreached, not validation claims. Watchdogs only fail tests;
+fixture teardown releases its gate and joins its goroutines, never product cleanup.
+The joining-waiter fixture observes its cancellation channel before cancellation
+so the later GREEN test cannot pass by rejecting a caller canceled before entry.
+
+The remaining GREEN matrix must add nil/copied handle and complete recovery-ID
+admission negatives, absolute-deadline/late-observation checks, and a deterministic
+probe that an old waiter receives its own failed attempt even after another retry
+begins. Do not count this initial unavailable scaffolding as those checks.
+
+Focused commands (pinned Go, task-owned home scratch/cache):
+
+```sh
+go test -p 2 -race -count=3 ./internal/sandboxruntime -run '^(TestMinimalLaunchOwner|TestMinimalLaunchRecovery)'
+go test -p 2 -race -count=3 ./internal/sandboxruntime -run '^(TestMinimalLaunchOwnerBindingExistingStartControls|TestMinimalLaunchRecoveryInjectedProviderControl|TestMinimalLaunchBinding|TestMinimalLaunchAttempt)'
+go test -p 2 ./internal/sandboxruntime -run '^$'
+```
+
+The first selector is intentionally RED. Frozen expected reachability is 42
+failure events (37 leaves), eight control passes, zero skips per repetition;
+the second selector independently runs the controls plus existing attempt tests.
+
 Expected GREEN ownership: new `minimal_launch_owner.go` and narrowly named tests;
 only the existing owner-binding declaration/initialization in
 `minimal_launch_admission.go`, its retained-owner identity quarantine marking,
@@ -218,5 +249,5 @@ coupling explicitly instead of adding an exemption.
 Run the focused neutral RED/controls, then focused race ×3, whole neutral package,
 relevant existing worker selected/source guards, vet, and Darwin compilation.
 Use pinned Go with task-owned home TMPDIR/GOTMPDIR/GOCACHE and low parallelism.
-This design-only revision is checked by source inspection and `git diff --check`;
-it does not claim tests of unavailable APIs, a live runtime, or completed cleanup.
+This revision is also checked by source inspection and `git diff --check`.
+Its compiling RED is not evidence of working wrappers, a live runtime, or cleanup.
