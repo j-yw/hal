@@ -54,6 +54,9 @@ func (server *Server) Handle(ctx context.Context, request Request) Response {
 
 	switch operation {
 	case guestagent.OperationReadiness:
+		if server.workloadIsolationVerifier != nil {
+			return server.errorResponse(guestagent.ErrorCodeUnknownOperation, "", "operation")
+		}
 		return server.handleReadiness(ctx, request.Encoded)
 	case guestagent.OperationExec:
 		return server.handleExec(ctx, request.Encoded)
@@ -445,9 +448,7 @@ func (server *Server) isolationReadinessResponse(ctx context.Context, request gu
 		response, _ := server.readinessResponseWithProof(false, proof)
 		return response, false
 	}
-	processVerified := result.RestrictedIdentity && result.CapabilitiesCleared && result.NoNewPrivileges &&
-		result.SupplementaryGroupsCleared && result.RawPacketSocketDenied
-	if !processVerified {
+	if !processIsolationVerified(result) {
 		response, _ := server.readinessResponseWithProof(false, proof)
 		return response, false
 	}
@@ -457,8 +458,7 @@ func (server *Server) isolationReadinessResponse(ctx context.Context, request gu
 	proof.NoNewPrivileges = true
 	proof.SupplementaryGroupsCleared = true
 	proof.RawPacketSocketDenied = true
-	if result.Network.Status == guestagent.IsolationProofStatusVerified &&
-		result.Network.SingleInterface && result.Network.StaticRoutes && result.Network.ProxyReachable {
+	if networkIsolationVerified(result) {
 		proof.Network.Status = guestagent.IsolationProofStatusVerified
 		proof.Network.SingleInterface = true
 		proof.Network.StaticRoutes = true
@@ -477,6 +477,16 @@ func (server *Server) isolationReadinessResponse(ctx context.Context, request gu
 		return response, false
 	}
 	return server.readinessResponseWithProof(true, proof)
+}
+
+func processIsolationVerified(result IsolationProofResult) bool {
+	return result.RestrictedIdentity && result.CapabilitiesCleared && result.NoNewPrivileges &&
+		result.SupplementaryGroupsCleared && result.RawPacketSocketDenied
+}
+
+func networkIsolationVerified(result IsolationProofResult) bool {
+	return result.Network.Status == guestagent.IsolationProofStatusVerified &&
+		result.Network.SingleInterface && result.Network.StaticRoutes && result.Network.ProxyReachable
 }
 
 func (server *Server) failedIsolationReadinessResponse(request guestagent.IsolationProofRequest) Response {

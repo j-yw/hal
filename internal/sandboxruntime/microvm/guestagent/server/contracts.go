@@ -72,8 +72,8 @@ type Handler interface {
 	Handle(context.Context, Request) Response
 }
 
-// WorkloadHandler is the selected-only dispatch boundary. Its compiling RED
-// methods do not yet implement local proof preparation or exclude readiness.
+// WorkloadHandler is the selected-only work boundary. Preparation and each
+// valid work request require a fresh local inspection, never a legacy proof.
 type WorkloadHandler interface {
 	PrepareWorkload(context.Context) error
 	HandleWorkload(context.Context, Request) Response
@@ -205,16 +205,18 @@ type LinuxBackendOptions struct {
 
 // Options configure a guest-agent server.
 type Options struct {
-	Transport                       Transport
-	Backend                         Backend
-	CredentialClient                *credentialclient.Client
-	EnvironmentResolver             EnvironmentResolver
-	MaxRequestBytes                 int64
-	MaxResponseBytes                int64
-	MaxConcurrent                   int
-	MaxOperationTime                time.Duration
-	MaxShutdownTime                 time.Duration
-	IsolationVerifier               IsolationVerifier
+	Transport           Transport
+	Backend             Backend
+	CredentialClient    *credentialclient.Client
+	EnvironmentResolver EnvironmentResolver
+	MaxRequestBytes     int64
+	MaxResponseBytes    int64
+	MaxConcurrent       int
+	MaxOperationTime    time.Duration
+	MaxShutdownTime     time.Duration
+	IsolationVerifier   IsolationVerifier
+	// WorkloadIsolationVerifier selects work-only dispatch and requires both
+	// proof flags explicitly true. Legacy verifier/client selection is exclusive.
 	WorkloadIsolationVerifier       WorkloadIsolationVerifier
 	RequireIsolationProofBeforeWork bool
 	// RequireNetworkProofBeforeWork requires the verified process proof plus

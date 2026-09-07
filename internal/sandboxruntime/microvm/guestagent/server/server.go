@@ -57,9 +57,11 @@ func New(options Options) (*Server, error) {
 		return nil, errors.New("guest-agent server backend is required")
 	}
 	requireIsolationProofBeforeWork := options.RequireIsolationProofBeforeWork || options.RequireNetworkProofBeforeWork
-	// RED constructor-only bridge: retain an explicit local verifier so the
-	// actual Serve boundary is reachable with both work gates still required.
-	// Selected-mode validation and verifier invocation remain unimplemented.
+	if options.WorkloadIsolationVerifier != nil && (!configuredDependency(options.WorkloadIsolationVerifier) ||
+		!options.RequireIsolationProofBeforeWork || !options.RequireNetworkProofBeforeWork ||
+		options.IsolationVerifier != nil || options.CredentialClient != nil) {
+		return nil, errors.New("guest-agent workload isolation options are invalid")
+	}
 	if requireIsolationProofBeforeWork && !configuredDependency(options.IsolationVerifier) && !configuredDependency(options.WorkloadIsolationVerifier) {
 		return nil, errors.New("guest-agent isolation verifier is required")
 	}
@@ -373,7 +375,7 @@ func (server *Server) beginBackendCall(ctx context.Context, stateChanging bool) 
 		server.mu.Unlock()
 		return nil, nil, errServerNotReady
 	}
-	if stateChanging && server.requireIsolationProofBeforeWork && !server.isolationProven {
+	if stateChanging && server.workloadIsolationVerifier == nil && server.requireIsolationProofBeforeWork && !server.isolationProven {
 		server.mu.Unlock()
 		return nil, nil, errServerNotReady
 	}
@@ -397,6 +399,15 @@ func (server *Server) beginBackendCall(ctx context.Context, stateChanging bool) 
 		server.operations.Done()
 		if stateChanging {
 			<-server.admission
+		}
+	}
+	if stateChanging && server.workloadIsolationVerifier != nil {
+		// Selected work never relies solely on a cached success (or remains
+		// permanently closed by a cached failure). The fresh check is tracked
+		// inside this exact permit and the request's already-bounded context.
+		if err := server.inspectWorkload(callCtx, false); err != nil {
+			release()
+			return nil, nil, err
 		}
 	}
 	return callCtx, release, nil

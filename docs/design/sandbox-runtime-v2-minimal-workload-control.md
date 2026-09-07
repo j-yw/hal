@@ -368,3 +368,49 @@ independent golden and readiness-only controls are executed.
 produces 114 expected test failure events, 45 passing controls, and zero skips.
 This is a compiling RED checkpoint only; shared parser/predicate extraction,
 local proof implementation and all coordinated authenticated I/O remain pending.
+
+## Codec and injected work-only dispatch GREEN scope
+
+The subsequent bounded implementation supplies the three pure codec methods
+and selected server dispatch/preparation, not the authenticated workload
+transport. Fixed expected prefix/suffix bytes bind the complete existing digest,
+nonzero session, nonzero expected ordinal and frame direction. The middle is
+only canonical padded base64. Outer length is checked first; exact decoded size
+(including terminal padding) is checked before allocating owned inner bytes.
+An explicit alphabet check rejects CR/LF which Go's strict base64 decoder would
+otherwise ignore. The strict decoder rejects nonzero padding bits. No generic
+JSON object or alternate v1 schema is decoded by this envelope codec.
+
+The selected server requires both proof options explicitly true and rejects
+legacy verifier/client mixing, including typed-nil local configuration. Existing
+Handle is the sole strict classifier, and its selected branch rejects readiness
+before any backend/proof attempt. HandleWorkload is unavailable on a legacy
+server. The existing timed exec/copy handlers and publication responses remain
+shared; the existing process/network predicates have one definition used by
+both legacy readiness and the selected inspector.
+
+PrepareWorkload runs Ready and the injected local verifier inside a tracked
+non-state-changing backend call. Valid selected work reserves the existing
+bounded permit and runs a fresh local inspection inside that tracked lifetime,
+after the shared strict request validation/timing setup. Callbacks are outside
+server.mu. Only the current attempt, live context and still-serving lifecycle
+may publish the existing private isolationProven observation. Late older
+failures cannot clear a newer success; older successes cannot overwrite a
+newer failed attempt. Local verifier/Ready errors and panics remain fixed and
+redaction-safe, and every path releases the tracked call/permit.
+
+No extra boolean grants authority. In particular, a cached false observation
+does not permanently prevent inspection: a later valid work call can recover
+only through its own fresh successful check. Malformed protocol requests and
+pre-canceled work do not inspect. Work admission is not an assertion that
+Prepare already ran; the future selected transport must run preparation before
+its first readiness response. Existing copy-in publication results continue to
+outrank a cancellation observed after publication, with uncertainty preserved.
+
+The local verifier is still only an explicit injected interface. The concrete
+Linux no-request sibling and actual retained L7 boot/proxy consumption require a
+separate body-equivalence RED before implementation; no result in this slice
+claims a real process/network inspection. The workload transport scaffold and
+its original authenticated-exec RED are unchanged and still fail as expected.
+All transport, host reader, guest command, credentials, prepared workspace and
+image/live/terminal acceptance dependencies listed above remain incomplete.
