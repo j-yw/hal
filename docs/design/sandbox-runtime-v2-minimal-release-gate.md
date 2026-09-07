@@ -259,6 +259,68 @@ R/D, interrupt blocked gate I/O or reject cancellation first observed while
 waiting for the starter mutex. Those remain separately reproduced/approved
 work; no full release-gate or runtime acceptance is claimed.
 
+## Gate-I/O compiling RED: loss after the actual send blocks
+
+This tests-only checkpoint is based on accepted `4b287fbd`. It adds only
+`minimal_control_gate_io_red_linux_test.go`; all earlier REDs and fixture files
+are unchanged. The separately accepted resource-currentness commits through
+`38f8f0b6` must be consumed and this RED reproduced again before any gate GREEN.
+No production, schema, source guard or executable selection changes here.
+
+Each case uses the actual eight-role admission, namespace SCM, canonical
+revision-1 store and returned Release through the existing tracked fixture.
+The gate is a real ordinary seqpacket pair; the existing five-second socket
+timeout is installed explicitly. At most 128 exact packet-sized invalid fillers
+are sent with `MSG_DONTWAIT` into its bounded queue. The test captures only its
+actual bootstrap task identity, then observes that same task inside the real
+starter `release`/Unix `sendmsg` stack before causing any loss. Stack capture is
+bounded and not logged. Failure to reach this prerequisite is not a valid RED.
+
+Original-channel EOF and natural expiry of the immutable sealed P join the real
+preparation cancellation, P observer, original monitor and I/O interrupter.
+The P case starts with a three-second deadline, requires at least one second
+remaining after the blocked-send observation, and rejects late setup. The Close
+case instead calls the actual starter `close` concurrently, without first
+closing preparation. Each operation must finish within 750ms, before the old
+socket timeout can explain progress; Close has its own 750ms join requirement.
+The current send ignores observed loss, and Close waits behind its held mutex.
+
+Only after recording the behavior failure does the fixture shut down the peer's
+read side to rescue the writer. It joins bootstrap and Close before draining,
+then counts all exact invalid fillers separately from valid ChildRelease packets.
+The failing cases leave zero ChildRelease, `released=false` and the actual
+starting/none revision-1 record; rescue is not successful cancellation. A retained
+socket alias keeps its original device/inode. After every task/observer joins,
+the kernel may allocate the closed gate's old number to a test-owned canary via
+`F_DUPFD_CLOEXEC` (never overwrite a busy descriptor). Repeated old cleanup must
+preserve that exact successor and its bytes, as well as the original socket alias.
+
+```text
+go test -race -p 2 ./internal/sandboxruntime/microvm/firecrackerhost \
+  -run '^(TestMinimalGateIO|TestMinimalReleaseRevisionOneTrackedOrderControl|TestJailerRecoveryActualSelectedOwnerRetainsCoordinatorAcrossReconnect)' \
+  -count=3 -json
+```
+
+This exits 1 with nine intended failing leaves (12 test/subtest failure events),
+12 passing control events, zero skips and no race report. The independent
+tracked positive control still reaches actual gate send/revision-2 reply; legacy
+seven-role retained-owner/reconnect controls pass. Queue, joined cleanup, retained
+alias and successor assertions all execute without additional failure.
+
+Identity/staging/cgroup and process execution remain the explicitly fake fixture;
+the manager/lifecycle and read-only self pidfd are real but do not prove an actual
+supervisor-created child. No host process is launched/signaled, namespace entered,
+live cgroup operated or Jailer/KVM acceptance claimed. Existing Abort can finish
+its fake owned cleanup; this adds no absence/idle/quarantine inference.
+
+Arming receive is not exercised by this RED. Its actual consumer remains inside
+`startStrictJailerNamespaceProcess`, after `startJailerRecoveryGateCommand` and
+real child inspection, with `starter.mu` held. Reaching it without privileged
+launch requires a separately reviewed selected-only retained-gate operation
+extraction at that exact consumer, not a fake process observer or another runner.
+No such extraction is made here. Atomic one-attempt R/P/D, interruptible arming,
+controller/event handoff and later cleanup/quarantine stay unimplemented.
+
 ## Separate compiling RED: retained resource currentness
 
 After narrow GREEN `2ddb13c0`, the new 87-line
