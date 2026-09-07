@@ -1,8 +1,8 @@
 # Selected minimal preparation and release composition
 
-Status: first preparation lifetime implementation, based on
-`347331910718c4f967d27fa7b7624021152813e5`; later release and recovery checkpoints
-below remain design-only. See the final section for implemented scope/evidence.
+Status: first preparation lifetime implementation held pending the pre-genesis
+review correction below, based on `347331910718c4f967d27fa7b7624021152813e5`.
+Later release and recovery checkpoints remain design-only.
 This refines section 2 of the [constructor design](sandbox-runtime-v2-minimal-runtime-constructor.md)
 and the accepted [host controller design](sandbox-runtime-v2-minimal-host-controller.md).
 It follows the [Linux completion architecture](sandbox-runtime-v2-linux-completion-architecture.md)
@@ -448,3 +448,83 @@ The existing Release closure is deliberately unchanged. The executable loop,
 controller/event publication and concrete provider remain unselected; there is
 no readiness, actual cgroup/Jailer/KVM, host-root or all-owner-loss recovery
 claim from these tests.
+
+## Review correction: canceled pre-genesis work behind a lock
+
+The first lifetime implementation `6600e599` is held from integration pending
+this separately reviewed DESIGN/RED correction. Independent review reproduced
+actual BootstrapStart/reader transfer followed by observed cancellation while
+`owner.mu` was held. After releasing that mutex, bootstrap still created the
+starting revision-0/controller-none record, although StartChild rejected and
+no process or release occurred. This is an avoidable uncertain record, not
+evidence of runtime absence and not permission to abort/retire it afterward.
+
+The source sequence is concrete: `HandleBootstrap` waits for `owner.mu`, then
+`CreateGenesis` calls `withLock`, which waits for `store.selected.mu` and tries
+the directory flock. The old `withLock` checks context cancellation only on
+flock contention. An uncontended flock calls its callback even with a canceled
+caller. Checking in the serving function, or only immediately after owner.mu,
+cannot cover later waiting on the selected-store mutex or flock.
+
+The proposed GREEN is limited to the existing selected-eight store branch
+(`store.selected != nil && store.selected.minimal != nil`):
+
+1. Check the operation's caller context after acquiring the selected-store
+   mutex, and again after acquiring flock, including uncontended acquisition.
+   Reject nil/canceled context and compare its absolute Deadline synchronously
+   with current time. A timer callback that has not run is not fresh evidence.
+2. In `CreateGenesis`, repeat this selected check immediately before mutation,
+   after the existing record readback. Reject without creating a record or
+   poisoning untouched state; always release acquired flock on rejection.
+3. Keep the caller context local to that operation. Do not persist preparation
+   context or cancellation on the shared store: independent bounded cleanup
+   and inspection must still operate after preparation is canceled.
+
+No `HandleBootstrap` or other FSM/closure ABI change, legacy six/seven behavior,
+record schema, new authority or guard exemption is proposed. The sole shared
+coupling is `l8_runtime_owner_runtime_linux.go`'s selected-eight `withLock` and
+genesis mutation boundary, with a private pure context/deadline predicate if
+needed. Later release/transition/cleanup behavior remains separately scoped.
+Once mutation has actually started, cancellation is not rollback authority;
+existing uncertainty, exact record ownership and cleanup rules remain binding.
+
+The new `minimal_control_preparation_genesis_red_linux_test.go` leaves the
+corrected original RED files byte-identical. It holds owner and selected-store
+mutexes separately, observes the task's actual serving/FSM/store mutex wait
+through a bounded, never-logged stack snapshot, then observes genuine original
+EOF or expiry of the unchanged sealed P before releasing that lock. All
+bootstrap/shutdown tasks are joined; watchdog-assisted progress is a fixture
+failure, not the intended RED. The assertion requires no record on disk, no
+retained genesis/reservation/poison/terminal state, no StartChild attempt and no
+release. No deletion, fabricated abort or absent-process proof repairs a failure.
+
+Additional direct-store cases establish the uncontended real directory flock
+path with a canceled context and, separately, a clearly labeled test-only
+Deadline context whose Err is still nil. The latter isolates the synchronous
+deadline obligation; it is not an admitted preparation or fake runtime owner.
+Independent valid eight-role bootstrap/cleanup-after-cancel and seven-role
+genesis controls execute regardless of failing negative cases. Their cgroup,
+identity and process behavior remains the existing explicit fake fixture.
+
+Run the new compiling RED separately:
+
+```sh
+GOMAXPROCS=3 go test -p 2 -race ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalPreparationGenesis' -count=3
+```
+
+Guard impact is expected to be none: production remains unchanged in this
+checkpoint, and the proposed GREEN adds no import, process/socket API, schema,
+authority constructor or default selection. Rerun the existing owner/Phase33
+command guards and package process boundary guards without editing them. GREEN
+requires independent approval of the frozen meaningful RED first.
+
+The unchanged-production RED run above produced 24 expected failure events
+(six failing leaves per repetition), nine passing control events and zero
+skips/race reports in 24.412 seconds. Each lock-wait case actually reached the
+identified blocked serving/FSM/store task, observed cancellation and joined
+monitor/I/O before unlocking, then found a newly created record. Direct-store
+cases also created a record. Assertions after that no-record failure, including
+fresh independent inspection on the rejected operation, are not credited as
+RED coverage. The separate successful-bootstrap/independent-cleanup and legacy
+controls passed. Unchanged command owner/Phase33 guards passed 73 events and
+package process-boundary guards passed six; no guard was edited.
