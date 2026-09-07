@@ -1,7 +1,9 @@
 # Selected Jailer finalization handoff
 
-Status: DESIGN ONLY at `b8b9cd2c0f0d2947947e9823c862b508d64f403f`.
-No implementation, compiling RED, provider, worker persistence, or terminal
+Status: first compiling RED on the approved design at `511fdd7a` (source base
+`b8b9cd2c0f0d2947947e9823c862b508d64f403f`). The private unselected scaffold
+delegates to legacy cleanup and returns unavailable. No completion authority,
+selected I/O/close implementation, provider, worker persistence, or terminal
 activation is included. This refines the deferred client split in
 [minimal owner bindings](sandbox-runtime-v2-minimal-owner-bindings.md), under
 the [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
@@ -143,6 +145,13 @@ Likewise holding `client.mu` while waiting, as legacy `stopAndCommit` does, woul
 prevent selected close from interrupting that wait. Keep the legacy branch's
 behavior intact; the new route needs a concrete bounded selected exchange.
 
+The first selected claim and an already-admitted legacy `stopAndCommit` must
+also exclude one another. Legacy currently owns `client.mu` across I/O; selected
+entry cannot promise to interrupt that legacy operation while waiting for the
+mutex. The future coupling must explicitly test this admission race, prohibit
+overlap or silent route migration, and recheck the selected caller before
+claiming after any legacy wait. This RED does not implement that coupling.
+
 Use one per-client active attempt under a short bookkeeping lock. Run context
 methods, authentication/inspection, socket operations and all waits outside it.
 An attempt retains its exact socket (or CLOEXEC operation duplicate) through
@@ -228,8 +237,8 @@ missing-record check or a new tombstone hidden inside this client slice.
 
 ## First meaningful RED and follow-up gates
 
-After this design is approved, begin with a compiling private sibling scaffold
-delegating to existing `stopAndCommit` and returning unavailable. Use the actual
+The first RED uses a compiling private sibling scaffold delegating to existing
+`stopAndCommit` and returning unavailable. It uses the actual
 `jailerRecoveryWireFixture`/canonical selected store/real seqpacket/FSM. The
 intended first RED asserts that a completed Finalize leaves the exact record
 finalized and records only StopReap/Finalize, with ZERO Commit packets. Baseline
@@ -262,8 +271,27 @@ include selected and legacy reconnect/record/FSM race repetitions, neutral owner
 regressions, the existing D6 receipt-access/source guards, whole affected host
 package, vet and Darwin compilation. Existing canonical encoders and the whole
 FinalizeAck comparison avoid introducing another receipt projection; report any
-guard coupling before changing its allowlist. No tests have been added or run
-as acceptance evidence by this design-only commit.
+guard coupling before changing its allowlist. The first RED's test-only store
+observer delegates every mutation and reads back the actual finalized record
+before the legacy client retires it. Its independent legacy control still
+requires StopReap/Finalize/Commit, exact acknowledgment, and actual retirement.
+The existing seven-role fixture does not prove eight-role construction or L7
+cleanup; later completion assertions are not counted as reached RED coverage.
+
+First RED gate (pinned Go 1.25.7, `GOMAXPROCS=3`):
+
+```sh
+go test -p 2 -race -count=3 -timeout=90s ./internal/sandboxruntime/microvm/firecrackerhost -run '^(TestMinimalJailerFinalization|TestJailerRecoveryFreshDaemonClientUsesSurvivingOwner|TestJailerRecoveryFreshClientResumesFinalizingAndFinalized|TestJailerRecoveryMissingRecordAndLostCommitAckStayUnresolved)'
+go test -p 2 -race -count=1 -timeout=120s ./cmd -run '^TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection$'
+```
+
+The first command compiles and reports the expected selected leaf failure on
+each repetition: operations `[8 10 11]`, one actual retirement, then missing
+finalized record. Eighteen legacy/control test events pass, with zero skips or
+race reports. The guard passes unchanged. Exact post-disconnect record checks
+below the missing-record assertion remain unreached; handle, concurrent-route,
+cancellation/close, and later Commit behavior await approved GREEN and follow-up
+REDs. No source guard exception or production caller is added.
 
 ## Bounded future ownership
 
