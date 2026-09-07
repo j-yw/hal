@@ -1,12 +1,13 @@
 # Trusted selected template to retained minimal assets
 
-DESIGN ONLY at `38f8f0b6d22a335313402219b7c25c644c821947`. This refines the
+Design base `38f8f0b6d22a335313402219b7c25c644c821947`. This refines the
 provider proposal at `7144680c2d8b8ce1112a7a599c64da34e93d6cfc`, under the
 [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md).
 Original `TemplateIdentity`, `RequestCorrelation`, and `OwnedContext` are now
 accepted neutral handoffs. No provider, issuer, registry, schema, source guard,
-image, default selector, runtime entrypoint, or executable test changes here.
+image, default selector or runtime entrypoint changes here. The compiling RED
+checkpoint below adds only the approved currentness scaffold and its tests.
 
 Source paths below are under `internal/`: host helpers are in
 `sandboxruntime/microvm/firecrackerhost/`, and localresolver/minimalprofile are
@@ -254,6 +255,62 @@ Actual accepted native build/publication and trusted deployment association are
 not supplied by this design or a diagnostic image. Default production wiring
 remains inert until those dependencies and the prepared-host consumer are reviewed.
 
-Verification of this design: actual source inspection and `git diff --check`.
-No Go test, OCI fetch/cache mutation, build, native-stage access, provisioning,
-VM, credential lookup, or runtime was executed for this documentation change.
+Verification of the original design at `5c6bccee`: source inspection and
+`git diff --check`, without executable tests. No OCI fetch/cache mutation, build,
+native-stage access, provisioning, VM or credential lookup runs in this slice.
+
+## Approved compiling RED checkpoint: currentness before transfer
+
+First expose `VerifiedL8MinimalDistribution.ConfirmCurrent(ctx) error` in
+`localresolver/l8_minimal_currentness.go` with an unavailable implementation.
+No existing method or caller changes. This does not construct a provider or
+implement acquisition. It makes the genuine existing retained ownership usable
+by a future read-only selection without borrowing the launch-transfer capability.
+
+The eventual small GREEN will lock the same `minimalDistributionState`, reject
+nil/zero/closed/transferred input and nil context, then reuse the actual
+`state.confirmLaunchCurrent(ctx)` already used by the lease. Distribution copies
+continue sharing exactly one state; do not impose a new self-pointer rule or
+mint another owner. Successful Current neither transfers nor closes anything.
+After transfer only the existing lease can confirm currentness; distribution
+aliases remain inert even when that lease is healthy. Preserve original context
+cancellation/deadline error identity, the parent-lock ordering, retained byte/
+directory comparisons and all Close/TakeLaunchLease behavior. Cancellation is
+checked after serialization waits and actual reads; this adds no interruptible
+mutex or arbitrary-filesystem-syscall claim and no abandoned goroutine.
+
+The RED fixture uses unchanged minimalDistributionFixture: Expected is built
+from independent synthetic inputs before verifying the files, not recovered by
+decoding candidate JSON. Each valid-method test first passes the real minimal
+verifier, existing selector and underlying retained parent/child byte checker.
+Separate invalid/closed/transferred and actual existing lease controls execute
+even while new valid admission fails. Original/copy availability and canceled/
+expired error identity are the first reachable failures. Preservation and
+post-transfer assertions after valid ConfirmCurrent are not RED evidence yet.
+Later GREEN tests must reach cancellation after waits/readback, parent/child
+replacement and in-place mutation, Close/transfer races and no authority reuse.
+
+Parent/child context-aware verification remains a separate coupled slice, not
+a stub silently returning successful acquisition. Its precise propagation path
+must cover `distribution.go` checksums and digestDistributionFile, the L7
+AcquireL7AssetLease/confirmSourceLocked/verifyPinnedL7Asset chain, retained parent
+measurement in `l8_parent_evidence_lease.go`, and child pinMinimalFile/metadata
+snapshot/final currentness in `l8_minimal_distribution.go`. Existing parent
+inventory uses ReadDir(-1), and digestDistributionFile uses io.Copy; do not
+describe those legacy operations as already context-aware or strictly bounded.
+Review context-aware loop/inventory variants and compatibility wrappers before
+changing them; never just check ctx around the whole old verification call.
+No such parent/child implementation or source-guard change is part of this RED.
+
+Frozen RED verification command:
+
+```sh
+go test -race -p 2 ./internal/sandboxruntime/microvm/assets/localresolver -run '^TestL8MinimalUntransferredCurrentness' -count=3 -json
+```
+
+Result: 18 expected failing test/subtest events (four leaves per repetition,
+plus parents), 18 passing control events, zero skips and no race report; stderr
+empty. Valid original/shared-copy admission and original context-error identity
+fail at the intended unavailable method after the real fixture prerequisites.
+The package failure event is additional, not a nineteenth failed test. All test
+processes joined; no parent/child verification or provider code was changed.
