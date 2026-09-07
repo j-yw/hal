@@ -278,6 +278,15 @@ require rejection before body read or admission expiry. These tests do not
 replace authenticated semantic readiness mutations or prove blocked host
 `WriteApplication`, delayed A/D/H observation, or entropy syscall failure handling.
 
+The third tests-only checkpoint uses a scripted peer on that same retained Unix
+fixture with real shared Hello/Auth/Finished and application cryptography. It
+validates the actual request against the shared encoder and first validates an
+unmodified response against the shared response validator. The matching response
+passes; authenticated wrong binding, capability, session, request, operation,
+protocol, OK value, missing/unknown fields and a validly encrypted event kind are
+rejected before admission expiry. These are semantic regression controls, not
+raw ciphertext corruption, production guest behavior or a new runtime consumer.
+
 ## Explicit next coupled handoff
 
 Composition owns the distinct config/record/store foundation. The selected runtime

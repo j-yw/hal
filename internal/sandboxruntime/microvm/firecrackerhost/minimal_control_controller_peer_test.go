@@ -131,7 +131,7 @@ func (s *minimalControllerPeerStream) Write(original []byte) (int, error) {
 	return len(original), nil
 }
 
-func newMinimalControllerPeerFixture(t *testing.T, admission *minimalControlSupervisorAdmission, fault *minimalControllerPeerFault) *minimalControllerFixture {
+func newMinimalControllerRetainedPeerFixture(t *testing.T, admission *minimalControlSupervisorAdmission) *minimalControllerFixture {
 	t.Helper()
 	f := newMinimalControllerFixture(t, admission)
 	manager := f.transport.manager
@@ -184,6 +184,12 @@ func newMinimalControllerPeerFixture(t *testing.T, admission *minimalControlSupe
 			t.Error("displaced fixture socket was consumed")
 		}
 	})
+	return f
+}
+
+func newMinimalControllerPeerFixture(t *testing.T, admission *minimalControlSupervisorAdmission, fault *minimalControllerPeerFault) *minimalControllerFixture {
+	t.Helper()
+	f := newMinimalControllerRetainedPeerFixture(t, admission)
 	public, ok := minimalControlConfigBase64(admission.config.Control.ControllerPublicKey)
 	if !ok {
 		t.Fatal("invalid fixture public key")
