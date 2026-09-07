@@ -1,13 +1,14 @@
 # Selected minimal revision-1 release gate
 
-Design checkpoint only, based on accepted
+DESIGN plus first compiling RED checkpoint, based on accepted
 `f98ee83658856d16a20a4cdaa90ac4dfd437e0db`. This refines only the second
 checkpoint of [preparation composition](sandbox-runtime-v2-minimal-runtime-preparation.md).
 The [constructor](sandbox-runtime-v2-minimal-runtime-constructor.md),
 [host handoff](sandbox-runtime-v2-minimal-host-controller.md),
 [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
 [minimal L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md)
-remain binding. No production or test behavior changes in this commit.
+remain binding. The original DESIGN commit changed no behavior; the initial
+tests-only RED evidence is recorded below. No production behavior is changed.
 
 ## Actual seam and unchanged boundaries
 
@@ -192,3 +193,53 @@ compile. Any tagged harmless subprocess or new process/namespace action needs
 separate explicit authorization; none runs for this design. This checkpoint
 does not implement later no-generation/quarantine recovery, controller/event
 publication, producer/L7 cleanup, worker receipt or strict/live acceptance.
+
+## First compiling RED: actual revision-1 loss
+
+The new `minimal_control_release_red_linux_test.go` pauses the actual returned
+Release after the unchanged FSM persists revision 1. It independently reads the
+canonical selected record, checks the tracked manager handle/paths/Done and
+real self pidfd, then observes either original-channel EOF or natural expiry of
+the unchanged sealed P. Cancellation, the original reader, its I/O interrupter
+and P observer all finish before the fixture resumes Release. Both cases still
+receive an actual ChildRelease packet and observe `starter.released=true`.
+The later revision-2 transition rejects the canceled context; preventing that
+publication is already-green control behavior, not prevention of gate release.
+
+Only new fixture setup is added in
+`minimal_control_release_fixture_linux_test.go`; every original preparation RED
+file is byte-identical. Before starting, the wrapper replaces the unused
+close-only directory descriptor with an actual read-only self pidfd and uses
+the real strict lifecycle/manager, pure launch planner and retained owner's
+namespace duplication. A test-only starter calls real `withLaunchFD` against
+the existing fake cgroup filesystem, checks CLOEXEC, returns only a fake
+HostProcess, and verifies the scoped duplicate was closed. Its Signal/Kill
+methods close only the fake Done channel; they never signal the observed PID.
+The fake owner genesis parent is explicitly set for that self observation.
+
+No current-process lifetime is presented as actual supervisor-child proof. The
+fixture does not select the production vsock-parent option because fake staging
+does not create a runtime-UID directory. Existing staged-root/identity/cgroup
+operations remain fakes. No process launch, namespace entry, host UID change,
+live cgroup operation, observer injection or root-constructor bypass is added.
+
+```text
+go test -race -p 2 ./internal/sandboxruntime/microvm/firecrackerhost \
+  -run '^(TestMinimalReleaseRevisionOne|TestMinimalPreparationActualBootstrapOrderControl|TestJailerRecoveryActualSelectedOwnerRetainsCoordinatorAcrossReconnect)' \
+  -count=3 -json
+```
+
+The actual run exits 1: six intended failing leaves across three repetitions
+(nine failure events including parents), 15 passing control events, zero skips
+and no race diagnostic. The independent new tracked positive control reaches
+genesis, armed process, revision 1, actual gate send and revision-2 reply with
+the original preparation still active. Existing eight-role bootstrap ordering
+and seven-role retained-owner/reconnect controls pass independently. Every
+blocked bootstrap and cancellation task joins; watchdog-assisted progress is
+a fixture failure, not accepted cancellation evidence.
+
+Remaining currentness mismatches, atomic release admission/R/D, interruptible
+arming/send, Close concurrency and prepared-host parent/child observations are
+not exercised or implemented by this first RED. Existing Abort may genuinely
+finish the fake coordinator's cleanup after failure; the test makes no new
+absence, terminal, idle or quarantine claim from that behavior.
