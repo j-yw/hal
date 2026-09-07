@@ -90,6 +90,11 @@ func withMinimalControlSupervisorAdmission(fds [6]int, openFD func(uintptr, stri
 	if err != nil || validateMinimalControlFirecrackerConfig(actualConfig, config, public) != nil {
 		return true, errL8RuntimeOwnerInvalid
 	}
+	digest := sha256.Sum256(payload)
+	request, err := captureMinimalControlConfigExpectation(config, public, digest)
+	if err != nil {
+		return true, errL8RuntimeOwnerInvalid
+	}
 	// Transfer consumption before calling the seed helper: it always closes.
 	seedFD := imported[1]
 	imported = imported[:1]
@@ -98,8 +103,8 @@ func withMinimalControlSupervisorAdmission(fds [6]int, openFD func(uintptr, stri
 		return true, errL8RuntimeOwnerInvalid
 	}
 	defer clear(key)
-	digest := sha256.Sum256(payload)
 	admission := &minimalControlSupervisorAdmission{config: config, configDigest: digest, controllerKey: key,
+		request:   request,
 		borrowed:  [7]int{fds[0], fds[1], fds[2], fds[3], fds[4], fds[5], imported[0]},
 		namespace: minimalControlNamespaceProjection{configCorrelation: hex.EncodeToString(digest[:]), namespaces: config.Control.Namespace},
 		recovery: minimalControlRecoveryProjection{configCorrelation: hex.EncodeToString(digest[:]), job: config.Job,

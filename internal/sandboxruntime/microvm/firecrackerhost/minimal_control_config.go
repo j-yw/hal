@@ -160,6 +160,7 @@ type minimalControlSupervisorAdmission struct {
 	borrowed  [7]int
 	recovery  minimalControlRecoveryProjection
 	namespace minimalControlNamespaceProjection
+	request   minimalControlConfigExpectation
 }
 
 func unavailableMinimalControlSupervisor(*minimalControlSupervisorAdmission) error {

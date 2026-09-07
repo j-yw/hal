@@ -18,6 +18,7 @@ import (
 type jailerRecoveryRuntime struct {
 	mu                  sync.Mutex
 	config              jailerRecoverySupervisorConfig
+	minimalControl      *minimalControlConfigExpectation
 	files               [3]*os.File
 	starter             *jailerRecoveryStarter
 	lifecycle           *strictJailerLifecycle
@@ -129,6 +130,10 @@ func (selected *jailerRecoveryRuntime) request() (strictJailerCoordinatorRequest
 	c := selected.config
 	p := c.Policy
 	request := strictJailerCoordinatorRequest{runtimeID: c.Job.RuntimeID, jailPaths: c.Paths, enablePCI: c.EnablePCI, cgroup: &strictJailerCgroupResources{anchor: p.CgroupAnchor, cpuQuota: p.CPUQuota, cpuPeriod: p.CPUPeriod, memoryMax: p.MemoryMax, swapMax: p.SwapMax, pidsMax: p.PidsMax}, inspection: strictJailerHostInspectionRequest{jailerPath: p.JailerPath, firecrackerPath: p.FirecrackerPath, trustedFilesystemAnchor: p.TrustedAnchor, runtimeUID: p.UID, runtimeGID: p.GID, chrootBaseDir: p.ChrootBase}}
+	if selected.minimalControl != nil {
+		projection := *selected.minimalControl
+		request.minimalControl = &projection
+	}
 	for _, pair := range []struct {
 		digest string
 		target *[32]byte

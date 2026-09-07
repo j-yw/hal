@@ -265,3 +265,27 @@ Unix fixtures use fake recorded process ownership. No privileged launch test is
 authorized by this plan. Actual root construction, cgroup enforcement, private
 mount/exec, KVM boot and complete producer/L7/credential/worker handoff remain
 separate required acceptance, never inferred from these local tests.
+
+## First compiling RED checkpoint
+
+The first checkpoint captures the independent public expectation at actual
+admission and carries a value copy through selected request assembly. It adds
+no coordinator acceptance branch: the existing validators and unavailable
+executable consumer remain unchanged. The new test locally sets EnablePCI before
+resealing because its existing measured FC fixture contains a vsock; no shared
+fixture or assertion was weakened.
+
+`go test -p 2 -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestMinimalRuntimeRequest'`
+compiles and reproduces one expected failure: the genuinely admitted eight-role
+NIC reaches actual coordinator validation and is rejected by its unchanged
+nil-legacy-expectation branch. Three controls pass: independent immutable public
+snapshot, ordinary seven-role/no-NIC request, and NIC rejection when both
+expectations are absent. There are no skips. The fixture verifies actual measured
+asset duplicates and borrowed-FD survival; it never calls a root constructor.
+
+Both-present, changed-expectation and selected consumer rejection branches are
+not yet implemented or independently exercised. Store/binder/constructor
+assembly, cancellation, launch and controller composition remain later work.
+The small capture helper temporarily renders the same public boot expectation
+as the existing equality validator; consolidating that pure rendering can be
+reviewed with GREEN without changing the original validator in the RED commit.

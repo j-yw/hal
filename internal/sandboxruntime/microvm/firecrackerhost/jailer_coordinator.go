@@ -40,6 +40,8 @@ type strictJailerCoordinatorRequest struct {
 	support    []jailerStagingResourceInput
 	enablePCI  bool
 	minimalL7  *minimalL7ConfigExpectation
+	// Selected handoff only; validation/consumption remains unavailable.
+	minimalControl *minimalControlConfigExpectation
 }
 
 type strictJailerCoordinatorError struct {
