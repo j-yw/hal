@@ -289,10 +289,28 @@ func TestMinimalCleanupPreflightCancellationAtEveryReadBoundary(t *testing.T) {
 				owner, store, request := minimalCleanupPreparedRequest(t, "finalize")
 				base, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				ctx := &minimalCleanupDeadlineContext{Context: base, deadline: time.Now().Add(time.Minute)}
+				deadline := time.Now().Add(time.Minute)
+				if deadlineOnly {
+					deadline = time.Now().Add(500 * time.Millisecond)
+					if phase == "entry" {
+						deadline = time.Now().Add(-time.Second)
+					}
+				}
+				// Deadline stays fixed for this context's entire lifetime. The
+				// wrapped context deliberately keeps Err nil in deadline cases.
+				ctx := &minimalCleanupDeadlineContext{Context: base, deadline: deadline}
+				expirations := 0
 				expire := func() {
+					expirations++
 					if deadlineOnly {
-						ctx.deadline = time.Now().Add(-time.Second) // Err remains nil.
+						if phase != "entry" {
+							if !time.Now().Before(deadline) {
+								t.Error("deadline expired before the intended read boundary")
+							}
+							timer := time.NewTimer(time.Until(deadline))
+							defer timer.Stop()
+							<-timer.C
+						}
 					} else {
 						cancel()
 					}
@@ -318,6 +336,11 @@ func TestMinimalCleanupPreflightCancellationAtEveryReadBoundary(t *testing.T) {
 					return nil
 				})
 				want := map[string]int{"entry": 0, "first-load": 0, "barrier": 1, "second-load": 1}[phase]
+				wantLoads := map[string]int{"entry": 0, "first-load": 1, "barrier": 1, "second-load": 2}[phase]
+				if actual, present := ctx.Deadline(); !present || actual != deadline || deadlineOnly && ctx.Err() != nil ||
+					expirations != 1 || wrapped.loads != wantLoads {
+					t.Fatal("fixed-deadline fixture did not reach the exact intended boundary")
+				}
 				if !errors.Is(err, errL8RuntimeOwnerInvalid) || barriers != want || store.record != before ||
 					len(store.transitions) != transitions || !snapshot.matches(owner) {
 					t.Fatalf("expired caller advanced cleanup: err=%v barriers=%d want=%d", err, barriers, want)
