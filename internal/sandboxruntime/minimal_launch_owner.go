@@ -87,6 +87,9 @@ func (owner *MinimalLaunchOwnerBinding) finalizeAttemptResult(ctx context.Contex
 }
 
 func (owner *MinimalLaunchOwnerBinding) callFinalize(ctx context.Context, cached MinimalLaunchCleanupReceipt) (MinimalLaunchCleanupReceipt, error, bool) {
+	if !minimalLaunchCleanupContextCurrent(ctx) {
+		return MinimalLaunchCleanupReceipt{}, ErrMinimalLaunchUnavailable, false
+	}
 	if !minimalLaunchOwnerIdentityMatches(owner.owner, owner.identity) {
 		return MinimalLaunchCleanupReceipt{}, ErrMinimalLaunchUnavailable, true
 	}
@@ -177,6 +180,9 @@ func (recovery *MinimalLaunchRecoveryBinding) callRecover(ctx context.Context) (
 			err = ErrMinimalLaunchUnavailable
 		}
 	}()
+	if !minimalLaunchCleanupContextCurrent(ctx) {
+		return nil, ErrMinimalLaunchUnavailable
+	}
 	returned, err := recovery.binding.provider.RecoverMinimalJob(ctx, recovery.identity)
 	if !jobCredentialBindingValueIsNil(returned) {
 		owner = retainMinimalLaunchOwner(recovery.binding, returned, recovery.identity)

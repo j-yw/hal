@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -197,27 +196,28 @@ func TestMinimalLaunchOwnerCleanupCallbacksRunUnlocked(t *testing.T) {
 	}
 }
 
-// This is a context fixture, not a production clock. Err deliberately stays nil
-// while the absolute deadline changes, modelling delayed deadline notification.
+// This context fixture keeps one fixed deadline. Err/Done notification is
+// deliberately delayed; publication must still enforce the absolute deadline.
 type minimalCleanupDeadlineContext struct {
 	context.Context
-	deadline atomic.Int64
+	deadline time.Time
 	observed chan struct{}
 	once     sync.Once
 }
 
 func newMinimalCleanupDeadlineContext() *minimalCleanupDeadlineContext {
-	ctx := &minimalCleanupDeadlineContext{Context: context.Background(), observed: make(chan struct{})}
-	ctx.deadline.Store(time.Now().Add(time.Minute).UnixNano())
-	return ctx
+	return &minimalCleanupDeadlineContext{Context: context.Background(), deadline: time.Now().Add(250 * time.Millisecond), observed: make(chan struct{})}
 }
 func (ctx *minimalCleanupDeadlineContext) Deadline() (time.Time, bool) {
-	d := time.Unix(0, ctx.deadline.Load())
 	ctx.once.Do(func() { close(ctx.observed) })
-	return d, true
+	return ctx.deadline, true
 }
 func (ctx *minimalCleanupDeadlineContext) expire() {
-	ctx.deadline.Store(time.Now().Add(-time.Second).UnixNano())
+	if remaining := time.Until(ctx.deadline); remaining > 0 {
+		timer := time.NewTimer(remaining)
+		defer timer.Stop()
+		<-timer.C
+	}
 }
 
 func TestMinimalLaunchOwnerCleanupRechecksCallerAfterMutexAdmission(t *testing.T) {

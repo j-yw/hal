@@ -1,9 +1,9 @@
 # Selected minimal retained cleanup bindings
 
-Status: initial neutral binding implementation after frozen RED `a48d67da`,
+Status: neutral binding implementation after frozen RED `a48d67da`,
 following approved design `0e03e48a` at base
-`ea0ae1e2f2c88300701a6fc69bbf235ff22bf4e4`. The original RED passes; the additional
-validation matrix below is still pending. No worker consumer, recovery activation,
+`ea0ae1e2f2c88300701a6fc69bbf235ff22bf4e4`. The original RED and the additional
+validation matrix below pass. No worker consumer, recovery activation,
 or cleanup proof is included. The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md),
 [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md),
 [selected host handoff](sandbox-runtime-v2-minimal-host-controller.md), and
@@ -222,10 +222,20 @@ fixture teardown releases its gate and joins its goroutines, never product clean
 The joining-waiter fixture observes its cancellation channel before cancellation
 so the later GREEN test cannot pass by rejecting a caller canceled before entry.
 
-The remaining GREEN matrix must add nil/copied handle and complete recovery-ID
-admission negatives, absolute-deadline/late-observation checks, and a deterministic
-probe that an old waiter receives its own failed attempt even after another retry
-begins. Do not count this initial unavailable scaffolding as those checks.
+The additional matrix in `minimal_launch_owner_test.go` executes nil/copied/
+typed-nil handle and complete recovery-ID admission negatives, valid 1/64-byte
+boundaries and unchanged identity copies, all owner identity fields, unlocked
+callbacks, and absolute-deadline/late-observation checks. Its paused waiter captures
+one attempt before that attempt fails, then resumes while a later retry is blocked;
+it must return the original failure without waiting on or adopting the new result.
+This uses only an explicitly released test context, not a production clock seam.
+
+That matrix found a callback-entry gap after the initial implementation: a caller
+could expire while waiting for the short bookkeeping mutex. Test-only RED
+`e3196718` reproduces four leaves (Finalize/Recover times cancellation/deadline).
+Both unlocked callback-entry helpers now recheck caller currentness before their
+first provider/identity callback. No context method, provider callback, or waiter
+is invoked under the bookkeeping mutex. The original two RED files stay unchanged.
 
 Focused commands (pinned Go, task-owned home scratch/cache):
 
@@ -240,6 +250,13 @@ passes, zero skips per repetition. Initial GREEN has 156 passing events across
 three repetitions, zero failures/skips/races; two formerly unreached Start
 quarantine subcases now execute per repetition. The second selector independently
 runs the controls plus existing attempt tests.
+The additional RED race three times had 15 failure events and 495 passes, no skips
+or race reports. After the two entry checks, the full focused selector including
+existing attempt tests has 693 passes across three repetitions, zero failures/
+skips/races. Whole neutral-package race three times and affected worker selected/
+guard/legacy-control race three times also pass. Whole neutral+worker default,
+vet for those two packages, Darwin worker compilation, gofmt and diff checks pass.
+These are scoped gates, not a repository-wide or prepared-Linux acceptance run.
 
 Implementation ownership: new `minimal_launch_owner.go` and narrowly named tests;
 only the existing owner-binding declaration/initialization in
@@ -254,4 +271,4 @@ relevant existing worker selected/source guards, vet, and Darwin compilation.
 Use pinned Go with task-owned home TMPDIR/GOTMPDIR/GOCACHE and low parallelism.
 This revision is also checked by source inspection and `git diff --check`.
 Neither neutral callback tests nor syntactically valid receipts prove a live
-runtime or cleanup. Full review awaits the remaining matrix and adjacent gates.
+runtime or cleanup. Independent review remains an exact-commit acceptance gate.
