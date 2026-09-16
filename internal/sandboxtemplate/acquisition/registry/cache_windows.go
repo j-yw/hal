@@ -97,24 +97,36 @@ func (g *fetchGroup) do(ctx context.Context, key string, fn func(context.Context
 			g.forget(key, call)
 		}), nil
 	case <-ctx.Done():
-		g.releaseOwner(key, call, true)
+		if g.releaseOwner(key, call, true) {
+			// The last canceled owner joins only its exact generation, after
+			// releasing the group lock. Other generations remain independent.
+			<-call.done
+		}
 		return nil, nil, ctx.Err()
 	}
 }
 
 func (g *fetchGroup) run(key string, call *fetchCall, ctx context.Context, fn func(context.Context) ([]byte, error)) {
-	call.data, call.err = fn(ctx)
-	close(call.done)
-	if call.err != nil {
-		g.mu.Lock()
-		if g.calls[key] == call {
-			delete(g.calls, key)
+	defer func() {
+		if recover() != nil {
+			call.data = nil
+			call.err = coded(ErrorCodeRegistryUnavailable, nil)
 		}
-		g.mu.Unlock()
-	}
+		if call.err != nil {
+			g.mu.Lock()
+			if g.calls[key] == call {
+				delete(g.calls, key)
+			}
+			g.mu.Unlock()
+		}
+		// Publish completion only after callback cleanup and generation
+		// retirement, so returned failures permit an independent retry.
+		close(call.done)
+	}()
+	call.data, call.err = fn(ctx)
 }
 
-func (g *fetchGroup) releaseOwner(key string, call *fetchCall, canceled bool) {
+func (g *fetchGroup) releaseOwner(key string, call *fetchCall, canceled bool) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if call.owners > 0 {
@@ -125,7 +137,9 @@ func (g *fetchGroup) releaseOwner(key string, call *fetchCall, canceled bool) {
 		if g.calls[key] == call {
 			delete(g.calls, key)
 		}
+		return true
 	}
+	return false
 }
 
 func (g *fetchGroup) forget(key string, expected *fetchCall) {

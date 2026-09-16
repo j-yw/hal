@@ -54,5 +54,22 @@ independent reproduction before GREEN. Then run whole affected acquisition
 packages, focused repeated race tests, unchanged L9 guards, vet, and Windows and
 Darwin cross-compilation. Compilation is not runtime or live-security evidence.
 
-Current checkpoint: design and behavior RED only; implementation remains at the
-accepted integration base `df16d8ff` until independent RED approval.
+## Implemented checkpoint
+
+The design and compiling behavior RED at `0da2313b` were independently reproduced
+before GREEN: twelve control passes, twenty-one expected failures, no skips in
+three race repetitions. The original 282-line RED remains unchanged.
+
+The two existing platform fetch-group implementations now join only the canceled
+last owner's retained call outside the mutex. A deferred callback panic boundary
+discards the recovered value, returns nil bytes with `registry_unavailable`, and
+retires failed exact generations before signaling completion. A further real
+resolver control holds the replacement live across old completion, then proves
+a third caller coalesces with that replacement rather than refetching it.
+
+Whole template default tests, affected acquisition/selection race tests repeated
+three times, unchanged L9 command/runtime guards, and template vet pass without
+failures or skips. Unix and Windows fetch-group sections are byte-identical;
+Windows/amd64 and Darwin/arm64 registry test compilation pass. These are component
+checks, not full-repository, live registry, native sandbox, or Windows runtime
+acceptance. Callback cancellation responsiveness remains a trusted prerequisite.
