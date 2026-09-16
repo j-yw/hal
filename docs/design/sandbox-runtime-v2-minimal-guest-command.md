@@ -115,3 +115,39 @@ Copy request fixtures validate before authentication, but copy dispatch and fres
 proof assertions are not reached past the exec failure and are not claimed as
 executed acceptance. Existing command/config/legacy tests pass unchanged. All
 Serve/watchdog tasks join; no watchdog rescue or race report occurs.
+
+## Selected command composition checkpoint
+
+After independent reproduction of the first RED, a second committed construction
+fault RED covers error, nil/typed-nil, panic, cancellation, and value-plus-error
+returns at all four constructor boundaries. It produces 90 expected failing
+test/subtest events and six passing controls under three race runs. The minimal
+implementation now validates the retained L7/environment tuple first, builds the
+actual concrete production dependencies, and selects the accepted workload
+transport inside actual Server.Serve with both proof gates enabled.
+
+The listener-only production helper has been removed. Six existing selected
+fixture call sites now use one test-only setup helper adding complete L7 and
+counted fake backend/proof constructors. Their original behavioral assertions,
+including exact fixed error identities, remain unchanged; setup additionally
+asserts unauthenticated traffic never calls Ready, proof inspection, or Exec,
+and every constructed backend is closed. Legacy command production bytes and
+direct readiness-only transport fixtures remain unchanged.
+
+Actual authenticated tests now execute one bounded exec and copy-in/out through
+the shared Server and Client, checking exact plans, output, digest, publication,
+one preparation, and four fresh proof checks. Forward tests reject missing
+process/network proof on preparation and later work, exercise backend Ready/Exec
+errors and panics, and prove owner loss and EOF cancel blocked work before
+cleanup without a test release. Cleanup error remains failed. Request proxy
+names and every environment source reach the actual server: uppercase variables
+and secret entries fail at its rejecting resolver; lowercase proxy names fail
+the existing strict name validator before inspection. No request authority or
+new secret resolver is installed. These are injected component results, not
+actual process/network/workspace acceptance.
+
+Pre-Serve cleanup is synchronous with a bounded independent context; it does not
+abandon a blocked constructor or cleanup in a new goroutine. This bounds the
+context provided to the trusted backend, not arbitrary implementations ignoring
+it. After Serve, the accepted server retains its existing bounded-cleanup and
+pending-ownership semantics. No new terminal resource-absence proof is implied.

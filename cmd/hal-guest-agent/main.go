@@ -70,40 +70,12 @@ func runMinimalGuestAgent(parent context.Context, line string) error {
 	ctx, cancel := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	return runMinimalGuestAgentWithDependencies(ctx, line, minimalGuestAgentDependencies{
-		lookupEnvironment: os.LookupEnv,
-		listen:            vsock.ListenLinuxControl,
-		newBackend: func(options server.LinuxBackendOptions) (server.Backend, error) {
-			return server.NewLinuxBackend(options)
-		},
+		lookupEnvironment:   os.LookupEnv,
+		listen:              vsock.ListenLinuxControl,
+		newBackend:          server.NewLinuxBackend,
 		newNetworkVerifier:  guestnetwork.NewLinuxNetworkIsolationVerifier,
 		newWorkloadVerifier: server.NewLinuxWorkloadIsolationVerifier,
 	})
-}
-
-// Only the fixed listener is injected; the selected adapter constructs the
-// actual authenticated bootstrap server, not a test substitute or v1 backend.
-func runMinimalGuestAgentWithListener(ctx context.Context, line string, listen func() (vsock.Listener, error)) error {
-	boot, selected, err := minimalcontrol.ParseBootCommandLine(line)
-	if err != nil || !selected || ctx == nil || listen == nil {
-		return minimalcontrol.ErrInvalid
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	listener, err := listen()
-	if err != nil {
-		return minimalcontrol.ErrUnavailable
-	}
-	agent, err := minimalcontrol.NewBootstrap(minimalcontrol.BootstrapOptions{
-		Listener: listener, Boot: boot, OwnerDone: ctx.Done(),
-	})
-	if err != nil {
-		if listener != nil {
-			_ = listener.Close()
-		}
-		return err
-	}
-	return agent.Serve(ctx)
 }
 
 func runLegacyGuestAgent() error {

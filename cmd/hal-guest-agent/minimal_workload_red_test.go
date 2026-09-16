@@ -178,15 +178,24 @@ func minimalCommandDependencies(t *testing.T, backend *minimalCommandBackend, pr
 }
 
 type minimalCommandFixture struct {
-	peer     *minimalREDPipe
-	identity session.Identity
-	key      ed25519.PrivateKey
-	binding  minimalcontrol.Binding
-	backend  *minimalCommandBackend
-	proof    *minimalCommandVerifier
+	peer      *minimalREDPipe
+	identity  session.Identity
+	key       ed25519.PrivateKey
+	binding   minimalcontrol.Binding
+	backend   *minimalCommandBackend
+	proof     *minimalCommandVerifier
+	cancel    context.CancelFunc
+	finished  chan struct{}
+	result    error
+	transport guestagent.TransportFunc
 }
 
 func newMinimalCommandFixture(t *testing.T) *minimalCommandFixture {
+	t.Helper()
+	return newMinimalCommandFixtureWithSetup(t, nil)
+}
+
+func newMinimalCommandFixtureWithSetup(t *testing.T, setup func(*minimalCommandFixture)) *minimalCommandFixture {
 	t.Helper()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, ed25519.SeedSize))
 	identity := session.Identity{Channel: session.ChannelControl, GuestCID: session.GuestCID, GuestPort: session.ControlPort,
@@ -216,12 +225,17 @@ func newMinimalCommandFixture(t *testing.T) *minimalCommandFixture {
 	var listens, reads atomic.Int32
 	dependencies := minimalCommandDependencies(t, fixture.backend, fixture.proof, func() (vsock.Listener, error) { listens.Add(1); return listener, nil })
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
+	fixture.cancel = cancel
+	fixture.finished = make(chan struct{})
+	if setup != nil {
+		setup(fixture)
+	}
 	var timedOut atomic.Bool
 	watchDone := make(chan struct{})
 	watch := time.AfterFunc(3*time.Second, func() { defer close(watchDone); timedOut.Store(true); _ = guest.Close(); _ = peer.Close(); cancel() })
 	go func() {
-		done <- runGuestAgentEntry(ctx, guestAgentEntryDependencies{
+		defer close(fixture.finished)
+		fixture.result = runGuestAgentEntry(ctx, guestAgentEntryDependencies{
 			readBootCommandLine: func(context.Context) (string, error) { reads.Add(1); return line, nil },
 			runLegacy:           func() error { return errors.New("unexpected legacy selection") },
 			runMinimal: func(ctx context.Context, retained string) error {
@@ -232,7 +246,7 @@ func newMinimalCommandFixture(t *testing.T) *minimalCommandFixture {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-done:
+		case <-fixture.finished:
 		case <-time.After(2 * time.Second):
 			t.Error("actual command did not join after owner cancellation")
 		}
@@ -251,7 +265,7 @@ func newMinimalCommandFixture(t *testing.T) *minimalCommandFixture {
 	return fixture
 }
 
-func (fixture *minimalCommandFixture) authenticate(t *testing.T) *guestagent.Client {
+func (fixture *minimalCommandFixture) establish(t *testing.T) *session.State {
 	t.Helper()
 	prelude, err := fixture.binding.BootstrapPrelude()
 	if err != nil {
@@ -286,11 +300,17 @@ func (fixture *minimalCommandFixture) authenticate(t *testing.T) *guestagent.Cli
 		t.Fatal(err)
 	}
 	minimalREDWrite(t, fixture.peer, finished)
+	return state
+}
+
+func (fixture *minimalCommandFixture) authenticate(t *testing.T) *guestagent.Client {
+	t.Helper()
+	state := fixture.establish(t)
 	request, digest := minimalREDRequest(t, state, minimalREDBinding(fixture.identity))
 	minimalREDWrite(t, fixture.peer, minimalREDSeal(t, state, request))
 	minimalREDAssertReadiness(t, fixture.peer, state, digest)
 	var ordinal uint64
-	client, err := guestagent.NewClient(guestagent.ClientOptions{Transport: guestagent.TransportFunc(func(ctx context.Context, request guestagent.TransportRequest) (guestagent.TransportResponse, error) {
+	fixture.transport = guestagent.TransportFunc(func(ctx context.Context, request guestagent.TransportRequest) (guestagent.TransportResponse, error) {
 		ordinal++
 		payload, err := fixture.binding.EncodeWorkload(request.Encoded, ordinal, state.SessionID())
 		if err != nil {
@@ -327,7 +347,8 @@ func (fixture *minimalCommandFixture) authenticate(t *testing.T) *guestagent.Cli
 		})
 		clear(opened)
 		return guestagent.TransportResponse{Encoded: inner}, err
-	})})
+	})
+	client, err := guestagent.NewClient(guestagent.ClientOptions{Transport: fixture.transport})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,30 +362,49 @@ type minimalCommandListener struct {
 
 func (listener *minimalCommandListener) Close() error { listener.closes.Add(1); return nil }
 
-type minimalCommandVerifier struct{ networkConstructors, workloadConstructors, calls atomic.Int32 }
+type minimalCommandVerifier struct {
+	networkConstructors, workloadConstructors, calls atomic.Int32
+	verify                                           func(context.Context) (server.IsolationProofResult, error)
+}
 
 func (*minimalCommandVerifier) VerifyNetworkIsolation(context.Context) (server.NetworkIsolationProofResult, error) {
 	return server.NetworkIsolationProofResult{}, errors.New("fake constructor marker must not be invoked directly")
 }
-func (proof *minimalCommandVerifier) VerifyWorkloadIsolation(context.Context) (server.IsolationProofResult, error) {
+func (proof *minimalCommandVerifier) VerifyWorkloadIsolation(ctx context.Context) (server.IsolationProofResult, error) {
 	proof.calls.Add(1)
+	if proof.verify != nil {
+		return proof.verify(ctx)
+	}
+	return minimalCommandVerifiedIsolation(), nil
+}
+
+func minimalCommandVerifiedIsolation() server.IsolationProofResult {
 	return server.IsolationProofResult{RestrictedIdentity: true, CapabilitiesCleared: true, NoNewPrivileges: true, SupplementaryGroupsCleared: true, RawPacketSocketDenied: true,
-		Network: server.NetworkIsolationProofResult{Status: guestagent.IsolationProofStatusVerified, SingleInterface: true, StaticRoutes: true, ProxyReachable: true}}, nil
+		Network: server.NetworkIsolationProofResult{Status: guestagent.IsolationProofStatusVerified, SingleInterface: true, StaticRoutes: true, ProxyReachable: true}}
 }
 
 type minimalCommandBackend struct {
 	constructors, readyCalls, execCalls, copyCalls, closeCalls atomic.Int32
 	execPlan                                                   server.ExecPlan
 	data                                                       []byte
+	ready                                                      func(context.Context) error
+	exec                                                       func(context.Context, server.ExecPlan) (server.ExecResult, error)
+	close                                                      func(context.Context) error
 }
 
-func (backend *minimalCommandBackend) Ready(context.Context) error {
+func (backend *minimalCommandBackend) Ready(ctx context.Context) error {
 	backend.readyCalls.Add(1)
+	if backend.ready != nil {
+		return backend.ready(ctx)
+	}
 	return nil
 }
-func (backend *minimalCommandBackend) Exec(_ context.Context, plan server.ExecPlan) (server.ExecResult, error) {
+func (backend *minimalCommandBackend) Exec(ctx context.Context, plan server.ExecPlan) (server.ExecResult, error) {
 	backend.execPlan = plan
 	backend.execCalls.Add(1)
+	if backend.exec != nil {
+		return backend.exec(ctx, plan)
+	}
 	return server.ExecResult{Stdout: []byte("command-output")}, nil
 }
 func (backend *minimalCommandBackend) CopyIn(_ context.Context, plan server.CopyInPlan) (server.CopyResult, error) {
@@ -377,7 +417,10 @@ func (backend *minimalCommandBackend) CopyOut(context.Context, server.CopyOutPla
 	digest := sha256.Sum256(backend.data)
 	return server.CopyResult{Data: bytes.Clone(backend.data), SizeBytes: int64(len(backend.data)), Digest: "sha256:" + hex.EncodeToString(digest[:])}, nil
 }
-func (backend *minimalCommandBackend) Close(context.Context) error {
+func (backend *minimalCommandBackend) Close(ctx context.Context) error {
 	backend.closeCalls.Add(1)
+	if backend.close != nil {
+		return backend.close(ctx)
+	}
 	return nil
 }
