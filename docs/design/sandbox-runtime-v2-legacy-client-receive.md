@@ -81,8 +81,12 @@ finalization. Final acceptance and exact original receive-option restoration
 run before return; SO_SNDTIMEO is never changed.
 
 Additional reached controls cover zero receive options, expired caller context,
-late valid packets, restored options, and real successful syscall flags. No new
-reader, cancellation goroutine, send retry, public option, shared transport
-policy, selected P rebasing, or prompt legacy cancellation claim is introduced.
+late valid packets, restored options, and real successful syscall flags. A reported
+ancillary count must not hide an owned complete prefix: reached synthetic
+short-count cases retain actual descriptors and require their disposal before rejection.
+Malformed ancillary counts/parses are rejected before handing ownership to the
+unchanged decoder. No new reader, cancellation goroutine, send retry, public option,
+shared transport policy, selected P rebasing, or prompt legacy cancellation claim
+is introduced.
 Full verification results are attached to the frozen submission handoff rather
 than inferred from this implementation description.

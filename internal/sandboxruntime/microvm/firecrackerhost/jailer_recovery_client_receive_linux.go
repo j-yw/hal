@@ -60,13 +60,18 @@ func receiveJailerRecoveryClientReply(ctx context.Context, fd int, receive func(
 		for _, value := range oob {
 			ancillary = ancillary || value != 0
 		}
-		if receiveErr != nil || n < 0 || n > len(buf) || oobn < 0 || oobn > len(oob) || oobn == 0 && ancillary {
+		if receiveErr != nil || n < 0 || n > len(buf) || oobn < 0 || oobn > len(oob) ||
+			oobn > 0 && oobn < unix.CmsgLen(0) || oobn == 0 && ancillary {
 			// Reuse the existing complete-prefix disposal routine, including
 			// error-plus-rights and impossible stale-buffer observations.
 			closeMinimalJailerAncillary(oob)
 			if receiveErr == unix.EINTR && (n == -1 || n == 0) && oobn == 0 && !ancillary && flags == 0 {
 				continue // The loop retains the original deadline and caller.
 			}
+			return l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerProtocol
+		}
+		if _, err := unix.ParseSocketControlMessage(oob[:oobn]); err != nil {
+			closeMinimalJailerAncillary(oob)
 			return l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerProtocol
 		}
 		return decodeL8RuntimeOwnerReceive(buf, oob[:oobn], n, flags, nil)

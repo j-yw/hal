@@ -4,6 +4,7 @@ package firecrackerhost
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -83,4 +84,50 @@ func TestLegacyClientReceivePreservesSuccessfulSyscallFlags(t *testing.T) {
 		t.Fatalf("normal successful receive flags rejected: flags=%d err=%v", observedFlags, err)
 	}
 	t.Logf("successful real syscall flags=%d; shared decoder policy retained", observedFlags)
+}
+
+func TestLegacyClientReceiveShortAncillaryCountClosesOwnedPrefix(t *testing.T) {
+	for _, count := range []int{1, unix.CmsgLen(4) - 1} {
+		t.Run(map[bool]string{true: "short_header", false: "short_rights"}[count == 1], func(t *testing.T) {
+			client, _ := legacyClientReceivePair(t, time.Second)
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			defer writer.Close()
+			right, err := unix.FcntlInt(reader.Fd(), unix.F_DUPFD_CLOEXEC, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var owned unix.Stat_t
+			if unix.Fstat(right, &owned) != nil {
+				t.Fatal("duplicate unavailable")
+			}
+			t.Cleanup(func() {
+				var current unix.Stat_t
+				if unix.Fstat(right, &current) == nil && current.Dev == owned.Dev && current.Ino == owned.Ino {
+					_ = unix.Close(right)
+				}
+			})
+			_, reply := legacyClientReceivePackets(t)
+			wire, _ := encodeL8RuntimeOwnerPacket(reply)
+			calls := 0
+			response, err := receiveJailerRecoveryClientReply(context.Background(), int(client.Fd()), func(_ int, buf, oob []byte, _ int) (int, int, int, unix.Sockaddr, error) {
+				calls++
+				copy(buf, wire)
+				copy(oob, unix.UnixRights(right))
+				// Impossible kernel tuple: a valid owned prefix remains beyond
+				// an undersized reported count. Rejection must still dispose it.
+				return len(wire), count, 0, nil, nil
+			})
+			closeL8RuntimeOwnerFiles(response.Files)
+			if err == nil || calls != 1 {
+				t.Errorf("invalid ancillary count accepted or retried: %v calls=%d", err, calls)
+			}
+			if _, err := unix.FcntlInt(uintptr(right), unix.F_GETFD, 0); err != unix.EBADF {
+				t.Errorf("short-count rejection leaked its actual owned FD: %v", err)
+			}
+		})
+	}
 }
