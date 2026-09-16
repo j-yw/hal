@@ -340,3 +340,21 @@ plus original source identity therefore proves a past completed transcript, not
 live/current readiness. The original-manager positive's active binding and
 generation assertions stay unchanged. No production hold, history field or
 observer hook is introduced by this correction.
+
+A second independent fixture race exposed the actual socket between bind and
+chmod: the new post-bootstrap controller correctly rejected its temporary 0755
+mode before GuestHello while preparation remained current. The fix is confined
+to the new joint fixture. An existing private starter wrapper on the same
+original runner creates and fully configures the listener **after** the real
+manager's stale-socket checks, but **before** delegating the original fake
+starter. Binding during staging would be too early: the unchanged manager
+correctly rejects a pre-existing socket without a terminal prior owner.
+
+The wrapper retains partial listener ownership before fallible setup, observes
+0600 plus the exact original parent while tracked launch calls are zero and
+the original starter is not started, then returns the exact original starter's
+process/result. The guest adopts that same listener. Actual cgroup launch-FD,
+manager/FSM/process, release, timeouts, umask, production checks and all earlier
+assertions are unchanged. Explicit rescue closes any partial listener and joins
+guest/controller/serving before the original fixture directory is released.
+This ordering is fixture setup, not a production readiness hold or authority.

@@ -30,6 +30,40 @@ type minimalSupervisorJointFixture struct {
 	done      chan struct{}
 	err       error
 	contained atomic.Int32
+	listener  atomic.Pointer[minimalControllerGuestListener]
+	private   atomic.Bool
+}
+
+// The actual manager's stale-socket preflight precedes this existing injected
+// starter boundary. Only this new fixture wraps the original fake starter;
+// parent creation, manager/FSM, cgroup launch FD and process stay unchanged.
+type minimalSupervisorJointStarter struct {
+	fixture *minimalSupervisorJointFixture
+}
+
+func (starter *minimalSupervisorJointStarter) startStrictJailerNamespaceProcess(ctx context.Context, request strictJailerNamespaceProcessStartRequest) (HostProcess, error) {
+	f := starter.fixture
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: f.paths.VsockSocketPath})
+	if listener != nil {
+		listener.SetUnlinkOnClose(false)
+		// Retain even a partial listener before any later fallible setup. The
+		// original fixture owns its private directory through all rescue joins.
+		f.listener.Store(&minimalControllerGuestListener{listener: listener})
+	}
+	if err != nil || listener == nil || os.Chmod(f.paths.VsockSocketPath, 0o600) != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	info, err := os.Lstat(f.paths.VsockSocketPath)
+	parent, parentErr := statStrictJailerPrivateStateDir(f.paths.StateDir, uint32(os.Geteuid()))
+	f.tracked.ownerStarter.mu.Lock()
+	started := f.tracked.ownerStarter.started
+	f.tracked.ownerStarter.mu.Unlock()
+	if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o600 || parentErr != nil || parent != f.parent ||
+		f.tracked.calls != 0 || started || ctx.Err() != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	f.private.Store(true) // Historical fixture ordering, never runtime authority.
+	return f.tracked.startStrictJailerNamespaceProcess(ctx, request)
 }
 
 func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisorJointFixture)) {
@@ -39,6 +73,7 @@ func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisor
 		if original.owned.selected.attempted || original.owned.listenerFD != -1 {
 			t.Fatal("joint setup must precede all original launch/serving")
 		}
+		original.lifecycle.runner.starter = &minimalSupervisorJointStarter{fixture: f}
 		observation, err := inspectL8RuntimeOwnerProcess(original.owned.genesis.SupervisorPID)
 		if err != nil {
 			t.Fatal("read-only original fixture parent observation", err)
@@ -88,6 +123,9 @@ func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisor
 		started := false
 		defer func() {
 			original.owned.minimalPreparation.revoke()
+			if listener := f.listener.Load(); listener != nil {
+				_ = listener.Close()
+			}
 			_ = unix.Shutdown(fd, unix.SHUT_RDWR)
 			if started {
 				minimalJointAwait(t, f.done, "explicit serving rescue")
@@ -99,6 +137,11 @@ func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisor
 					minimalControllerRequireJoined(t, controller, f.admission.controllerKey)
 				}
 				t.Log("explicit test rescue joined serving/controller and cleared borrowed key; not selected cleanup-barrier evidence")
+			}
+			// Setup can finish after the first rescue snapshot. Join first, then
+			// close the retained partial listener before fixture ownership ends.
+			if listener := f.listener.Load(); listener != nil {
+				_ = listener.Close()
 			}
 		}()
 		started = true
@@ -124,6 +167,10 @@ func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisor
 			len(reply.Packet.Body) != 8 || binary.BigEndian.Uint64(reply.Packet.Body) != 2 || recordErr != nil || record.Revision != 2 {
 			t.Fatal("new serving entry did not reach actual gate/revision-2 reply", gateErr, replyErr, recordErr)
 		}
+		if !f.private.Load() || f.listener.Load() == nil {
+			t.Fatal("original launch advanced before the same listener became private")
+		}
+		t.Log("same listener was 0600 in the exact original parent before tracked launch, release and controller")
 		use(f)
 	})
 }
@@ -143,11 +190,10 @@ func (f *minimalSupervisorJointFixture) serving(t *testing.T) *minimalControlSup
 // new serving entry, never by this helper or a substitute manager fixture.
 func (f *minimalSupervisorJointFixture) guest(t *testing.T, fault *minimalControllerPeerFault) (*minimalJointBackend, *minimalJointVerifier, <-chan struct{}, func()) {
 	t.Helper()
-	f.owned.selected.mu.Lock() // Synchronize with original prelaunch staging.
-	path := f.paths.VsockSocketPath
-	f.owned.selected.mu.Unlock()
-	listener := &minimalControllerGuestListener{listener: l5ListenBridgeSocket(t, path)}
-	listener.listener.(*net.UnixListener).SetUnlinkOnClose(false)
+	listener := f.listener.Load()
+	if listener == nil || !f.private.Load() {
+		t.Fatal("shared guest cannot adopt an unprepared fixture listener")
+	}
 	fc, err := readMinimalControlFirecrackerConfig(f.admission.borrowed[6], f.admission.config.Config)
 	if err != nil {
 		t.Fatal(err)
