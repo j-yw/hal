@@ -92,10 +92,16 @@ func readMinimalWorkFrame(reader io.Reader, first byte, validate func(minimalWor
 		return minimalWorkHeader{}, nil, errL8RuntimeOwnerProtocol
 	}
 	payload := make([]byte, int(size)-minimalWorkHeaderBytes)
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			clear(payload)
+		}
+	}()
 	if _, err := io.ReadFull(reader, payload); err != nil {
-		clear(payload)
 		return minimalWorkHeader{}, nil, errL8RuntimeOwnerProtocol
 	}
+	handedOff = true
 	return header, payload, nil
 }
 
