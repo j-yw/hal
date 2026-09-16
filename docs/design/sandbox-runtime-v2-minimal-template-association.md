@@ -75,6 +75,44 @@ signature; that compile-only mistake was corrected before executable coverage.
 No native image, B1 receipt, live registry, runtime, credentials, cleanup receipt
 or terminal status is produced by this checkpoint.
 
+## Authenticated Claim and asset handoff: first compiling RED
+
+The next approved checkpoint starts at accepted `43897a19`. It adds only private
+unavailable Start/Recover methods so the real acquisition provider can enter the
+existing neutral binding; it does not yet claim, transfer or allocate anything.
+An independent control uses the genuine provider-owned Workflow/local verifier,
+actual principal authority and ResolveSelection/Reserve/Arm, then directly calls
+the original ClaimLaunch. That proves the fixture's one-shot claim, original
+scope/template/request and owner context; it is not production Start evidence
+and leaves the source current and untransferred. Separate controls reject an
+unarmed Start and a foreign same-label principal without new acquisition, and
+keep recovery unavailable.
+
+The actual binding.Start RED expects a nonnil retained partial owner together
+with ErrMinimalLaunchUnavailable: the runtime consumer intentionally remains
+absent. Its first reachable failure is the missing owner after the original
+barrier. Following claim-consumption, no-replay, currentness and no-receipt
+finalization assertions are not yet reached evidence. No fake runtime owner,
+selection.Result or cleanup receipt is supplied to make this checkpoint pass.
+
+GREEN must retain the exact partial owner before TakeLaunchLease, verify the
+original reservation context/identity/tuple/request against the complete trusted
+association, and retain the one transferred lease plus genuinely copied/sealed
+kernel/rootfs snapshots. Reuse existing snapshotJailerRecoveryAsset bounds and
+measurement; do not pass the spent distribution to launchJailerRecoverySupervisor
+which would attempt a second transfer. Current must consult that owner's lease,
+and selection aliases cannot close it. Adversarial sealed-byte, mutation,
+cancellation, partial-close and alias-ownership tests remain subsequent work.
+Finalize may close these actual partial assets but must return unavailable with
+no OwnerCommitID/FinalizedRevision receipt until the real runtime and its cleanup
+proof exist. No default caller, native build/image, B1 issuer or VM is enabled.
+
+Focused race times three reaches six passing independent controls and exactly
+three missing-Start failures, with zero skips/race reports. Original provider
+acquisition assertions remain unchanged and pass all 168 race test/subtest events.
+The next step is supervisor reproduction/review of this fixed compiling RED,
+not an automatic GREEN or a claim of completed asset handoff.
+
 Design base `38f8f0b6d22a335313402219b7c25c644c821947`. This refines the
 provider proposal at `7144680c2d8b8ce1112a7a599c64da34e93d6cfc`, under the
 [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
