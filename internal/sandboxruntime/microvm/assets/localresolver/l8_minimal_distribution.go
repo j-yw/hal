@@ -3,6 +3,7 @@ package localresolver
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -67,12 +68,21 @@ func (VerifiedL8MinimalDistribution) MarshalText() ([]byte, error) {
 // VerifyL8MinimalDistributionBundle verifies one exact seven-file candidate
 // against trusted expected identities and a currently resolver-issued L7
 // parent. It reads no offline policy evidence and never claims runtime safety.
-func VerifyL8MinimalDistributionBundle(request L8MinimalDistributionRequest) (result VerifiedL8MinimalDistribution, retErr error) {
+func VerifyL8MinimalDistributionBundle(request L8MinimalDistributionRequest) (VerifiedL8MinimalDistribution, error) {
+	return VerifyL8MinimalDistributionBundleContext(context.Background(), request)
+}
+
+// VerifyL8MinimalDistributionBundleContext retains exact assets within the original caller lifetime.
+func VerifyL8MinimalDistributionBundleContext(ctx context.Context, request L8MinimalDistributionRequest) (result VerifiedL8MinimalDistribution, retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return result, minimalLaunchError(err)
+	}
 	state := &minimalDistributionState{files: make(map[string]l8PinnedAsset), parentMetadata: make(map[string]l8PinnedAsset)}
 	result = VerifiedL8MinimalDistribution{state: state}
 	defer func() {
+		retErr = acquisitionError(ctx, retErr)
 		if retErr != nil {
-			retErr = errors.Join(minimalDistributionError(retErr), result.Close())
+			retErr = errors.Join(minimalLaunchError(retErr), result.Close())
 			result = VerifiedL8MinimalDistribution{}
 		}
 	}()
@@ -80,7 +90,7 @@ func VerifyL8MinimalDistributionBundle(request L8MinimalDistributionRequest) (re
 		return result, ErrInvalidRequest
 	}
 	var err error
-	state.parentLease, err = request.ParentL7.AcquireL7AssetLease()
+	state.parentLease, err = request.ParentL7.acquireL7AssetLeaseContext(ctx)
 	if err != nil {
 		return result, ErrAssetLockMismatch
 	}
@@ -89,12 +99,12 @@ func VerifyL8MinimalDistributionBundle(request L8MinimalDistributionRequest) (re
 	if err != nil {
 		return result, err
 	}
-	state.parentEvidence, err = state.parentLease.measureL8ParentEvidence(state.parent.Manifest, state.parent.Provenance, state.parent.Descriptor)
+	state.parentEvidence, err = state.parentLease.measureL8ParentEvidenceContext(ctx, state.parent.Manifest, state.parent.Provenance, state.parent.Descriptor)
 	if err != nil {
 		return result, err
 	}
 	for _, name := range []string{distributionManifestName, distributionProvenanceName, distributionChecksumsName} {
-		pinned, err := pinMinimalFile(state.parentLease.root, name)
+		pinned, err := pinMinimalFileContext(ctx, state.parentLease.root, name)
 		if err != nil {
 			return result, err
 		}
@@ -104,11 +114,11 @@ func VerifyL8MinimalDistributionBundle(request L8MinimalDistributionRequest) (re
 	if err != nil {
 		return result, err
 	}
-	if err := verifyMinimalEntrySet(state.root); err != nil {
+	if err := verifyMinimalEntrySetContext(ctx, state.root); err != nil {
 		return result, err
 	}
 	for _, name := range l8RequiredDistributionOutputs {
-		pinned, err := pinMinimalFile(state.root, name)
+		pinned, err := pinMinimalFileContext(ctx, state.root, name)
 		if err != nil {
 			return result, err
 		}
@@ -124,7 +134,7 @@ func VerifyL8MinimalDistributionBundle(request L8MinimalDistributionRequest) (re
 	}{
 		{distributionManifestName, &manifest}, {distributionProvenanceName, &provenance}, {l8SourceLockName, &sources}, {l8FinalInspectionName, &inspection},
 	} {
-		if err := decodeMinimalMetadata(state.files[document.name], document.destination); err != nil {
+		if err := decodeMinimalMetadataContext(ctx, state.files[document.name], document.destination); err != nil {
 			return result, err
 		}
 	}
@@ -138,7 +148,7 @@ func VerifyL8MinimalDistributionBundle(request L8MinimalDistributionRequest) (re
 		minimalPinnedDigest(state.files["rootfs.ext4"]) != inspection.RootfsSHA256 {
 		return result, ErrAssetLockMismatch
 	}
-	if err := verifyMinimalChecksums(state.files); err != nil {
+	if err := verifyMinimalChecksumsContext(ctx, state.files); err != nil {
 		return result, err
 	}
 	// Reuse descriptor normalization and digest checking, but explicitly set the
@@ -156,7 +166,7 @@ func VerifyL8MinimalDistributionBundle(request L8MinimalDistributionRequest) (re
 	}
 	state.descriptor.ID = "l8-minimal-credentials-image"
 	state.descriptor.Labels = []assets.SafeLabel{"firecracker", "reproducible", "network-profile", "minimal-credentials-profile"}
-	if err := state.confirmCurrent(); err != nil {
+	if err := state.confirmCurrentContext(ctx); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -222,6 +232,14 @@ func (state *minimalDistributionState) closeLocked() error {
 }
 
 func (state *minimalDistributionState) confirmCurrent() error {
+	return state.confirmCurrentContext(context.Background())
+}
+
+func (state *minimalDistributionState) confirmCurrentContext(ctx context.Context) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	if state.closed || state.root == nil || state.parentLease == nil {
 		return ErrFileUnavailable
 	}
@@ -231,18 +249,18 @@ func (state *minimalDistributionState) confirmCurrent() error {
 	}
 	oldInfo, oldErr := state.root.Stat()
 	newInfo, newErr := current.Stat()
-	entryErr := verifyMinimalEntrySet(current)
+	entryErr := verifyMinimalEntrySetContext(ctx, current)
 	closeErr := current.Close()
 	if oldErr != nil || newErr != nil || entryErr != nil || closeErr != nil || !os.SameFile(oldInfo, newInfo) {
 		return ErrAssetLockMismatch
 	}
-	if err := confirmMinimalFiles(state.root, state.files); err != nil {
+	if err := confirmMinimalFilesContext(ctx, state.root, state.files); err != nil {
 		return err
 	}
-	if err := confirmMinimalFiles(state.parentLease.root, state.parentMetadata); err != nil {
+	if err := confirmMinimalFilesContext(ctx, state.parentLease.root, state.parentMetadata); err != nil {
 		return err
 	}
-	parent, err := state.parentLease.measureL8ParentEvidence(state.parent.Manifest, state.parent.Provenance, state.parent.Descriptor)
+	parent, err := state.parentLease.measureL8ParentEvidenceContext(ctx, state.parent.Manifest, state.parent.Provenance, state.parent.Descriptor)
 	if err != nil || parent != state.parentEvidence {
 		return ErrAssetLockMismatch
 	}
@@ -250,6 +268,22 @@ func (state *minimalDistributionState) confirmCurrent() error {
 }
 
 func pinMinimalFile(root *os.File, name string) (l8PinnedAsset, error) {
+	return pinMinimalFileContext(context.Background(), root, name)
+}
+
+func pinMinimalFileContext(ctx context.Context, root *os.File, name string) (result l8PinnedAsset, retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return l8PinnedAsset{}, err
+	}
+	defer func() {
+		retErr = acquisitionError(ctx, retErr)
+		// The caller takes the pin only on success. Late cancellation still
+		// leaves this function owning the returned descriptor until then.
+		if retErr != nil && result.file != nil {
+			retErr = joinL7LeaseCleanup(retErr, closePinnedL7Asset(result.file))
+			result = l8PinnedAsset{}
+		}
+	}()
 	file, err := openDistributionFileNoFollow(root, name)
 	if err != nil {
 		return l8PinnedAsset{}, ErrFileUnavailable
@@ -258,15 +292,13 @@ func pinMinimalFile(root *os.File, name string) (l8PinnedAsset, error) {
 	if name == "vmlinux" || name == "rootfs.ext4" {
 		maximum = l8MaxPinnedAssetBytes
 	}
-	measurement, err := measureL8RetainedParentFile(file, maximum)
+	measurement, err := measureL8RetainedParentFileContext(ctx, file, maximum)
 	if err != nil {
-		_ = file.Close()
-		return l8PinnedAsset{}, err
+		return l8PinnedAsset{}, joinL7LeaseCleanup(err, closePinnedL7Asset(file))
 	}
 	digest, err := decodeL8Digest(measurement.digest)
 	if err != nil {
-		_ = file.Close()
-		return l8PinnedAsset{}, err
+		return l8PinnedAsset{}, joinL7LeaseCleanup(err, closePinnedL7Asset(file))
 	}
 	return l8PinnedAsset{file: file, size: measurement.size, digest: digest}, nil
 }
@@ -274,10 +306,22 @@ func pinMinimalFile(root *os.File, name string) (l8PinnedAsset, error) {
 // One extra entry suffices to reject an oversized directory. Do not enumerate
 // an unbounded attacker-controlled directory just to establish the exact set.
 func verifyMinimalEntrySet(root *os.File) error {
-	return verifyMinimalLaunchEntrySet(root, l8RequiredDistributionOutputs)
+	return verifyMinimalEntrySetContext(context.Background(), root)
+}
+
+func verifyMinimalEntrySetContext(ctx context.Context, root *os.File) error {
+	return verifyMinimalLaunchEntrySetContext(ctx, root, l8RequiredDistributionOutputs)
 }
 
 func verifyMinimalLaunchEntrySet(root *os.File, required []string) error {
+	return verifyMinimalLaunchEntrySetContext(context.Background(), root, required)
+}
+
+func verifyMinimalLaunchEntrySetContext(ctx context.Context, root *os.File, required []string) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	clone, err := duplicateDistributionRoot(root)
 	if err != nil {
 		return ErrFileUnavailable
@@ -303,14 +347,25 @@ func verifyMinimalLaunchEntrySet(root *os.File, required []string) error {
 }
 
 func confirmMinimalFiles(root *os.File, files map[string]l8PinnedAsset) error {
+	return confirmMinimalFilesContext(context.Background(), root, files)
+}
+
+func confirmMinimalFilesContext(ctx context.Context, root *os.File, files map[string]l8PinnedAsset) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	for name, pinned := range files {
+		if err := acquisitionContextError(ctx); err != nil {
+			return err
+		}
 		current, err := openDistributionFileNoFollow(root, name)
 		if err != nil {
 			return ErrAssetLockMismatch
 		}
 		oldInfo, oldErr := pinned.file.Stat()
 		newInfo, newErr := current.Stat()
-		measured, measureErr := measureL8RetainedParentFile(current, pinned.size)
+		measured, measureErr := measureL8RetainedParentFileContext(ctx, current, pinned.size)
 		closeErr := current.Close()
 		if oldErr != nil || newErr != nil || measureErr != nil || closeErr != nil || !os.SameFile(oldInfo, newInfo) || measured.size != pinned.size || measured.digest != minimalPinnedDigest(pinned) {
 			return ErrAssetLockMismatch
@@ -320,7 +375,15 @@ func confirmMinimalFiles(root *os.File, files map[string]l8PinnedAsset) error {
 }
 
 func verifyMinimalChecksums(files map[string]l8PinnedAsset) error {
-	snapshot, err := snapshotMinimalMetadata(files[distributionChecksumsName])
+	return verifyMinimalChecksumsContext(context.Background(), files)
+}
+
+func verifyMinimalChecksumsContext(ctx context.Context, files map[string]l8PinnedAsset) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
+	snapshot, err := snapshotMinimalMetadataContext(ctx, files[distributionChecksumsName])
 	if err != nil {
 		return err
 	}
@@ -342,7 +405,15 @@ func verifyMinimalChecksums(files map[string]l8PinnedAsset) error {
 func minimalPinnedDigest(pinned l8PinnedAsset) string { return hex.EncodeToString(pinned.digest[:]) }
 
 func decodeMinimalMetadata(pinned l8PinnedAsset, destination any) error {
-	snapshot, err := snapshotMinimalMetadata(pinned)
+	return decodeMinimalMetadataContext(context.Background(), pinned, destination)
+}
+
+func decodeMinimalMetadataContext(ctx context.Context, pinned l8PinnedAsset, destination any) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
+	snapshot, err := snapshotMinimalMetadataContext(ctx, pinned)
 	if err != nil {
 		return err
 	}
@@ -358,6 +429,14 @@ func decodeMinimalMetadata(pinned l8PinnedAsset, destination any) error {
 // Rehashing the file later cannot bind a prior mutable decoder read to its pin.
 // The returned buffer owns its bytes and is bounded before allocation.
 func snapshotMinimalMetadata(pinned l8PinnedAsset) ([]byte, error) {
+	return snapshotMinimalMetadataContext(context.Background(), pinned)
+}
+
+func snapshotMinimalMetadataContext(ctx context.Context, pinned l8PinnedAsset) (result []byte, retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return nil, err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	if pinned.file == nil || pinned.size <= 0 || pinned.size > l8MaxMetadataBytes {
 		return nil, ErrAssetLockMismatch
 	}
@@ -369,10 +448,14 @@ func snapshotMinimalMetadata(pinned l8PinnedAsset) ([]byte, error) {
 		return nil, ErrAssetLockMismatch
 	}
 	snapshot := make([]byte, int(pinned.size))
-	if count, err := pinned.file.ReadAt(snapshot, 0); err != nil || int64(count) != pinned.size {
+	reader := acquisitionReader{ctx: ctx, source: io.NewSectionReader(pinned.file, 0, pinned.size)}
+	if count, err := io.ReadFull(reader, snapshot); err != nil || int64(count) != pinned.size {
 		return nil, ErrAssetLockMismatch
 	}
 	var trailing [1]byte
+	if err := acquisitionContextError(ctx); err != nil {
+		return nil, err
+	}
 	if count, err := pinned.file.ReadAt(trailing[:], pinned.size); count != 0 || err != io.EOF {
 		return nil, ErrAssetLockMismatch
 	}

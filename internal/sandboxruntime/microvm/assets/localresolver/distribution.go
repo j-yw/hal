@@ -2,6 +2,7 @@ package localresolver
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -67,20 +68,34 @@ func ResolveDistribution(request DistributionRequest) (assets.LaunchDescriptor, 
 // VerifyDistributionBundle validates the exact five-file distribution,
 // provenance correlation, checksums, and materialized launch assets.
 func VerifyDistributionBundle(request DistributionRequest) (VerifiedDistribution, error) {
+	return VerifyDistributionBundleContext(context.Background(), request)
+}
+
+// VerifyDistributionBundleContext performs the same verification using the original caller lifetime.
+func VerifyDistributionBundleContext(ctx context.Context, request DistributionRequest) (result VerifiedDistribution, retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return result, err
+	}
+	defer func() {
+		retErr = acquisitionError(ctx, retErr)
+		if retErr != nil {
+			result = VerifiedDistribution{}
+		}
+	}()
 	root, cleanRoot, err := openRequestedDistributionRoot(request.RootDir)
 	if err != nil {
 		return VerifiedDistribution{}, err
 	}
-	defer root.Close()
+	defer func() { retErr = joinL7LeaseCleanup(retErr, closePinnedL7Asset(root)) }()
 
-	if err := verifyDistributionEntrySet(root); err != nil {
+	if err := verifyDistributionEntrySetContext(ctx, root); err != nil {
 		return VerifiedDistribution{}, err
 	}
-	manifest, err := readDistributionManifest(root)
+	manifest, err := readDistributionManifestContext(ctx, root)
 	if err != nil {
 		return VerifiedDistribution{}, err
 	}
-	provenance, err := readDistributionProvenance(root)
+	provenance, err := readDistributionProvenanceContext(ctx, root)
 	if err != nil {
 		return VerifiedDistribution{}, err
 	}
@@ -93,10 +108,12 @@ func VerifyDistributionBundle(request DistributionRequest) (VerifiedDistribution
 			ErrManifestInvalid,
 		)
 	}
-	if err := verifyDistributionChecksums(root); err != nil {
+	if err := verifyDistributionChecksumsContext(ctx, root); err != nil {
 		return VerifiedDistribution{}, err
 	}
-	descriptor, err := resolveDistributionFromRoot(root, cleanRoot, request.LockedAtUnixMillis, manifest)
+	descriptor, err := resolveDistributionFromRootWithDigester(root, cleanRoot, request.LockedAtUnixMillis, manifest, func(root *os.File, asset assetbuild.DistributionAsset) (int64, string, error) {
+		return digestDistributionFileContext(ctx, root, asset.Key)
+	})
 	if err != nil {
 		return VerifiedDistribution{}, err
 	}
@@ -131,8 +148,16 @@ func openRequestedDistributionRoot(raw string) (*os.File, string, error) {
 }
 
 func readDistributionManifest(root *os.File) (assetbuild.DistributionManifest, error) {
+	return readDistributionManifestContext(context.Background(), root)
+}
+
+func readDistributionManifestContext(ctx context.Context, root *os.File) (result assetbuild.DistributionManifest, retErr error) {
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
+	if err := acquisitionContextError(ctx); err != nil {
+		return assetbuild.DistributionManifest{}, err
+	}
 	var manifest assetbuild.DistributionManifest
-	if err := decodeDistributionJSON(root, distributionManifestName, &manifest); err != nil {
+	if err := decodeDistributionJSONContext(ctx, root, distributionManifestName, &manifest); err != nil {
 		return assetbuild.DistributionManifest{}, err
 	}
 	if err := assetbuild.ValidateDistributionManifest(manifest); err != nil {
@@ -148,8 +173,16 @@ func readDistributionManifest(root *os.File) (assetbuild.DistributionManifest, e
 }
 
 func readDistributionProvenance(root *os.File) (assetbuild.Provenance, error) {
+	return readDistributionProvenanceContext(context.Background(), root)
+}
+
+func readDistributionProvenanceContext(ctx context.Context, root *os.File) (result assetbuild.Provenance, retErr error) {
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
+	if err := acquisitionContextError(ctx); err != nil {
+		return assetbuild.Provenance{}, err
+	}
 	var provenance assetbuild.Provenance
-	if err := decodeDistributionJSON(root, distributionProvenanceName, &provenance); err != nil {
+	if err := decodeDistributionJSONContext(ctx, root, distributionProvenanceName, &provenance); err != nil {
 		return assetbuild.Provenance{}, err
 	}
 	if err := assetbuild.ValidateProvenance(provenance); err != nil {
@@ -165,6 +198,14 @@ func readDistributionProvenance(root *os.File) (assetbuild.Provenance, error) {
 }
 
 func decodeDistributionJSON(root *os.File, name string, destination any) error {
+	return decodeDistributionJSONContext(context.Background(), root, name, destination)
+}
+
+func decodeDistributionJSONContext(ctx context.Context, root *os.File, name string, destination any) (retErr error) {
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
 	file, err := openDistributionFileNoFollow(root, name)
 	if err != nil {
 		return newResolverError(
@@ -177,7 +218,7 @@ func decodeDistributionJSON(root *os.File, name string, destination any) error {
 	}
 	defer file.Close()
 
-	reader := io.LimitReader(file, maxDistributionMetadataBytes+1)
+	reader := io.LimitReader(acquisitionReader{ctx: ctx, source: file}, maxDistributionMetadataBytes+1)
 	decoder := json.NewDecoder(reader)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
@@ -202,14 +243,28 @@ func decodeDistributionJSON(root *os.File, name string, destination any) error {
 }
 
 func verifyDistributionEntrySet(root *os.File) error {
+	return verifyDistributionEntrySetContext(context.Background(), root)
+}
+
+func verifyDistributionEntrySetContext(ctx context.Context, root *os.File) (retErr error) {
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
 	clone, err := duplicateDistributionRoot(root)
 	if err != nil {
 		return newResolverError(ErrorCodeFileUnavailable, "rootDir", "", "distribution root is unavailable", ErrFileUnavailable)
 	}
 	defer clone.Close()
 
-	entries, err := clone.ReadDir(-1)
-	if err != nil {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	entries, err := clone.ReadDir(len(l5RequiredDistributionOutputs) + 1)
+	if current := acquisitionContextError(ctx); current != nil {
+		return current
+	}
+	if err != nil && err != io.EOF {
 		return newResolverError(ErrorCodeFileUnavailable, "rootDir", "", "distribution root cannot be read", ErrFileUnavailable)
 	}
 	got := make([]string, 0, len(entries))
@@ -239,6 +294,14 @@ func verifyDistributionEntrySet(root *os.File) error {
 }
 
 func verifyDistributionChecksums(root *os.File) error {
+	return verifyDistributionChecksumsContext(context.Background(), root)
+}
+
+func verifyDistributionChecksumsContext(ctx context.Context, root *os.File) (retErr error) {
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
 	file, err := openDistributionFileNoFollow(root, distributionChecksumsName)
 	if err != nil {
 		return newResolverError(ErrorCodeFileUnavailable, "checksums", "", "distribution checksums are unavailable", ErrFileUnavailable)
@@ -252,8 +315,11 @@ func verifyDistributionChecksums(root *os.File) error {
 		"vmlinux",
 	}
 	records := make(map[string]string, len(expectedNames))
-	scanner := bufio.NewScanner(io.LimitReader(file, maxDistributionMetadataBytes+1))
+	scanner := bufio.NewScanner(io.LimitReader(acquisitionReader{ctx: ctx, source: file}, maxDistributionMetadataBytes+1))
 	for scanner.Scan() {
+		if err := acquisitionContextError(ctx); err != nil {
+			return err
+		}
 		line := scanner.Text()
 		if len(line) < 67 || line[64:66] != "  " {
 			return checksumMismatch()
@@ -281,7 +347,7 @@ func verifyDistributionChecksums(root *os.File) error {
 	}
 
 	for _, name := range expectedNames {
-		_, digest, err := digestDistributionFile(root, name)
+		_, digest, err := digestDistributionFileContext(ctx, root, name)
 		if err != nil || digest != records[name] {
 			return checksumMismatch()
 		}
@@ -395,6 +461,14 @@ func resolveDistributionFromRootWithDigester(
 }
 
 func digestDistributionFile(root *os.File, name string) (int64, string, error) {
+	return digestDistributionFileContext(context.Background(), root, name)
+}
+
+func digestDistributionFileContext(ctx context.Context, root *os.File, name string) (count int64, digest string, retErr error) {
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
+	if err := acquisitionContextError(ctx); err != nil {
+		return 0, "", err
+	}
 	file, err := openDistributionFileNoFollow(root, name)
 	if err != nil {
 		return 0, "", newResolverError(
@@ -407,8 +481,13 @@ func digestDistributionFile(root *os.File, name string) (int64, string, error) {
 	}
 	defer file.Close()
 
+	before, err := file.Stat()
+	if err != nil || !before.Mode().IsRegular() || before.Size() < 0 {
+		return 0, "", ErrFileUnavailable
+	}
 	hash := sha256.New()
-	size, err := io.Copy(hash, file)
+	reader := acquisitionReader{ctx: ctx, source: file}
+	size, err := io.CopyN(hash, reader, before.Size())
 	if err != nil {
 		return 0, "", newResolverError(
 			ErrorCodeFileUnavailable,
@@ -417,6 +496,18 @@ func digestDistributionFile(root *os.File, name string) (int64, string, error) {
 			"distribution file cannot be read",
 			ErrFileUnavailable,
 		)
+	}
+	if err := acquisitionContextError(ctx); err != nil {
+		return 0, "", err
+	}
+	var trailing [1]byte
+	n, readErr := reader.Read(trailing[:])
+	after, statErr := file.Stat()
+	if current := acquisitionContextError(ctx); current != nil {
+		return 0, "", current
+	}
+	if n != 0 || readErr != io.EOF || statErr != nil || !os.SameFile(before, after) || after.Size() != before.Size() {
+		return 0, "", ErrAssetLockMismatch
 	}
 	return size, hex.EncodeToString(hash.Sum(nil)), nil
 }

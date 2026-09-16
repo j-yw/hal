@@ -1,6 +1,7 @@
 package localresolver
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -46,6 +47,13 @@ type VerifiedL7AssetLease struct {
 // rootfs. It rechecks their locks before returning and fails closed when the
 // distribution changed after bundle verification.
 func (distribution VerifiedDistribution) AcquireL7AssetLease() (*VerifiedL7AssetLease, error) {
+	return distribution.acquireL7AssetLeaseContext(context.Background())
+}
+
+func (distribution VerifiedDistribution) acquireL7AssetLeaseContext(ctx context.Context) (*VerifiedL7AssetLease, error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return nil, err
+	}
 	if distribution.l7Profile.seal != activeVerifiedL7ProfileSeal || strings.TrimSpace(distribution.rootDir) == "" {
 		return nil, l7LeaseError(ErrorCodeInvalidRequest, "l7Assets", "verified L7 assets are required", ErrInvalidRequest)
 	}
@@ -63,13 +71,14 @@ func (distribution VerifiedDistribution) AcquireL7AssetLease() (*VerifiedL7Asset
 		sourceDescriptor:  *normalized.Normalized,
 		sourceFingerprint: distribution.l7Profile.fingerprint,
 	}
-	lease.kernel, err = lease.openPinnedAsset(assets.AssetRoleKernel)
+	lease.kernel, err = lease.openPinnedAssetContext(ctx, assets.AssetRoleKernel)
 	if err == nil {
-		lease.rootfs, err = lease.openPinnedAsset(assets.AssetRoleRootfs)
+		lease.rootfs, err = lease.openPinnedAssetContext(ctx, assets.AssetRoleRootfs)
 	}
 	if err == nil {
-		err = lease.confirmSourceLocked()
+		err = lease.confirmSourceLockedContext(ctx)
 	}
+	err = acquisitionError(ctx, err)
 	if err != nil {
 		cleanupErr := lease.closeLocked()
 		if cleanupErr != nil {
@@ -194,6 +203,13 @@ func (lease *VerifiedL7AssetLease) Close() error {
 }
 
 func (lease *VerifiedL7AssetLease) openPinnedAsset(role assets.AssetRole) (*os.File, error) {
+	return lease.openPinnedAssetContext(context.Background(), role)
+}
+
+func (lease *VerifiedL7AssetLease) openPinnedAssetContext(ctx context.Context, role assets.AssetRole) (*os.File, error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return nil, err
+	}
 	asset, name, ok := l7LeaseAsset(lease.sourceDescriptor, role)
 	if !ok || asset.Source.HostPath == nil || filepath.Clean(asset.Source.HostPath.Path) != filepath.Join(lease.rootDir, name) {
 		return nil, l7LeaseError(ErrorCodeInvalidRequest, "launchDescriptor", "verified L7 launch descriptor is invalid", ErrInvalidRequest)
@@ -202,14 +218,22 @@ func (lease *VerifiedL7AssetLease) openPinnedAsset(role assets.AssetRole) (*os.F
 	if err != nil {
 		return nil, l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset is unavailable", ErrFileUnavailable)
 	}
-	if err := verifyPinnedL7Asset(file, asset); err != nil {
+	if err := verifyPinnedL7AssetContext(ctx, file, asset); err != nil {
 		closeErr := closePinnedL7Asset(file)
 		return nil, joinL7LeaseCleanup(err, closeErr)
 	}
 	return file, nil
 }
 
-func (lease *VerifiedL7AssetLease) confirmSourceLocked() (retErr error) {
+func (lease *VerifiedL7AssetLease) confirmSourceLocked() error {
+	return lease.confirmSourceLockedContext(context.Background())
+}
+
+func (lease *VerifiedL7AssetLease) confirmSourceLockedContext(ctx context.Context) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	currentRoot, _, err := openRequestedDistributionRoot(lease.rootDir)
 	if err != nil {
 		return l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 distribution root is unavailable", ErrFileUnavailable)
@@ -233,7 +257,7 @@ func (lease *VerifiedL7AssetLease) confirmSourceLocked() (retErr error) {
 		if !ok || entry.file == nil {
 			return l7LeaseError(ErrorCodeInvalidRequest, "launchDescriptor", "verified L7 launch descriptor is invalid", ErrInvalidRequest)
 		}
-		if err := verifyPinnedL7Asset(entry.file, asset); err != nil {
+		if err := verifyPinnedL7AssetContext(ctx, entry.file, asset); err != nil {
 			return err
 		}
 		current, openErr := openDistributionFileNoFollow(lease.root, name)
@@ -243,7 +267,7 @@ func (lease *VerifiedL7AssetLease) confirmSourceLocked() (retErr error) {
 		retainedInfo, retainedErr := entry.file.Stat()
 		currentInfo, currentErr := current.Stat()
 		same := retainedErr == nil && currentErr == nil && os.SameFile(retainedInfo, currentInfo)
-		verifyErr := verifyPinnedL7Asset(current, asset)
+		verifyErr := verifyPinnedL7AssetContext(ctx, current, asset)
 		closeErr := current.Close()
 		var currentErrResult error
 		if !same || verifyErr != nil {
@@ -388,13 +412,21 @@ func (cause sanitizedL7LaunchMaterialWriteCause) As(target any) bool {
 }
 
 func verifyPinnedL7Asset(file *os.File, asset assets.LaunchAsset) error {
+	return verifyPinnedL7AssetContext(context.Background(), file, asset)
+}
+
+func verifyPinnedL7AssetContext(ctx context.Context, file *os.File, asset assets.LaunchAsset) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	if file == nil || asset.Lock.Digest.Algorithm != assets.DigestAlgorithmSHA256 {
 		return l7LeaseError(ErrorCodeInvalidRequest, "launchDescriptor", "verified L7 launch descriptor is invalid", ErrInvalidRequest)
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset cannot be read", ErrFileUnavailable)
 	}
-	reader, ok := newLockedL7DigestingReader(file, asset.Lock.SizeBytes)
+	reader, ok := newLockedL7DigestingReader(acquisitionReader{ctx: ctx, source: file}, asset.Lock.SizeBytes)
 	if !ok {
 		return l7LeaseError(ErrorCodeInvalidRequest, "launchDescriptor", "verified L7 launch descriptor is invalid", ErrInvalidRequest)
 	}

@@ -64,3 +64,51 @@ Run focused and whole localresolver tests/races, authenticated-snapshot/import
 guards, affected command guards, vet, Darwin compile, formatting and diff checks.
 Evidence records the exact commit, test/pass/fail/skip counts and ownership.
 Ordinary local-file tests do not prove native image or prepared-Linux acceptance.
+
+## Implemented checkpoint
+
+DESIGN `8428fcb9` and compiling RED `87f0050b` preceded GREEN. RED ran the
+unchanged real acquisition controls under race times three: six control passes,
+18 intended failing leaves (27 test/subtest failure events), zero skips. The
+original RED file remains byte-identical; it establishes context admission only.
+
+Both APIs now share their original algorithms with legacy Background wrappers.
+Actual reads, parent lease/evidence, child pin/snapshot and final currentness
+propagate the caller context. Inventory is bounded to expected count plus one;
+parent hashing reads its initial finite size and verifies trailing EOF, size and
+identity. Snapshot decoding still authenticates exact owned bytes against the
+original pin. The source guard now checks all wrapper/context edges and rejects
+both old and context-aware mutable legacy JSON decoder calls on this path.
+The initially unchanged guard failed at the moved bodies as expected; no
+behavioral mutation negative or guard exemption was removed.
+
+Forward tests cancel a real parent after an actual data read in thirteen
+acquisition stages, including the child pin after three completed parent pins.
+The bounded Context observer logs no stacks and injects neither bytes nor
+errors. A successful control establishes every target stage first. Cancellation
+returns no usable result, repeated partial acquisitions keep descriptor counts
+stable, and a new uncanceled acquisition still verifies the original source.
+Other tests inspect the actual file offset after a 32KiB read and canceled next
+read, reject excess inventory, and observe the exact measurement task blocked
+on its retained parent mutex before the original fixed deadline expires.
+
+Self-review found one new draft ownership error: cancellation in a pin's final
+deferred check returned an open pin together with an error, before its caller
+could retain it. The actual acquisition regression reproduced one leaked FD.
+The corrected defer closes and clears that still-owned pin whenever its final
+result becomes an error. The reached return-cancellation regression passes race
+times three; it is separate from the earlier read-cancellation evidence.
+
+Final exact Go/test bytes pass 238 whole-package tests and 714 whole-package
+race passes across three repetitions, zero failures/skips. The affected command
+guard selector below passes 222 tests/subtests; vet, Darwin arm64 compile,
+formatting and diff checks pass. Darwin was compiled, not executed; lint is
+unavailable. No whole-repository or prepared-host acceptance is claimed here.
+
+```text
+go test -p 2 ./internal/sandboxruntime/microvm/assets/localresolver -count=1 -json
+go test -race -p 2 ./internal/sandboxruntime/microvm/assets/localresolver -count=3 -json
+go test -p 2 ./cmd -run '^Test(Phase41|L8D2ImageProfileMintAuthorityStaysNarrow)' -count=1 -json
+go vet -p 2 ./internal/sandboxruntime/microvm/assets/localresolver
+GOOS=darwin GOARCH=arm64 go test -p 2 ./internal/sandboxruntime/microvm/assets/localresolver -c -o <external-test-binary>
+```

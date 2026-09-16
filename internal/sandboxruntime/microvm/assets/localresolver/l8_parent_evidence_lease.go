@@ -3,6 +3,7 @@ package localresolver
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -22,16 +23,28 @@ type l8RetainedFileMeasurement struct {
 // measureL8ParentEvidence binds L8 parent evidence to the files retained by
 // the L7 lease. The lease mutex covers both currentness checks and every read;
 // no evidence byte is obtained by reopening the mutable parent root path.
-func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(
-	manifest assetbuild.DistributionManifest,
-	provenance assetbuild.Provenance,
-	descriptor assets.LaunchDescriptor,
-) (result assetbuild.L8ParentL7Evidence, retErr error) {
+func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(manifest assetbuild.DistributionManifest, provenance assetbuild.Provenance, descriptor assets.LaunchDescriptor) (assetbuild.L8ParentL7Evidence, error) {
+	return lease.measureL8ParentEvidenceContext(context.Background(), manifest, provenance, descriptor)
+}
+
+func (lease *VerifiedL7AssetLease) measureL8ParentEvidenceContext(ctx context.Context, manifest assetbuild.DistributionManifest, provenance assetbuild.Provenance, descriptor assets.LaunchDescriptor) (result assetbuild.L8ParentL7Evidence, retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return result, err
+	}
+	defer func() {
+		retErr = acquisitionError(ctx, retErr)
+		if retErr != nil {
+			result = assetbuild.L8ParentL7Evidence{}
+		}
+	}()
 	if lease == nil || manifest.ImageProfile != assetbuild.ImageProfileL7Network || provenance.ImageProfile != assetbuild.ImageProfileL7Network {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
+	if err := acquisitionContextError(ctx); err != nil {
+		return result, err
+	}
 	if lease.closed {
 		return assetbuild.L8ParentL7Evidence{}, ErrFileUnavailable
 	}
@@ -39,7 +52,7 @@ func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(
 	if !ok || fingerprint != lease.sourceFingerprint {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
-	if err := confirmL8RetainedParentSourceIdentity(lease); err != nil {
+	if err := confirmL8RetainedParentSourceIdentityContext(ctx, lease); err != nil {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
 
@@ -68,7 +81,7 @@ func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(
 		"vmlinux":                  lease.kernel,
 		"rootfs.ext4":              lease.rootfs,
 	}
-	first, err := measureL8RetainedParentFiles(files)
+	first, err := measureL8RetainedParentFilesContext(ctx, files)
 	if err != nil {
 		return assetbuild.L8ParentL7Evidence{}, err
 	}
@@ -76,26 +89,26 @@ func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(
 		return assetbuild.L8ParentL7Evidence{}, err
 	}
 	var currentManifest assetbuild.DistributionManifest
-	if err := decodeL8RetainedParentJSON(metadata[distributionManifestName], &currentManifest); err != nil ||
+	if err := decodeL8RetainedParentJSONContext(ctx, metadata[distributionManifestName], &currentManifest); err != nil ||
 		assetbuild.ValidateDistributionManifest(currentManifest) != nil || !l8JSONEqual(currentManifest, manifest) {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
 	var currentProvenance assetbuild.Provenance
-	if err := decodeL8RetainedParentJSON(metadata[distributionProvenanceName], &currentProvenance); err != nil ||
+	if err := decodeL8RetainedParentJSONContext(ctx, metadata[distributionProvenanceName], &currentProvenance); err != nil ||
 		assetbuild.ValidateProvenanceAgainstManifest(currentProvenance, currentManifest) != nil || !l8JSONEqual(currentProvenance, provenance) {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
-	if err := verifyL8RetainedParentChecksums(metadata[distributionChecksumsName], first); err != nil {
+	if err := verifyL8RetainedParentChecksumsContext(ctx, metadata[distributionChecksumsName], first); err != nil {
 		return assetbuild.L8ParentL7Evidence{}, err
 	}
-	second, err := measureL8RetainedParentFiles(files)
+	second, err := measureL8RetainedParentFilesContext(ctx, files)
 	if err != nil || !l8RetainedParentMeasurementsEqual(first, second) {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
-	if err := confirmL8RetainedParentMetadata(lease.root, metadata); err != nil {
+	if err := confirmL8RetainedParentMetadataContext(ctx, lease.root, metadata); err != nil {
 		return assetbuild.L8ParentL7Evidence{}, err
 	}
-	if err := confirmL8RetainedParentSourceIdentity(lease); err != nil {
+	if err := confirmL8RetainedParentSourceIdentityContext(ctx, lease); err != nil {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
 
@@ -114,6 +127,14 @@ func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(
 }
 
 func confirmL8RetainedParentSourceIdentity(lease *VerifiedL7AssetLease) error {
+	return confirmL8RetainedParentSourceIdentityContext(context.Background(), lease)
+}
+
+func confirmL8RetainedParentSourceIdentityContext(ctx context.Context, lease *VerifiedL7AssetLease) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	if lease == nil || lease.root == nil || lease.kernel == nil || lease.rootfs == nil {
 		return ErrFileUnavailable
 	}
@@ -164,13 +185,21 @@ func validateL8RetainedParentAssetLocks(
 }
 
 func measureL8RetainedParentFiles(files map[string]*os.File) (map[string]l8RetainedFileMeasurement, error) {
-	result := make(map[string]l8RetainedFileMeasurement, len(files))
+	return measureL8RetainedParentFilesContext(context.Background(), files)
+}
+
+func measureL8RetainedParentFilesContext(ctx context.Context, files map[string]*os.File) (result map[string]l8RetainedFileMeasurement, retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return nil, err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
+	result = make(map[string]l8RetainedFileMeasurement, len(files))
 	for _, name := range []string{distributionManifestName, distributionProvenanceName, distributionChecksumsName, "vmlinux", "rootfs.ext4"} {
 		maximum := int64(maxDistributionMetadataBytes)
 		if name == "vmlinux" || name == "rootfs.ext4" {
 			maximum = l8MaxPinnedAssetBytes
 		}
-		measurement, err := measureL8RetainedParentFile(files[name], maximum)
+		measurement, err := measureL8RetainedParentFileContext(ctx, files[name], maximum)
 		if err != nil {
 			return nil, err
 		}
@@ -180,6 +209,14 @@ func measureL8RetainedParentFiles(files map[string]*os.File) (map[string]l8Retai
 }
 
 func measureL8RetainedParentFile(file *os.File, maximum int64) (l8RetainedFileMeasurement, error) {
+	return measureL8RetainedParentFileContext(context.Background(), file, maximum)
+}
+
+func measureL8RetainedParentFileContext(ctx context.Context, file *os.File, maximum int64) (result l8RetainedFileMeasurement, retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return l8RetainedFileMeasurement{}, err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	if file == nil || maximum <= 0 {
 		return l8RetainedFileMeasurement{}, ErrFileUnavailable
 	}
@@ -194,12 +231,13 @@ func measureL8RetainedParentFile(file *os.File, maximum int64) (l8RetainedFileMe
 		return l8RetainedFileMeasurement{}, ErrAssetLockMismatch
 	}
 	hash := sha256.New()
-	written, err := io.CopyN(hash, file, before.Size())
+	reader := acquisitionReader{ctx: ctx, source: file}
+	written, err := io.CopyN(hash, reader, before.Size())
 	if err != nil || written != before.Size() {
 		return l8RetainedFileMeasurement{}, ErrFileUnavailable
 	}
 	var trailing [1]byte
-	if count, readErr := file.Read(trailing[:]); count != 0 || readErr != io.EOF {
+	if count, readErr := reader.Read(trailing[:]); count != 0 || readErr != io.EOF {
 		return l8RetainedFileMeasurement{}, ErrAssetLockMismatch
 	}
 	after, err := file.Stat()
@@ -213,10 +251,18 @@ func measureL8RetainedParentFile(file *os.File, maximum int64) (l8RetainedFileMe
 }
 
 func decodeL8RetainedParentJSON(file *os.File, destination any) error {
+	return decodeL8RetainedParentJSONContext(context.Background(), file, destination)
+}
+
+func decodeL8RetainedParentJSONContext(ctx context.Context, file *os.File, destination any) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return ErrFileUnavailable
 	}
-	decoder := json.NewDecoder(io.LimitReader(file, l8MaxMetadataBytes+1))
+	decoder := json.NewDecoder(io.LimitReader(acquisitionReader{ctx: ctx, source: file}, l8MaxMetadataBytes+1))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		return ErrAssetLockMismatch
@@ -229,12 +275,23 @@ func decodeL8RetainedParentJSON(file *os.File, destination any) error {
 }
 
 func verifyL8RetainedParentChecksums(file *os.File, measured map[string]l8RetainedFileMeasurement) error {
+	return verifyL8RetainedParentChecksumsContext(context.Background(), file, measured)
+}
+
+func verifyL8RetainedParentChecksumsContext(ctx context.Context, file *os.File, measured map[string]l8RetainedFileMeasurement) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return ErrFileUnavailable
 	}
 	records := make(map[string]string, 4)
-	scanner := bufio.NewScanner(io.LimitReader(file, l8MaxMetadataBytes+1))
+	scanner := bufio.NewScanner(io.LimitReader(acquisitionReader{ctx: ctx, source: file}, l8MaxMetadataBytes+1))
 	for scanner.Scan() {
+		if err := acquisitionContextError(ctx); err != nil {
+			return err
+		}
 		line := scanner.Text()
 		if len(line) < 67 || line[64:66] != "  " {
 			return ErrAssetLockMismatch
@@ -264,6 +321,14 @@ func verifyL8RetainedParentChecksums(file *os.File, measured map[string]l8Retain
 }
 
 func confirmL8RetainedParentMetadata(root *os.File, retained map[string]*os.File) error {
+	return confirmL8RetainedParentMetadataContext(context.Background(), root, retained)
+}
+
+func confirmL8RetainedParentMetadataContext(ctx context.Context, root *os.File, retained map[string]*os.File) (retErr error) {
+	if err := acquisitionContextError(ctx); err != nil {
+		return err
+	}
+	defer func() { retErr = acquisitionError(ctx, retErr) }()
 	for _, name := range []string{distributionManifestName, distributionProvenanceName, distributionChecksumsName} {
 		current, err := openDistributionFileNoFollow(root, name)
 		if err != nil {

@@ -25,16 +25,32 @@ func TestL8MinimalMetadataCallsitesUseAuthenticatedSnapshots(t *testing.T) {
 	// still pass if the production verifier stopped calling the safe helper.
 	required := map[string][]string{
 		"VerifyL8MinimalDistributionBundle": {
+			"return VerifyL8MinimalDistributionBundleContext(context.Background(), request)",
+		},
+		"VerifyL8MinimalDistributionBundleContext": {
 			"{distributionManifestName, &manifest}", "{distributionProvenanceName, &provenance}",
 			"{l8SourceLockName, &sources}", "{l8FinalInspectionName, &inspection}",
-			"decodeMinimalMetadata(state.files[document.name], document.destination)",
-			"verifyMinimalChecksums(state.files)",
+			"decodeMinimalMetadataContext(ctx, state.files[document.name], document.destination)",
+			"verifyMinimalChecksumsContext(ctx, state.files)",
 		},
 		"decodeMinimalMetadata": {
-			"snapshotMinimalMetadata(pinned)", "json.NewDecoder(bytes.NewReader(snapshot))",
+			"return decodeMinimalMetadataContext(context.Background(), pinned, destination)",
+		},
+		"decodeMinimalMetadataContext": {
+			"snapshotMinimalMetadataContext(ctx, pinned)", "json.NewDecoder(bytes.NewReader(snapshot))",
 		},
 		"verifyMinimalChecksums": {
-			"snapshotMinimalMetadata(files[distributionChecksumsName])", "bufio.NewScanner(bytes.NewReader(snapshot))",
+			"return verifyMinimalChecksumsContext(context.Background(), files)",
+		},
+		"verifyMinimalChecksumsContext": {
+			"snapshotMinimalMetadataContext(ctx, files[distributionChecksumsName])", "bufio.NewScanner(bytes.NewReader(snapshot))",
+		},
+		"snapshotMinimalMetadata": {
+			"return snapshotMinimalMetadataContext(context.Background(), pinned)",
+		},
+		"snapshotMinimalMetadataContext": {
+			"acquisitionReader{ctx: ctx, source: io.NewSectionReader(pinned.file, 0, pinned.size)}",
+			"sha256.Sum256(snapshot) != pinned.digest", "!os.SameFile(before, after)",
 		},
 	}
 	for _, declaration := range file.Decls {
@@ -54,7 +70,7 @@ func TestL8MinimalMetadataCallsitesUseAuthenticatedSnapshots(t *testing.T) {
 		t.Fatalf("missing metadata verification functions: %v", required)
 	}
 	ast.Inspect(file, func(node ast.Node) bool {
-		if identifier, ok := node.(*ast.Ident); ok && identifier.Name == "decodeL8RetainedParentJSON" {
+		if identifier, ok := node.(*ast.Ident); ok && (identifier.Name == "decodeL8RetainedParentJSON" || identifier.Name == "decodeL8RetainedParentJSONContext") {
 			t.Error("minimal metadata path references mutable legacy JSON decoder")
 		}
 		return true
