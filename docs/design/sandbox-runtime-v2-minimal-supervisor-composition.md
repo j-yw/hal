@@ -1,5 +1,16 @@
 # Minimal supervisor composition
 
+## Reached cleanup and channel loss during publication
+
+The candidate-before-commit forward now also sends authenticated StopReap or
+shuts down the original channel while the genuine first request is pending and
+the publisher is held at its original preparation mutex. Cleanup revokes first,
+waits for publication to join, then permits existing containment. Both loss paths
+reject the candidate without backend work or reissue. The same authenticated
+cleanup connection still supports Inspect after StopReap; disconnect is not
+mistaken for a synchronously completed unclaimed-record checkpoint. The original
+commit, cancellation and admission-expiry cases retain their assertions.
+
 ## Reached early peer-input rejection
 
 An additional forward holds a genuine first Exec inside its backend, before

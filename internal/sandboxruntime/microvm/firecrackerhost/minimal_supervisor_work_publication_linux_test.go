@@ -4,6 +4,7 @@ package firecrackerhost
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 )
 
 func TestMinimalSupervisorWorkCandidateBeforePublicationCommit(t *testing.T) {
-	for _, disposition := range []string{"commit", "cancel", "original-admission-expiry"} {
+	for _, disposition := range []string{"commit", "cancel", "original-admission-expiry", "authenticated-cleanup", "original-channel-eof"} {
 		t.Run(disposition, func(t *testing.T) {
 			withMinimalSupervisorJointFixture(t, func(f *minimalSupervisorJointFixture) {
 				prep := f.owned.minimalPreparation
@@ -22,6 +23,11 @@ func TestMinimalSupervisorWorkCandidateBeforePublicationCommit(t *testing.T) {
 				var rescue func()
 				var cancel context.CancelFunc
 				var finished chan struct{}
+				var cleanupConnection *os.File
+				var cleanupSession string
+				var cleanupDone chan struct{}
+				var cleanupResponse l8RuntimeOwnerReceivedPacketV1
+				var cleanupErr error
 				defer func() {
 					if pairLocked {
 						pair.mu.Unlock()
@@ -32,6 +38,13 @@ func TestMinimalSupervisorWorkCandidateBeforePublicationCommit(t *testing.T) {
 					if cancel != nil {
 						cancel()
 						minimalJointAwait(t, finished, "explicit early-work caller rescue")
+					}
+					if cleanupDone != nil {
+						minimalJointAwait(t, cleanupDone, "original cleanup exchange joined")
+						closeL8RuntimeOwnerFiles(cleanupResponse.Files)
+					}
+					if cleanupConnection != nil {
+						_ = cleanupConnection.Close()
 					}
 					if rescue != nil {
 						rescue()
@@ -90,6 +103,39 @@ func TestMinimalSupervisorWorkCandidateBeforePublicationCommit(t *testing.T) {
 				switch disposition {
 				case "cancel":
 					prep.revoke() // Actual cancellation publication is lock-free.
+				case "authenticated-cleanup":
+					fd, session := f.cleanup(t)
+					cleanupConnection = os.NewFile(uintptr(fd), "publication-cleanup-client")
+					cleanupSession = session
+					minimalSupervisorJointInspect(t, fd, session)
+					cleanupDone = make(chan struct{})
+					go func() {
+						defer close(cleanupDone)
+						cleanupResponse, cleanupErr = minimalSupervisorJointExchange(fd, session, 2, l8RuntimeOwnerOpcodeStopReap)
+					}()
+					minimalJointAwait(t, prep.ctx.Done(), "authenticated cleanup revoked pending publication")
+					select {
+					case <-serving.controllerDone:
+						t.Fatal("held original publication was reported joined")
+					case <-cleanupDone:
+						t.Fatal("cleanup returned before original publication joined")
+					case <-f.tracked.process.Done():
+						t.Fatal("containment preceded the held publication join")
+					case <-time.After(25 * time.Millisecond):
+					}
+					if f.contained.Load() != 0 {
+						t.Fatal("containment ran while original publication remained held")
+					}
+				case "original-channel-eof":
+					raw, err := f.producer.original.SyscallConn()
+					if err != nil {
+						t.Fatal("original producer channel ownership", err)
+					}
+					var shutdownErr error
+					if raw.Control(func(fd uintptr) { shutdownErr = unix.Shutdown(int(fd), unix.SHUT_RDWR) }) != nil || shutdownErr != nil {
+						t.Fatal("original channel shutdown failed", shutdownErr)
+					}
+					minimalJointAwait(t, prep.ctx.Done(), "original channel EOF revoked pending publication")
 				case "original-admission-expiry":
 					if !time.Now().Before(bound) || !bound.Before(originalP) || !bound.Before(originalH) {
 						t.Fatal("genuine unspent A/D bound before P/H not reached")
@@ -105,6 +151,12 @@ func TestMinimalSupervisorWorkCandidateBeforePublicationCommit(t *testing.T) {
 				prep.mu.Unlock()
 				prepLocked = false
 				minimalJointAwait(t, finished, "actual early first Client call joined")
+				if cleanupDone != nil {
+					minimalJointAwait(t, cleanupDone, "authenticated cleanup waited for publication")
+					if cleanupErr != nil || cleanupResponse.Packet.Opcode != l8RuntimeOwnerOpcodeStopReap || cleanupResponse.Packet.Status != l8RuntimeOwnerStatusOK || len(cleanupResponse.Files) != 0 {
+						t.Fatal("original cleanup failed after publication joined", cleanupErr)
+					}
+				}
 				if disposition == "commit" {
 					minimalJointAwait(t, pair.commit, "actual publication success gate")
 					minimalJointAwait(t, prep.observerDone, "actual admission observer joined before dispatch")
@@ -120,9 +172,19 @@ func TestMinimalSupervisorWorkCandidateBeforePublicationCommit(t *testing.T) {
 				if !retained || window != originalWindow || prep.deadline != originalP || ready.hardExpiry != originalH || serving.publishWork(ready) == nil {
 					t.Fatal("publication replayed or rebased original R/D/P/H")
 				}
-				fd, session := f.cleanup(t)
-				defer unix.Close(fd)
-				minimalSupervisorJointInspect(t, fd, session)
+				if cleanupConnection != nil {
+					// Keep the same authenticated client. Closing it does not
+					// synchronously publish the server's disconnect checkpoint.
+					response, err := minimalSupervisorJointExchange(int(cleanupConnection.Fd()), cleanupSession, 3, l8RuntimeOwnerOpcodeInspect)
+					defer closeL8RuntimeOwnerFiles(response.Files)
+					if err != nil || response.Packet.Opcode != l8RuntimeOwnerOpcodeInspect || response.Packet.Status != l8RuntimeOwnerStatusOK || len(response.Files) != 0 {
+						t.Fatal("same authenticated cleanup client lost Inspect after StopReap", err)
+					}
+				} else {
+					fd, session := f.cleanup(t)
+					defer unix.Close(fd)
+					minimalSupervisorJointInspect(t, fd, session)
+				}
 			})
 		})
 	}
