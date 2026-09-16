@@ -226,8 +226,19 @@ func (workload *workloadConnection) serve(parent context.Context, stream *ownedS
 	return ErrInvalid
 }
 
-func readWorkloadRecord(reader io.Reader) ([]byte, error) {
+func readWorkloadRecord(reader io.Reader) (result []byte, err error) {
 	var header [session.SecureRecordHeaderBytes]byte
+	var wire []byte
+	defer func() {
+		clear(header[:])
+		if recover() != nil {
+			err = ErrUnavailable
+		}
+		if err != nil {
+			clear(wire)
+			result = nil
+		}
+	}()
 	if _, err := io.ReadFull(reader, header[:]); err != nil {
 		return nil, ErrUnavailable
 	}
@@ -235,10 +246,9 @@ func readWorkloadRecord(reader io.Reader) ([]byte, error) {
 	if err != nil || parsed.CiphertextLength > MaxWorkloadMessageBytes+session.GCMTagBytes {
 		return nil, ErrInvalid
 	}
-	wire := make([]byte, len(header)+int(parsed.CiphertextLength))
+	wire = make([]byte, len(header)+int(parsed.CiphertextLength))
 	copy(wire, header[:])
 	if _, err := io.ReadFull(reader, wire[len(header):]); err != nil {
-		clear(wire)
 		return nil, ErrUnavailable
 	}
 	return wire, nil

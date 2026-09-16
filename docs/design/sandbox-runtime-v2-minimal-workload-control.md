@@ -473,7 +473,10 @@ Injected cryptographic tests cover ordered exec responses, 512 KiB copy-in/out
 through the unchanged v1 parser/digest/publication behavior, smaller configured
 request limits, frame/binding/session/ordinal rejection, oversized headers,
 malformed/readiness inner requests, blocked response writes, and sanitized
-preparation/backend panics. Preparation and blocked Exec are canceled by actual
+preparation/backend panics. Partial reader errors and panics clear owned header
+and body scratch; only a fully read record transfers buffer ownership. Injected
+authenticated header/body reader panics also cancel and join an actual blocked
+backend call without exposing the panic payload. Preparation and blocked Exec are canceled by actual
 stream EOF, owner loss, caller cancellation and the retained deadline, without
 test rescue releasing the backend first. Fake verifier observations and backend
 plans prove these component boundaries only, not real process/network proof.
