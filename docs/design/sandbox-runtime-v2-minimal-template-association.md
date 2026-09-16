@@ -34,6 +34,47 @@ unavailable with retained partial ownership; no successful worker or terminal
 result may fill that gap. The original design's independent digest roles and
 trusted build-receipt requirement remain unchanged.
 
+## Implemented acquisition checkpoint
+
+The first provider implementation owns the real cache-free registry Workflow,
+copies the complete scalar association, and validates bounded original context,
+hints, fixed strict trust, exact measured document/manifest roles and declared
+runtime-image identity before opening the configured local inputs. Existing
+`selection.Bind` remains a required check; required lock roles must occur exactly
+once. Constructor validation rejects incomplete Expected facts. The genuine
+asset verifier, not a second version catalog, decides supported runtime facts.
+
+Every successful Resolve retains a fresh verified child with its own parent
+lease and a fresh 128-bit random correlation generation. The original private
+selection serializes Current/Close against those exact retained files; copied
+handles, changed file identities, canceled/unbounded contexts and closed owners
+cannot reacquire authority. No local lease transfer occurs during selection.
+The provider remains private and has no Start/Recover implementation or default
+caller yet: neutral authenticated claim and sealed asset handoff are still
+required next, not satisfied by these acquisition tests.
+
+The original constructor-first RED is unchanged and now passes. Additional
+tests reach invalid configuration/hints/contexts before I/O, immutable input
+copies, real manifest/layer/media/origin failures, cancellation and panic,
+independent Expected mismatch, byte-identical child/parent replacements,
+simultaneous per-job ownership and Close/Current races. Direct validation tests
+alter fresh actual Workflow results only to check contradictory projections;
+those values are never supplied to the provider as acquisition authority.
+The selected provider tests pass 168 test/subtest events under race times three,
+with zero failures/skips; this is not yet whole-repository or independent GREEN
+verification.
+
+An initial added concurrency assertion wrongly required sixteen HTTP requests
+for eight jobs. The existing resolver deliberately coalesces concurrent identical
+layer fetches even with nil Cache; every Select still fetches/measures its own
+manifest and acquires independent local owners. The corrected new test accepts
+eight manifests plus one to eight layer fetches, retains all eight distinct
+generation and ownership checks, and changes no original RED or production
+behavior. An earlier new cache-test stub used the wrong existing interface
+signature; that compile-only mistake was corrected before executable coverage.
+No native image, B1 receipt, live registry, runtime, credentials, cleanup receipt
+or terminal status is produced by this checkpoint.
+
 Design base `38f8f0b6d22a335313402219b7c25c644c821947`. This refines the
 provider proposal at `7144680c2d8b8ce1112a7a599c64da34e93d6cfc`, under the
 [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
