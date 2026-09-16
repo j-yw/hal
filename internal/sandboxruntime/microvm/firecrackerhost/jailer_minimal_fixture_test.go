@@ -19,6 +19,21 @@ import (
 // deliberately not ext4, executable, source-build, or guest-boot evidence.
 func minimalJailerFixture(t *testing.T) (localresolver.VerifiedL8MinimalDistribution, string, []byte, []byte) {
 	t.Helper()
+	fixture := minimalJailerSourceFixture(t)
+	return fixture.verified, fixture.root, fixture.kernel, fixture.rootfs
+}
+
+type minimalJailerSource struct {
+	verified        localresolver.VerifiedL8MinimalDistribution
+	root, parentDir string
+	kernel, rootfs  []byte
+	expected        localresolver.L8MinimalExpectedIdentity
+}
+
+// Preserve the independently constructed expected inputs before returning any
+// candidate files. Provider tests must never recover them by decoding the files.
+func minimalJailerSourceFixture(t *testing.T) minimalJailerSource {
+	t.Helper()
 	kernel, parentRootfs, rootfs := []byte("fixture kernel"), []byte("fixture parent rootfs"), []byte("fixture minimal rootfs")
 	marshal := func(value any) []byte {
 		t.Helper()
@@ -110,10 +125,11 @@ func minimalJailerFixture(t *testing.T) (localresolver.VerifiedL8MinimalDistribu
 	provenance := assetbuild.L8MinimalProvenance{SchemaVersion: manifest.SchemaVersion, ImageProfile: manifest.ImageProfile, SourceRevision: sources.SourceRevision, SourceTree: parentProvenance.SourceTree, SourceDateEpoch: parentProvenance.SourceDateEpoch, BuildImageDigest: parentProvenance.BuildImageDigest, Architecture: manifest.Architecture, Versions: manifest.Versions, GuestAgent: manifest.GuestAgent, GuestNetwork: manifest.GuestNetwork, MinimalProfile: profile, Outputs: outputs(manifest.Assets)}
 	root := t.TempDir()
 	write(root, map[string][]byte{"distribution-manifest.json": marshal(manifest), "provenance.json": marshal(provenance), "sources.lock.json": marshal(sources), "final-inspection.json": marshal(inspection), "vmlinux": kernel, "rootfs.ext4": rootfs})
-	verified, err := localresolver.VerifyL8MinimalDistributionBundle(localresolver.L8MinimalDistributionRequest{DistributionRequest: localresolver.DistributionRequest{RootDir: root}, ParentL7: parent, Expected: localresolver.L8MinimalExpectedIdentity{SourceRevision: sources.SourceRevision, RootfsSHA256: sha256Hex(rootfs), GuestInitSHA256: initDigest, GuestAgentSHA256: agentDigest, Runtime: runtime, SourceLockSHA256: profile.SourceLockSHA256, FinalInspectionSHA256: profile.FinalInspectionSHA256, ProvenanceSHA256: sha256Hex(marshal(provenance))}})
+	expected := localresolver.L8MinimalExpectedIdentity{SourceRevision: sources.SourceRevision, RootfsSHA256: sha256Hex(rootfs), GuestInitSHA256: initDigest, GuestAgentSHA256: agentDigest, Runtime: runtime, SourceLockSHA256: profile.SourceLockSHA256, FinalInspectionSHA256: profile.FinalInspectionSHA256, ProvenanceSHA256: sha256Hex(marshal(provenance))}
+	verified, err := localresolver.VerifyL8MinimalDistributionBundle(localresolver.L8MinimalDistributionRequest{DistributionRequest: localresolver.DistributionRequest{RootDir: root}, ParentL7: parent, Expected: expected})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = verified.Close() })
-	return verified, root, kernel, rootfs
+	return minimalJailerSource{verified: verified, root: root, parentDir: parentDir, kernel: kernel, rootfs: rootfs, expected: expected}
 }

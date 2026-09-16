@@ -1,5 +1,39 @@
 # Trusted selected template to retained minimal assets
 
+## Current execution checkpoint: concrete acquisition RED
+
+The supervisor's implementation continuation now starts the proposed provider
+from accepted `93f88ea3`. The context-aware parent/child acquisition dependency
+and untransferred currentness are implemented and accepted at that base. This
+supersedes the original design-only restriction on adding the bounded provider
+scaffold; it does not activate a production selector or claim a working runtime.
+
+The first compiling RED proves an actual registry resolver/Workflow/Bind can
+acquire the fixture's measured manifest and document, establish strict template
+trust, and retain a distinct declared runtime-image digest. Its HTTPDoer returns
+ordinary in-memory HTTP responses to exact origin/path requests, never a forged
+selection.Result. The old local image fixture still runs its genuine verifier;
+an added source-return helper exposes its independently constructed Expected
+and parent location without decoding candidate files. The original four-value
+fixture API and behavior remain unchanged. All bytes are synthetic, not native
+build, ext4, OCI runtime contents or live VM evidence.
+
+After both real controls, the private unavailable provider constructor is the
+first reached failure. Later fresh multi-job acquisition/currentness/close
+assertions are requirements, not yet RED evidence. Three race repetitions pass
+the independent measured-acquisition controls and fail the constructor exactly
+three times, without skips or race diagnostics. No request/claim/transfer,
+runtime generation issuance, seed, host allocation or cleanup receipt occurs.
+
+Implementation must retain the complete constructor-owned scalar association,
+own the real cache-free registry Workflow, reject invalid inputs before any
+acquisition, and acquire fresh parent/child owners per bounded Resolve. It must
+then pass the neutral authenticated reservation/Claim boundary and the retained
+one-transfer/sealed-snapshot checks below. Missing actual runtime consumers stay
+unavailable with retained partial ownership; no successful worker or terminal
+result may fill that gap. The original design's independent digest roles and
+trusted build-receipt requirement remain unchanged.
+
 Design base `38f8f0b6d22a335313402219b7c25c644c821947`. This refines the
 provider proposal at `7144680c2d8b8ce1112a7a599c64da34e93d6cfc`, under the
 [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
