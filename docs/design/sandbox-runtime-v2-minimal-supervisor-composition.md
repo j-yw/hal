@@ -2,6 +2,16 @@
 
 ## Compound-close correction checkpoint
 
+Independent exact `99008ee6` review reached a remaining final-disposal race:
+after real work, authenticated Inspect, original I/O/lifecycle joins and actual
+accept-service exit, sixteen concurrent whole-owner Close calls race on the
+listener descriptor. Scope completion permits disposal but does not elect one
+disposer. The new narrowly named final-disposal RED preserves that actual path;
+its joined race evidence is distinct from the passing earlier barriers and full
+host suite. It does not claim a descriptor successor was actually closed. A
+selected-only final-disposer election must join losing Close callers outside
+bookkeeping/lifecycle locks and preserve unresolved-cleanup retention.
+
 The reached 141-line whole-Close/error RED is preserved unchanged. Selected
 `owned.close` now revokes the original preparation before serializing with serving
 installation, closes/joins the original compound I/O scope, and joins the separate
