@@ -180,6 +180,15 @@ func (a *minimalPreexecAttempt) validatePreparedFiles() error {
 	if err != nil || !reflect.DeepEqual(decoded, a.config) || !bytes.Equal(decodedPublic, public[:]) {
 		return invalid
 	}
+	// The last allocating callback could replace an earlier descriptor with a
+	// different sealed object containing identical bytes. Preserve the exact
+	// original FC measurement carried by the selected config, not just its hash.
+	asset := a.config.Config
+	pin, err := validateL8RuntimeOwnerSealedRegularFD(int(a.fcFile.Fd()), maxStrictJailerConfigBytes)
+	if err != nil || pin.Size != asset.Size || validateL8RuntimeOwnerAssetFD(int(a.fcFile.Fd()), l8RuntimeOwnerDescriptorIdentityV1{
+		Kind: asset.Kind, Device: asset.Device, Inode: asset.Inode, Digest: asset.SHA256}) != nil {
+		return invalid
+	}
 	actual, err := readMinimalControlFirecrackerConfig(int(a.fcFile.Fd()), a.config.Config)
 	if err != nil || validateMinimalControlFirecrackerConfig(actual, a.config, public[:]) != nil ||
 		validateMinimalControlRequestConfig(actual, &a.expectation, a.owner.identity.RuntimeID, a.config.Config.SHA256) != nil || a.validateCoordinatorInputs() != nil || !a.current() {
