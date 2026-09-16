@@ -1,13 +1,24 @@
 # Selected minimal L7 bindings
 
-## Host implementation under forward verification
+## Host implementation checkpoint
 
-The first host implementation passes the original behavioral REDs: code 4 reaches
-the real original producer/controller/guest, and hidden Exec/Copy inspection no
-longer reaches the verifier. Host-only H/remaining, strict proof schemas and the
-producer's final lifetime acceptance are implemented. This is not final GREEN:
-the previously unreachable timing, cancellation, publication and joined-lifetime
-forwards below must run before submission; no activation or live claim follows.
+The selected host implementation adds code 4 to the original work stream, rejects
+hidden Exec/Copy inspection before guest verification, and checks fresh proof IDs
+against the original handshake. Only the host adds H/remaining. The producer
+retains the original caller and one absolute five-second context through final
+acceptance; context construction runs outside its owner mutex. Inspection loss
+rejects even a completed reply; ordinary completed-CopyIn behavior is unchanged.
+
+Focused coverage now reaches the original publication gate, real encrypted fresh
+inspection, proof-predicate failures, network/socket drift, caller/owner/EOF loss,
+the unchanged five-second and earlier caller deadlines, one busy slot, blocked IPC
+reply writes, bounded pending frames and final callback/reader/writer joins.
+Strict schema negatives derive from an actual proof. Wall-clock steps, delayed
+acceptance, overflow and exact expiry exercise the pure monotonic-bound helper,
+not a rewritten runtime H or a physical 35-minute wait. Fixed-version handoffs
+record exact RED/GREEN and broader verification results, including any failed
+run; this checkpoint alone claims no review acceptance, root/live proof, selected
+L7 binding, worker/executable/default activation or terminal cleanup completion.
 
 ## Host inspection behavioral RED checkpoint
 
