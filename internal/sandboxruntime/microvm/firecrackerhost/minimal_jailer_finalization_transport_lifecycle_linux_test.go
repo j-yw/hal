@@ -22,12 +22,14 @@ func TestMinimalJailerTransportInterruptThenCloseJoins(t *testing.T) {
 	defer socket.Close()
 	defer peer.Close()
 	client.ops.connectMinimal = func(context.Context, *os.File, firecrackerRuntimeOwnerRecordV1) (*os.File, error) { return socket, nil }
-	var calls atomic.Int32
+	var injected atomic.Bool
+	var receives atomic.Int32
 	client.ops.minimalIO = &minimalJailerSocketOps{sendmsg: unix.Sendmsg,
 		recvmsg: func(fd int, buf, oob []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-			if calls.Add(1) == 1 {
+			if injected.CompareAndSwap(false, true) {
 				return -1, 0, 0, nil, unix.EINTR
 			}
+			receives.Add(1)
 			return unix.Recvmsg(fd, buf, oob, flags)
 		},
 	}
@@ -44,8 +46,9 @@ func TestMinimalJailerTransportInterruptThenCloseJoins(t *testing.T) {
 		}
 	}()
 	waitMinimalJailerExchange(t, "recvmsg")
-	if calls.Load() != 2 {
-		t.Fatal("did not enter actual receive after interruption", calls.Load())
+	// Real receives may also return EINTR and retry before the stack is observed.
+	if !injected.Load() || receives.Load() < 1 {
+		t.Fatal("did not enter actual receive after interruption", injected.Load(), receives.Load())
 	}
 	closed := make(chan error, 1)
 	go func() { closed <- client.close() }()
