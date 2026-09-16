@@ -60,7 +60,8 @@ func (provider *minimalLaunchProvider) startMinimalJob(ctx context.Context, rese
 	}
 	// This original source owns the partial result before transfer or any
 	// snapshot callback. Selection Close must never take that ownership back.
-	owner = &minimalTemplateAssetOwner{source: source, identity: identity, template: template, request: request, context: owned}
+	p, _ := ctx.Deadline() // minimalTemplateContextError already required this exact bound.
+	owner = &minimalTemplateAssetOwner{source: source, identity: identity, template: template, request: request, context: owned, preparation: ctx, preparationDeadline: p, reservation: reservation}
 	owner.self = owner
 	source.owner = owner
 	result = owner
@@ -120,18 +121,24 @@ func minimalTemplateClaimMatches(identity sandboxruntime.MinimalLaunchIdentity, 
 // Preparation uses reservation.Context; retained ownership uses its original
 // OwnedContext, never a replacement context based on the preparation deadline.
 type minimalTemplateAssetOwner struct {
-	self     *minimalTemplateAssetOwner
-	source   *minimalTemplateSelection
-	identity sandboxruntime.MinimalLaunchIdentity
-	template sandboxruntime.MinimalLaunchTemplateIdentity
-	request  sandboxruntime.MinimalLaunchRequestCorrelation
-	context  context.Context
-	lease    *localresolver.VerifiedL8MinimalLaunchLease
-	files    [2]*os.File
-	measured [2]jailerRecoveryAsset
-	sealed   bool
-	closed   bool
-	closeErr error
+	self                *minimalTemplateAssetOwner
+	source              *minimalTemplateSelection
+	identity            sandboxruntime.MinimalLaunchIdentity
+	template            sandboxruntime.MinimalLaunchTemplateIdentity
+	request             sandboxruntime.MinimalLaunchRequestCorrelation
+	context             context.Context
+	preparation         context.Context
+	preparationDeadline time.Time
+	reservation         *sandboxruntime.MinimalLaunchReservation
+	attempt             *minimalPreexecAttempt
+	cleanupDone         chan struct{}
+	assetsClosed        bool
+	lease               *localresolver.VerifiedL8MinimalLaunchLease
+	files               [2]*os.File
+	measured            [2]jailerRecoveryAsset
+	sealed              bool
+	closed              bool
+	closeErr            error
 }
 
 func (owner *minimalTemplateAssetOwner) Identity() sandboxruntime.MinimalLaunchIdentity {
