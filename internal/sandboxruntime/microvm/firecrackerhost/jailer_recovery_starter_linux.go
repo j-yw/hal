@@ -93,6 +93,12 @@ func (starter *jailerRecoveryStarter) startStrictJailerNamespaceProcess(ctx cont
 	}
 	observation, err := inspectL8RuntimeOwnerProcess(uint32(pidProcess.HostPID()))
 	starter.observation = observation
+	if starter.minimalGate != nil {
+		if err != nil || observation.ParentPID != parent.PID || ctx.Err() != nil {
+			return process, errStrictJailerNamespaceStartFailed
+		}
+		return process, starter.awaitMinimalGateArmedLocked(ctx)
+	}
 	if err != nil || observation.ParentPID != parent.PID || ctx.Err() != nil || setL8RuntimeOwnerSocketTimeout(int(starter.gate.Fd()), l8RuntimeOwnerHandshakeTimeout) != nil {
 		return process, errStrictJailerNamespaceStartFailed
 	}
