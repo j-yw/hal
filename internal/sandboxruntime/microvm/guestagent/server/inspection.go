@@ -22,5 +22,9 @@ func (server *Server) InspectWorkloadIsolation(ctx context.Context) (IsolationPr
 		return IsolationProofResult{}, err
 	}
 	defer release()
-	return server.inspectWorkloadResult(operationCtx, false)
+	result, err, panicked := server.inspectWorkloadResult(operationCtx, false)
+	if panicked {
+		panic(errServerNotReady)
+	}
+	return result, err
 }

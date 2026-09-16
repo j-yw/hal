@@ -33,24 +33,23 @@ func (server *Server) HandleWorkload(ctx context.Context, request Request) Respo
 }
 
 func (server *Server) inspectWorkload(ctx context.Context, prepare bool) (err error) {
-	defer func() {
-		if recover() != nil {
-			err = errServerNotReady
-		}
-	}()
-	_, err = server.inspectWorkloadResult(ctx, prepare)
+	_, err, _ = server.inspectWorkloadResult(ctx, prepare)
 	return err
 }
 
 // The result is transferred only after the same proof-attempt/state checks used
-// by work. Panic unwinding invalidates the attempt before reaching its caller.
-func (server *Server) inspectWorkloadResult(ctx context.Context, prepare bool) (result IsolationProofResult, err error) {
+// by work. Retain only a panic bit, never the recovered value; old callers keep
+// the original deferred context/state precedence after a callback panic.
+func (server *Server) inspectWorkloadResult(ctx context.Context, prepare bool) (result IsolationProofResult, err error, panicked bool) {
 	if err := workloadContextError(ctx); err != nil {
-		return IsolationProofResult{}, err
+		return IsolationProofResult{}, err, false
 	}
 	err = errServerNotReady
 	attempt := server.beginIsolationProofAttempt()
 	defer func() {
+		if recover() != nil {
+			err, panicked = errServerNotReady, true
+		}
 		server.mu.Lock()
 		defer server.mu.Unlock()
 		if ctxErr := workloadContextError(ctx); ctxErr != nil {
@@ -68,17 +67,17 @@ func (server *Server) inspectWorkloadResult(ctx context.Context, prepare bool) (
 	}()
 	if prepare {
 		if err := server.backend.Ready(ctx); err != nil {
-			return IsolationProofResult{}, errServerNotReady
+			return IsolationProofResult{}, errServerNotReady, false
 		}
 		if err := workloadContextError(ctx); err != nil {
-			return IsolationProofResult{}, err
+			return IsolationProofResult{}, err, false
 		}
 	}
 	observed, inspectErr := server.workloadIsolationVerifier.VerifyWorkloadIsolation(ctx)
 	if inspectErr != nil || !processIsolationVerified(observed) || !networkIsolationVerified(observed) {
-		return IsolationProofResult{}, errServerNotReady
+		return IsolationProofResult{}, errServerNotReady, false
 	}
-	return observed, nil
+	return observed, nil, false
 }
 
 func workloadContextError(ctx context.Context) error {
