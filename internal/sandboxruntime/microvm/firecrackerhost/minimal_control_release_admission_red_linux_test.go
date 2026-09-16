@@ -75,7 +75,10 @@ func TestMinimalReleaseAdmissionWindowPrecedesSendCompletion(t *testing.T) {
 		} else {
 			minimalReleaseAdmissionRequireWindow(t, window, before, time.Now(), prep.deadline)
 		}
-		if !gate.attempted || starter.released || !prep.current() {
+		starter.mu.Lock()
+		attempted, released := gate.attempted, starter.released
+		starter.mu.Unlock()
+		if !attempted || released || !prep.current() {
 			t.Fatal("actual in-flight one-attempt prerequisite")
 		}
 		prep.revoke()
