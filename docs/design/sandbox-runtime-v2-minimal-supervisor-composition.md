@@ -2,6 +2,25 @@
 
 ## First joined work-composition implementation checkpoint
 
+Forward evidence at this checkpoint exposed two unresolved whole-owner edges.
+Holding the real registered pair mutex after actual work prevents the controller
+join, yet existing outer `owned.close` can enter the original fake process stop.
+A genuine retained pair alias Close also produces a later real Close error that
+the first implementation discards, permitting StopReap success. The whole-Close
+probe additionally reproduced the existing listenerFD read/write race between
+`serveControllers` and the destructor. These failed logs are retained; ordinary
+joint success does not waive them. The forward RED uses the original whole Close
+entry, genuine pair alias loss, and independently authenticated cleanup packets.
+
+The required selected disposition is closeIO plus the separate lifecycle join,
+then retention of listener/record/selected handles while its serving scope stays
+active. A private scope-ended observation may permit the existing destructor only
+after the accept loop returns and its final joins finish. Selected serving install
+and close disposition must serialize under the same owned mutex; revoke original
+preparation before a nil-serving destruction path and recheck it at installation.
+Legacy/nonselected close remains unchanged. Actual Inspect after concurrent Close
+is a separate forward assertion; explicit test listener shutdown is rescue only.
+
 The private below-root serving entry now retains the original controller consume
 scope through RD2 publication and paired work. The original producer alone reads
 revision 2, checks the original record/config/supervisor identity, and adopts one
