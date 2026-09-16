@@ -485,3 +485,21 @@ Host transport, concrete Linux verifier and command selection are separate
 work. Guest entrypoint, prepared workspace/mount, credentials, runtime producer,
 image rebuild, live VM acceptance and strict/terminal claims remain unenabled
 by this checkpoint. A transport task join is still not guest-process absence.
+
+## Cancellation cause publication correction
+
+At `3324809166425d3ac86f40cc9646997b1d556b78`, independent command review found
+an inherited bootstrap timer classification race: actual auth-read/deadline
+Serve sometimes returned context.Canceled instead of ErrTimeout. Pinned Go
+1.25.7 Cause can read a nil cause, then race cancellation before its fallback
+Err call. An actual normal-context concurrent reproducer and a deterministic
+wrapper forwarding real Value/Deadline/Done both reached that misclassification.
+
+The bounded correction observes Err first. An active observation returns nil;
+once nonnil, read the published cause and preserve only exact ErrTimeout or
+ErrOwnerLost. Every other cause returns the observed standard context error,
+never arbitrary private payloads or wrapped lookalike sentinels. No retry,
+timer, clock, deadline, session, workload or cleanup behavior changes. Original
+whole-Serve tests stay unchanged. Commit the compiling cause-publication RED
+and sanitization controls before this helper-only production change, then run
+whole minimalcontrol/command/server races and unchanged source/legacy guards.
