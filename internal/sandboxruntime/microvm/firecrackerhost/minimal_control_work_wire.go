@@ -33,6 +33,8 @@ func minimalWorkOperationCode(operation guestagent.Operation) byte {
 		return 2
 	case guestagent.OperationCopyOut:
 		return 3
+	case minimalInspectionOperation:
+		return 4
 	default:
 		return 0
 	}
@@ -45,7 +47,7 @@ func (header minimalWorkHeader) valid() bool {
 }
 
 func encodeMinimalWorkFrame(header minimalWorkHeader, payload []byte) ([]byte, error) {
-	if !header.valid() || len(payload) == 0 || len(payload) > minimalcontrol.MaxWorkloadPayloadBytes ||
+	if !header.valid() || len(payload) == 0 || len(payload) > minimalcontrol.MaxWorkloadPayloadBytes || !validMinimalInspectionSize(header, int64(len(payload))) ||
 		header.direction == minimalWorkResponse && int64(len(payload)) > header.maximum {
 		return nil, errL8RuntimeOwnerProtocol
 	}
@@ -85,10 +87,12 @@ func readMinimalWorkFrame(reader io.Reader, first byte, validate func(minimalWor
 		header.operation = guestagent.OperationCopyIn
 	case 3:
 		header.operation = guestagent.OperationCopyOut
+	case 4:
+		header.operation = minimalInspectionOperation
 	}
 	copy(header.session[:], fixed[28:60])
 	copy(header.binding[:], fixed[60:92])
-	if !header.valid() || validate == nil || !validate(header) || header.direction == minimalWorkResponse && int64(size-minimalWorkHeaderBytes) > header.maximum {
+	if !header.valid() || !validMinimalInspectionSize(header, int64(size-minimalWorkHeaderBytes)) || validate == nil || !validate(header) || header.direction == minimalWorkResponse && int64(size-minimalWorkHeaderBytes) > header.maximum {
 		return minimalWorkHeader{}, nil, errL8RuntimeOwnerProtocol
 	}
 	payload := make([]byte, int(size)-minimalWorkHeaderBytes)

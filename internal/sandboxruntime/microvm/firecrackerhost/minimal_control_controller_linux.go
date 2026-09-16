@@ -50,6 +50,8 @@ type minimalControlReadiness struct {
 	self                *minimalControlReadiness
 	hardExpiry          time.Time
 	admissionDeadline   time.Time
+	inspectionTopology  string // Comparison data from the original validated pins.
+	inspectionRuntime   string
 }
 
 type minimalControlControllerPins struct {

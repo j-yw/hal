@@ -3,6 +3,7 @@
 package firecrackerhost
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"math"
@@ -73,6 +74,16 @@ func (transport minimalControlWorkloadTransport) RoundTrip(ctx context.Context, 
 		if !stop() {
 			<-interrupted
 		}
+		if request.Operation == minimalInspectionOperation {
+			// The synchronous request writer and cancellation callback have
+			// joined; only now may a fresh inspection response be accepted.
+			_, proofErr := decodeMinimalGuestInspection(response.Encoded, r.inspectionTopology, r.inspectionRuntime)
+			if resultErr != nil || proofErr != nil || !minimalWorkloadContextCurrent(ctx) || !r.Current() {
+				c.interruptWorkload(stream)
+				<-c.done
+				response, resultErr = guestagent.TransportResponse{}, errMinimalControlController
+			}
+		}
 		c.mu.Lock()
 		if c.pendingWork == op {
 			c.pendingWork = nil
@@ -124,7 +135,10 @@ func validMinimalWorkloadRequest(request guestagent.TransportRequest) bool {
 		len(request.Encoded) > minimalcontrol.MaxWorkloadPayloadBytes || request.MaxResponseBytes <= 0 || request.MaxResponseBytes > minimalcontrol.MaxWorkloadPayloadBytes {
 		return false
 	}
-	return request.Operation == guestagent.OperationExec || request.Operation == guestagent.OperationCopyIn || request.Operation == guestagent.OperationCopyOut
+	if request.Operation == minimalInspectionOperation {
+		return request.MaxResponseBytes == minimalInspectionMaximum && bytes.Equal(request.Encoded, []byte(minimalInspectionRequest))
+	}
+	return (request.Operation == guestagent.OperationExec || request.Operation == guestagent.OperationCopyIn || request.Operation == guestagent.OperationCopyOut) && !selectsMinimalInspection(request.Encoded)
 }
 
 func (c *minimalControlController) interruptWorkload(stream *minimalControlStream) {

@@ -106,7 +106,8 @@ func (c *minimalControlController) authenticate(stream *minimalControlStream, pi
 	if openErr != nil || !state.Established() || !c.admissionCurrent(stream, deadline, handle, generation) {
 		return state, nil, deadline, errMinimalControlController
 	}
-	return state, &minimalControlReadiness{binding: binding, sessionID: sessionID, handle: handle, transportGeneration: generation}, deadline, nil
+	return state, &minimalControlReadiness{binding: binding, sessionID: sessionID, handle: handle, transportGeneration: generation,
+		inspectionTopology: pins.fields["topologyGenerationId"], inspectionRuntime: pins.fields["runtimeGeneration"]}, deadline, nil
 }
 
 // These helpers retain and wipe the complete allocation on partial reads;

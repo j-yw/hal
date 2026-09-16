@@ -178,6 +178,11 @@ func (s *minimalControlWorkServer) readRequests() {
 		if err != nil {
 			return
 		}
+		if !validMinimalWorkloadRequest(guestagent.TransportRequest{ProtocolVersion: guestagent.ProtocolVersionV1,
+			Operation: header.operation, Encoded: payload, MaxResponseBytes: header.maximum}) {
+			clear(payload)
+			return
+		}
 		s.mu.Lock()
 		if s.retired || s.pending != nil {
 			s.mu.Unlock()
@@ -227,11 +232,23 @@ func (s *minimalControlWorkServer) serveRequests() {
 
 func (s *minimalControlWorkServer) exchange(call *minimalWorkFrame) error {
 	defer clear(call.payload)
+	inspection := call.header.operation == minimalInspectionOperation
+	if inspection && !s.inspectionCurrent() {
+		return errL8RuntimeOwnerInvalid
+	}
 	response, err := s.work.RoundTrip(s.ctx, guestagent.TransportRequest{ProtocolVersion: guestagent.ProtocolVersionV1,
 		Operation: call.header.operation, Encoded: call.payload, MaxResponseBytes: call.header.maximum})
 	defer clear(response.Encoded)
 	if err != nil || s.ctx.Err() != nil {
 		return errL8RuntimeOwnerInvalid
+	}
+	payload := response.Encoded
+	if inspection {
+		payload, err = s.inspectionReply(response.Encoded)
+		defer clear(payload)
+		if err != nil {
+			return errL8RuntimeOwnerInvalid
+		}
 	}
 	s.mu.Lock()
 	if s.retired || s.active != call {
@@ -242,7 +259,10 @@ func (s *minimalControlWorkServer) exchange(call *minimalWorkFrame) error {
 	s.mu.Unlock()
 	header := call.header
 	header.direction = minimalWorkResponse
-	err = writeMinimalWorkFrame(s.conn, header, response.Encoded)
+	err = writeMinimalWorkFrame(s.conn, header, payload)
+	if inspection && !s.inspectionCurrent() {
+		err = errL8RuntimeOwnerInvalid
+	}
 	s.mu.Lock()
 	s.active, s.writing = nil, false
 	s.mu.Unlock()

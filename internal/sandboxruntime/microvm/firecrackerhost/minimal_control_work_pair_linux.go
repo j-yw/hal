@@ -51,9 +51,10 @@ type minimalControlProducerLaunch struct {
 }
 
 type minimalControlWorkCandidate struct {
-	self   *minimalControlWorkCandidate
-	launch *minimalControlProducerLaunch
-	event  minimalControlReadinessEventV1
+	self       *minimalControlWorkCandidate
+	launch     *minimalControlProducerLaunch
+	event      minimalControlReadinessEventV1
+	inspection minimalInspectionLifetime // Guarded by launch.mu; never resets H.
 }
 
 type minimalProducerWork struct {
@@ -292,6 +293,19 @@ func (candidate *minimalControlWorkCandidate) RoundTrip(ctx context.Context, req
 		launch.mu.Unlock()
 		return result, guestagent.NewProtocolError(guestagent.ErrorCodeServerBusy, request.Operation, "transport", errL8RuntimeOwnerInvalid)
 	}
+	var inspectionStart time.Time
+	var cancelInspection context.CancelFunc
+	if request.Operation == minimalInspectionOperation {
+		inspectionStart = time.Now()
+		if candidate.inspection.hardExpiry != 0 && !candidate.inspection.current(inspectionStart) {
+			launch.mu.Unlock()
+			launch.retire()
+			return result, errL8RuntimeOwnerInvalid
+		}
+		// The caller's earlier deadline is inherited automatically. Keep this
+		// one absolute budget through decoding and final cancellation joins.
+		ctx, cancelInspection = context.WithDeadline(ctx, inspectionStart.Add(minimalInspectionTimeout))
+	}
 	launch.ordinal++
 	op := &minimalProducerWork{header: minimalWorkHeader{direction: minimalWorkRequest, operation: request.Operation, ordinal: launch.ordinal,
 		maximum: request.MaxResponseBytes, session: candidate.event.sessionID, binding: candidate.event.readinessBindingSHA256}, done: make(chan struct{})}
@@ -299,11 +313,24 @@ func (candidate *minimalControlWorkCandidate) RoundTrip(ctx context.Context, req
 	launch.writers.Add(1)
 	launch.mu.Unlock()
 	defer launch.writers.Done() // Join the whole admitted call, not only its write.
+	if cancelInspection != nil {
+		defer cancelInspection()
+	}
 	interrupted := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() { defer close(interrupted); launch.retire() })
 	defer func() {
 		if !stop() {
 			<-interrupted
+		}
+		if cancelInspection != nil {
+			if resultErr == nil && !candidate.acceptInspection(ctx, inspectionStart, op) {
+				resultErr = errL8RuntimeOwnerInvalid
+			}
+			if resultErr != nil {
+				launch.retire()
+				<-launch.reader
+				result = guestagent.TransportResponse{}
+			}
 		}
 		launch.mu.Lock()
 		if launch.active == op {
@@ -344,6 +371,33 @@ func (candidate *minimalControlWorkCandidate) RoundTrip(ctx context.Context, req
 	// No drain: only the sole reader's already-complete, exactly correlated
 	// response survives retirement. Client retains semantic CopyIn decisions.
 	return guestagent.TransportResponse{Encoded: op.response}, nil
+}
+
+// Called after the actual request writer and its cancellation callback joined,
+// while the same admitted operation still excludes any competing call. The sole
+// response reader has completed/correlated this frame, not its continuing task.
+func (candidate *minimalControlWorkCandidate) acceptInspection(ctx context.Context, admitted time.Time, op *minimalProducerWork) bool {
+	launch := candidate.launch
+	if !minimalWorkloadContextCurrent(ctx) || !l8RuntimeOwnerProcessAlive(launch.supervisor.pidfd) {
+		return false
+	}
+	reply, err := decodeMinimalHostInspection(op.response, launch.config.Control.Prelaunch["topologyGenerationId"], launch.config.Job.RuntimeGeneration)
+	if err != nil {
+		return false
+	}
+	launch.mu.Lock()
+	defer launch.mu.Unlock()
+	if candidate.self != candidate || launch.candidate != candidate || launch.active != op || !op.received ||
+		launch.retired || launch.ctx.Err() != nil || !minimalWorkloadContextCurrent(ctx) ||
+		op.header.session != candidate.event.sessionID || op.header.binding != candidate.event.readinessBindingSHA256 {
+		return false
+	}
+	pin, err := candidate.inspection.accept(admitted, time.Now(), reply.HardExpiryUnixNano, reply.RemainingLifetimeNanos)
+	if err != nil {
+		return false
+	}
+	candidate.inspection = pin
+	return true
 }
 
 func (launch *minimalControlProducerLaunch) readResponses() {

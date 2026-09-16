@@ -1,5 +1,14 @@
 # Selected minimal L7 bindings
 
+## Host implementation under forward verification
+
+The first host implementation passes the original behavioral REDs: code 4 reaches
+the real original producer/controller/guest, and hidden Exec/Copy inspection no
+longer reaches the verifier. Host-only H/remaining, strict proof schemas and the
+producer's final lifetime acceptance are implemented. This is not final GREEN:
+the previously unreachable timing, cancellation, publication and joined-lifetime
+forwards below must run before submission; no activation or live claim follows.
+
 ## Host inspection behavioral RED checkpoint
 
 The tests-only host slice starts at accepted integration `3031e096`: the selected
