@@ -139,7 +139,14 @@ func minimalControllerSeedContextCurrent(ctx context.Context) bool {
 
 func closeMinimalControllerSeedFile(file *os.File, closeFile func(*os.File) error) (resultErr error) {
 	resultErr = errL8RuntimeOwnerInvalid
-	defer func() { _ = recover() }()
+	defer func() {
+		_ = recover()
+		if resultErr != nil && file != nil {
+			// File.Close remembers consumption even if its old number is reused.
+			// A callback failure before closing must not defer ownership to GC.
+			_ = file.Close()
+		}
+	}()
 	if file == nil || closeFile == nil || closeFile(file) != nil {
 		return resultErr
 	}

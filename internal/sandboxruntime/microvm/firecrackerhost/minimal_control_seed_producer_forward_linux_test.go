@@ -319,12 +319,16 @@ func TestMinimalControlSeedProducerForwardAfterCloseFailurePreservesReusedFD(t *
 				if int(fresh.Fd()) == fd {
 					successor = fresh
 				} else {
-					if err := unix.Dup3(int(fresh.Fd()), fd, unix.O_CLOEXEC); err != nil {
-						_ = fresh.Close()
+					duplicate, err := unix.FcntlInt(fresh.Fd(), unix.F_DUPFD_CLOEXEC, fd)
+					_ = fresh.Close()
+					if err != nil {
 						t.Fatal(err)
 					}
-					_ = fresh.Close()
-					successor = os.NewFile(uintptr(fd), "seed-close-successor")
+					successor = os.NewFile(uintptr(duplicate), "seed-close-successor")
+					if duplicate != fd {
+						_ = successor.Close()
+						t.Fatal("old descriptor number was not available; never overwrite an unrelated FD")
+					}
 				}
 				t.Cleanup(func() { _ = successor.Close() })
 				if fault == "panic" {

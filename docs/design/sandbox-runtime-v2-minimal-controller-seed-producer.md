@@ -95,20 +95,47 @@ unchanged source guards, vet and Darwin compile. No privileged test, real VM,
 network listener, process launch or external provider is selected.
 
 The accepted compiling RED `aca68576` had a fixed unavailable constructor and
-owner method scaffolds. Its new focused run passed six control events and failed 29
-test/subtest events, with no skips. The genuine memfd/unchanged-loader control
-passes. Creation fails because no owner is returned; the 23 fault cases and
-three after-step cancellation cases explicitly fail their reached assertions.
-Their later cleanup, wiping and metadata expectations are not reached evidence.
-Pre-canceled/nil/expired input and absent-owner controls pass but do not establish
-successful producer behavior. Existing production paths have no caller of this
+owner method scaffolds. Its new focused run passed six control events and failed
+29 test/subtest events, with no skips. The genuine memfd/unchanged-loader control
+passed. Creation failed because no owner was returned; the 23 fault cases and
+three after-step cancellation cases explicitly failed their reached assertions.
+Their later expectations were not reached evidence. The pre-canceled/nil/expired
+input and absent-owner controls did not establish successful producer behavior.
+Existing production paths have no caller of this
 new leaf. Main independently reproduced that exact RED before approving GREEN.
 
 The initial writer then passed all 56 focused events including reached forward
 tests from `42018504`. An additional reached probe found four callback failures
 before actual `file.Close` could leave an owned FD for a finalizer. Retained file
 pointers prevent finalization from hiding this failure. Error/panic probes after
-actual close deliberately reuse its old number for a successor and pass. This
-intermediate checkpoint is not GREEN: the before-close cases must close through
-the same retained `*os.File`, preserving callback failure and other owned cleanup,
-without calling raw close on a possibly reused number.
+actual close deliberately reused its old number for a successor and passed.
+That intermediate checkpoint `af4a387d` was not GREEN: four before-close cases
+plus their parent failed while three after-close control events passed.
+
+## Implemented leaf checkpoint
+
+The dedicated writer now returns the owner, uses one bounded entropy draw and
+one private derivation, and checks actual reopened metadata and original inode
+after its last callback. Context checks include the actual absolute deadline,
+not only timer-driven `Err`, before allocation and after each callback. The
+entire returned private allocation is wiped even on malformed length/capacity;
+the production derivation remains hardwired to Ed25519. Nil/wrong-size/wrong-seed
+and zero-public derivation results reject before creating an FD.
+
+Every close callback failure/panic now also calls `Close` on the SAME retained
+`*os.File`. A before-close failure therefore disposes the actual owned FD; an
+after-close failure sees that file's consumed state and cannot close a successor
+reusing its number. The original sanitized failure remains visible and remaining
+owned descriptors are still attempted. Returned-owner close stores that failure
+and never invokes the callback again. The successor test uses non-overwriting
+FD duplication and checks the actual reused number stays open. Both original
+`aca68576` RED files remain byte-identical.
+
+Forward coverage reaches wrong UID, a different otherwise-valid sealed object,
+a linked object, malformed derived allocations, two distinct per-owner draws,
+remaining cancellation boundaries and before/after-close error/panic. Ordinary
+UID 1000 exercises the production UID-0 rejection; no root admission is claimed.
+Same-file borrowing remains caller-serialized, not a concurrency or exec-transfer
+API. Final focused/race/unchanged-guard/vet/cross-compile results belong to the
+exact frozen review handoff. No default or provider caller is added, and the
+L7/config/eight-role exec producer remains a separate prerequisite.
