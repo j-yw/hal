@@ -9,11 +9,12 @@ import (
 )
 
 // Bound before start, then immutable to this starter and preparation. Mutable
-// operation/close bookkeeping uses starter.mu; it is not another cancellation
-// authority or the still-unimplemented atomic release R/P/D admission.
+// operation/close bookkeeping and immutable release window use starter.mu;
+// cancellation/release admission authority belongs to the preparation latch.
 type minimalControlGateIO struct {
 	starter    *jailerRecoveryStarter
 	prep       *minimalControlPreparation
+	window     minimalControlReleaseWindow
 	attempted  bool
 	operation  *minimalControlGateOperation
 	closing    bool
@@ -52,11 +53,12 @@ func (starter *jailerRecoveryStarter) beginMinimalGateRelease(gate *minimalContr
 	starter.mu.Lock()
 	defer starter.mu.Unlock()
 	if gate == nil || !gate.matches(starter, gate.prep) || starter.minimalGate != gate || !gate.prep.current() ||
+		!gate.prep.canceled.releaseAdmitted() || gate.window.startedAt.IsZero() ||
 		gate.attempted || gate.closing || !starter.started || starter.closed || starter.released || starter.gate == nil || !starter.observation.pidfdOwned {
 		return nil, errL8RuntimeOwnerInvalid
 	}
-	// A failed/ambiguous send cannot be retried. This local exclusion does not
-	// replace the later atomic canceled/release-admitted latch or retain R/D.
+	// Local I/O exclusion is additional to the original selected admission;
+	// failed/ambiguous I/O never clears that admission or its original window.
 	gate.attempted = true
 	originalFD := int(starter.gate.Fd())
 	var original unix.Stat_t

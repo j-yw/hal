@@ -258,7 +258,7 @@ func (selected *jailerRecoveryRuntime) startChildForPreparation(prep *minimalCon
 		gate := selected.starter.minimalGate
 		release := child.Release
 		child.Release = func() error {
-			if snapshot.current() != nil || snapshot.starter.minimalGate != gate || !gate.matches(snapshot.starter, prep) {
+			if gate.admitRelease(snapshot) != nil {
 				return errL8RuntimeOwnerInvalid
 			}
 			return release()

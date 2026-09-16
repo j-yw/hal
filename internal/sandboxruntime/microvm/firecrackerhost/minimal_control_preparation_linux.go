@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -26,7 +25,7 @@ type minimalControlPreparation struct {
 	cancel          context.CancelFunc
 	preparationCtx  context.Context
 	stopPreparation context.CancelFunc
-	canceled        atomic.Bool
+	canceled        minimalControlPreparationLatch
 	observerDone    chan struct{}
 	ioDone          chan struct{}
 	ioErr           error
@@ -75,7 +74,7 @@ func (prep *minimalControlPreparation) current() bool {
 
 // Never wait for an owner/FSM/starter lock to publish observed cancellation.
 func (prep *minimalControlPreparation) revoke() {
-	prep.canceled.Store(true)
+	prep.canceled.cancel()
 	prep.cancel()
 }
 
