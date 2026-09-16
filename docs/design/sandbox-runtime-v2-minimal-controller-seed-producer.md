@@ -94,12 +94,21 @@ the smallest GREEN and run focused/race tests, original seed/entropy controls,
 unchanged source guards, vet and Darwin compile. No privileged test, real VM,
 network listener, process launch or external provider is selected.
 
-The compiling RED checkpoint has a fixed unavailable constructor and owner
-method scaffolds. Its new focused run passes six control events and fails 29
+The accepted compiling RED `aca68576` had a fixed unavailable constructor and
+owner method scaffolds. Its new focused run passed six control events and failed 29
 test/subtest events, with no skips. The genuine memfd/unchanged-loader control
 passes. Creation fails because no owner is returned; the 23 fault cases and
 three after-step cancellation cases explicitly fail their reached assertions.
 Their later cleanup, wiping and metadata expectations are not reached evidence.
 Pre-canceled/nil/expired input and absent-owner controls pass but do not establish
 successful producer behavior. Existing production paths have no caller of this
-new leaf; GREEN still requires independent RED reproduction and approval.
+new leaf. Main independently reproduced that exact RED before approving GREEN.
+
+The initial writer then passed all 56 focused events including reached forward
+tests from `42018504`. An additional reached probe found four callback failures
+before actual `file.Close` could leave an owned FD for a finalizer. Retained file
+pointers prevent finalization from hiding this failure. Error/panic probes after
+actual close deliberately reuse its old number for a successor and pass. This
+intermediate checkpoint is not GREEN: the before-close cases must close through
+the same retained `*os.File`, preserving callback failure and other owned cleanup,
+without calling raw close on a possibly reused number.

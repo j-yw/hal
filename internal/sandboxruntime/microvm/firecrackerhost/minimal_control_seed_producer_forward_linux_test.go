@@ -249,3 +249,103 @@ func TestMinimalControlSeedProducerForwardCancellationAtRemainingSteps(t *testin
 		})
 	}
 }
+
+func TestMinimalControlSeedProducerForwardBeforeCloseFailureStillDisposes(t *testing.T) {
+	for _, phase := range []string{"partial", "returned owner"} {
+		for _, fault := range []string{"error", "panic"} {
+			t.Run(phase+"/"+fault, func(t *testing.T) {
+				f := newMinimalSeedProducerFixture(t)
+				var retained []*os.File
+				t.Cleanup(func() {
+					for _, file := range retained {
+						_ = file.Close()
+					}
+				})
+				calls := 0
+				f.ops.closeFile = func(file *os.File) error {
+					retained = append(retained, file) // A finalizer cannot hide a missing close.
+					calls++
+					fd := int(file.Fd())
+					if _, owned := f.created[fd]; !owned {
+						t.Fatal("close invoked on unowned descriptor")
+					}
+					f.closes[fd]++
+					if phase == "partial" && calls == 1 || phase == "returned owner" && calls == 2 {
+						if fault == "panic" {
+							panic("private-before-close-panic")
+						}
+						return errors.New("private-before-close-error")
+					}
+					return file.Close()
+				}
+				owner, err := newMinimalControllerSeedWithOps(context.Background(), uint32(os.Geteuid()), f.ops)
+				if phase == "partial" {
+					if owner != nil || err != errL8RuntimeOwnerInvalid || calls != 2 {
+						t.Fatal("partial close fault did not preserve failure and attempt both closes")
+					}
+				} else {
+					if owner == nil || err != nil {
+						t.Fatal("returned-owner before-close fault not reached")
+					}
+					t.Cleanup(func() { _ = owner.close() })
+					if owner.close() != errL8RuntimeOwnerInvalid || owner.close() != errL8RuntimeOwnerInvalid || calls != 2 {
+						t.Fatal("before-close failure escaped or retried callback")
+					}
+				}
+				f.assertWiped()
+				f.assertClosed()
+			})
+		}
+	}
+}
+
+func TestMinimalControlSeedProducerForwardAfterCloseFailurePreservesReusedFD(t *testing.T) {
+	for _, fault := range []string{"error", "panic"} {
+		t.Run(fault, func(t *testing.T) {
+			f := newMinimalSeedProducerFixture(t)
+			original := f.ops.closeFile
+			calls := 0
+			var successor *os.File
+			f.ops.closeFile = func(file *os.File) error {
+				calls++
+				fd := int(file.Fd())
+				if err := original(file); err != nil || calls == 1 {
+					return err
+				}
+				fresh, err := os.Open("/dev/null")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if int(fresh.Fd()) == fd {
+					successor = fresh
+				} else {
+					if err := unix.Dup3(int(fresh.Fd()), fd, unix.O_CLOEXEC); err != nil {
+						_ = fresh.Close()
+						t.Fatal(err)
+					}
+					_ = fresh.Close()
+					successor = os.NewFile(uintptr(fd), "seed-close-successor")
+				}
+				t.Cleanup(func() { _ = successor.Close() })
+				if fault == "panic" {
+					panic("private-after-reuse-close-panic")
+				}
+				return errors.New("private-after-reuse-close-error")
+			}
+			owner, err := newMinimalControllerSeedWithOps(context.Background(), uint32(os.Geteuid()), f.ops)
+			if owner == nil || err != nil {
+				t.Fatal("after-close reuse fault did not reach owner")
+			}
+			t.Cleanup(func() { _ = owner.close() })
+			if owner.close() != errL8RuntimeOwnerInvalid || owner.close() != errL8RuntimeOwnerInvalid || calls != 2 || successor == nil {
+				t.Fatal("after-close fault escaped or retried callback")
+			}
+			if _, err := successor.Stat(); err != nil {
+				t.Fatal("cleanup closed a successor reusing the consumed FD number")
+			}
+			_ = successor.Close()
+			f.assertWiped()
+			f.assertClosed()
+		})
+	}
+}
