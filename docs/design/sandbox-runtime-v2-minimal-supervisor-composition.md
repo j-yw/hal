@@ -325,3 +325,18 @@ Borrowed-key clearing is checked after that join. This rescue is not evidence
 for the missing selected cleanup barrier or loss-containment behavior. No
 source guard is relaxed. Freeze this reached RED for independent reproduction
 and approval before implementing the paired bridge, publication or barrier.
+
+The first checkpoint's handoff test sampled live `stream.Correlation()` after
+`readyDone`, racing the unavailable publisher's immediate return and stream
+Close. Independent review and repetition exposed failures before the intended
+candidate seam; those original logs/commit remain evidence, not reliable reached
+RED. The test-only correction snapshots retained historical manager/process
+handle under `stream.mu` and keeps the actual `authenticated` flag and shared
+verifier/backend counts. It neither samples nor claims retained numeric stream
+generation: `finish` explicitly resets that value. The unchanged authentication
+and `admissionCurrent` paths require a genuine nonzero matched generation, and
+`run` rechecks it immediately before publishing `authenticated=true`. That flag
+plus original source identity therefore proves a past completed transcript, not
+live/current readiness. The original-manager positive's active binding and
+generation assertions stay unchanged. No production hold, history field or
+observer hook is introduced by this correction.

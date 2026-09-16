@@ -59,8 +59,13 @@ func TestMinimalSupervisorJointAuthenticatedWorkHandoff(t *testing.T) {
 		generation := f.owned.selected.coordinator.generation
 		process := generation.process
 		f.owned.selected.coordinator.mu.Unlock()
-		handle, streamGeneration := stream.Correlation()
-		if handle != process.handle || streamGeneration == 0 || f.lifecycle.manager != f.manager || f.owned.selected.lifecycle != f.lifecycle {
+		// The unavailable publisher may already have closed this stream. Retained
+		// source identity plus authenticated proves the past actual transcript,
+		// not current readiness or a retained numeric transport generation.
+		stream.mu.Lock()
+		manager, handle := stream.manager, stream.process.handle
+		stream.mu.Unlock()
+		if manager != f.manager || handle != process.handle || f.lifecycle.manager != f.manager || f.owned.selected.lifecycle != f.lifecycle {
 			t.Fatal("authenticated stream did not retain the original launched process/manager")
 		}
 		// Even the unavailable publisher must not dispose of the cleanup listener.
