@@ -1,5 +1,23 @@
 # Minimal supervisor composition
 
+## Reached candidate-before-commit forward
+
+The original prep mutex first blocks the genuine publisher after authentication
+and pair registration. Holding that pair mutex while releasing prep then permits
+the actual RD2/FD send but blocks post-send local-alias cleanup. After the original
+producer adopts the received candidate, the test reacquires prep and releases the
+pair: the actual first Client Exec reaches its pending slot while the commit gate
+is still open and backend count is zero. No callback, replacement context, clock,
+packet authority or substitute controller supplies this interleaving.
+
+Releasing prep permits the original publication CAS and observer join before
+the real guest work succeeds. Independently, actual lock-free revoke or waiting
+past the unchanged original min(A,D,P) rejects that already-received candidate
+without a backend call. Both ambiguous post-send loss paths consume publication;
+a later publish attempt cannot reissue it. R/D/P and H remain unchanged, every
+work task joins, and original authenticated cleanup Inspect remains serviceable.
+This does not claim a kernel-blocked ancillary-send interruption was reached.
+
 ## Reached backpressure and descriptor forwards
 
 The actual original-owner fixture now reaches a large CopyOut response writer
@@ -25,7 +43,7 @@ remains available. Once joined, later Close calls preserve an actually allocated
 successor at the exact old listener descriptor number and a replacement listener
 entry; a real write/read proves the successor socket remains usable. No descriptor
 is overwritten to create that successor. Earlier REDs and assertions stay intact.
-These forwards do not yet establish pre-commit early-work/send-ambiguity ordering.
+The separate candidate-before-commit test establishes post-send ambiguity above.
 
 ## Compound-close correction checkpoint
 
