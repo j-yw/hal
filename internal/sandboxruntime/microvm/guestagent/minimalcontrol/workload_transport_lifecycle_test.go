@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -202,13 +204,103 @@ func TestWorkloadTransportAuthenticatedSequentialReplies(t *testing.T) {
 		clear(wire)
 		inner := workloadResponse(t, fixture, peer, state, ordinal)
 		var response guestagent.ExecResponse
-		if json.Unmarshal(inner, &response) != nil || response.ExitCode != 7 || response.Stdout.Data != "exact output\n" {
+		if json.Unmarshal(inner, &response) != nil || response.ExitCode != 7 || response.Stdout.Data != base64.StdEncoding.EncodeToString([]byte("exact output\n")) {
 			t.Fatalf("response was not exact existing v1 output: %s", inner)
 		}
 		clear(inner)
 	}
 	if backend.calls.Load() != 50 {
 		t.Fatal("work was duplicated or dropped")
+	}
+}
+
+// A peer can consume an entire response before its writer resumes. This is a
+// real io.Writer ordering, not a delay pretending that an incomplete write won.
+type workloadHeldWrite struct {
+	*testPipe
+	held, release chan struct{}
+	call          int32
+	once          sync.Once
+}
+
+func (stream *workloadHeldWrite) Write(value []byte) (int, error) {
+	n, err := stream.testPipe.Write(value)
+	if stream.writes.Load() == stream.call && n == len(value) && err == nil {
+		stream.once.Do(func() { close(stream.held) })
+		select {
+		case <-stream.release:
+		case <-stream.closed:
+		}
+	}
+	return n, err
+}
+
+func connectHeldWorkloadWriter(t *testing.T, fixture *bootstrapFixture, call int32) (*testPipe, *workloadHeldWrite) {
+	t.Helper()
+	guestRead, controllerWrite := io.Pipe()
+	controllerRead, guestWrite := io.Pipe()
+	guest := &testPipe{reader: guestRead, writer: guestWrite, readStarted: make(chan struct{}, 16), writeStarted: make(chan struct{}, 16), closed: make(chan struct{})}
+	peer := &testPipe{reader: controllerRead, writer: controllerWrite, other: guest}
+	held := &workloadHeldWrite{testPipe: guest, held: make(chan struct{}), release: make(chan struct{}), call: call}
+	fixture.peers = append(fixture.peers, peer)
+	fixture.listener.connections <- held
+	await(t, guest.readStarted, "selected stream first read")
+	return peer, held
+}
+
+func TestWorkloadTransportConsumedReplyBeforeWriterReturns(t *testing.T) {
+	for _, responseCall := range []int32{3, 4} {
+		backend := &workloadTransportBackend{}
+		fixture := newWorkloadTransportFixture(t, backend)
+		peer, held := connectHeldWorkloadWriter(t, fixture, responseCall)
+		state := fixture.authenticate(t, peer, true)
+		defer state.Revoke()
+		fixture.readiness(t, peer, state, fixture.binding)
+		next := uint64(1)
+		if responseCall == 4 {
+			write(t, peer, workloadRecord(t, fixture, state, workloadInnerExec(t), 1))
+			clear(workloadResponse(t, fixture, peer, state, 1))
+			next = 2
+		}
+		await(t, held.held, "full response consumed before held writer return")
+		write(t, peer, workloadRecord(t, fixture, state, workloadInnerExec(t), next))
+		if backend.calls.Load() != int32(next-1) {
+			t.Fatal("next backend ran before previous writer joined")
+		}
+		close(held.release)
+		clear(workloadResponse(t, fixture, peer, state, next))
+		if backend.calls.Load() != int32(next) {
+			t.Fatal("valid sequential request was lost or duplicated")
+		}
+	}
+}
+
+func TestWorkloadTransportPendingWriterSlotIsBoundedAndCanceled(t *testing.T) {
+	for _, loss := range []string{"third-frame", "eof", "owner"} {
+		t.Run(loss, func(t *testing.T) {
+			backend := &workloadTransportBackend{}
+			fixture := newWorkloadTransportFixture(t, backend)
+			peer, held := connectHeldWorkloadWriter(t, fixture, 4)
+			state := fixture.authenticate(t, peer, true)
+			defer state.Revoke()
+			fixture.readiness(t, peer, state, fixture.binding)
+			write(t, peer, workloadRecord(t, fixture, state, workloadInnerExec(t), 1))
+			clear(workloadResponse(t, fixture, peer, state, 1))
+			await(t, held.held, "completed response with held return")
+			write(t, peer, workloadRecord(t, fixture, state, workloadInnerExec(t), 2))
+			switch loss {
+			case "third-frame":
+				write(t, peer, workloadRecord(t, fixture, state, workloadInnerExec(t), 3))
+			case "eof":
+				_ = peer.writer.Close()
+			case "owner":
+				close(fixture.owner)
+			}
+			fixture.wait(t)
+			if backend.calls.Load() != 1 {
+				t.Fatal("pending request dispatched after transport loss")
+			}
+		})
 	}
 }
 
