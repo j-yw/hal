@@ -93,3 +93,13 @@ Stop at frozen compiling RED for independent reproduction. Only then implement
 the smallest GREEN and run focused/race tests, original seed/entropy controls,
 unchanged source guards, vet and Darwin compile. No privileged test, real VM,
 network listener, process launch or external provider is selected.
+
+The compiling RED checkpoint has a fixed unavailable constructor and owner
+method scaffolds. Its new focused run passes six control events and fails 29
+test/subtest events, with no skips. The genuine memfd/unchanged-loader control
+passes. Creation fails because no owner is returned; the 23 fault cases and
+three after-step cancellation cases explicitly fail their reached assertions.
+Their later cleanup, wiping and metadata expectations are not reached evidence.
+Pre-canceled/nil/expired input and absent-owner controls pass but do not establish
+successful producer behavior. Existing production paths have no caller of this
+new leaf; GREEN still requires independent RED reproduction and approval.
