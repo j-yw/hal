@@ -216,10 +216,16 @@ func readMinimalWorkloadResponse(reader io.Reader, first byte) ([]byte, error) {
 		return nil, errMinimalControlController
 	}
 	wire := make([]byte, len(header)+int(parsed.CiphertextLength))
+	complete := false
+	defer func() {
+		if !complete {
+			clear(wire)
+		}
+	}()
 	copy(wire, header[:])
 	if _, err := io.ReadFull(reader, wire[len(header):]); err != nil {
-		clear(wire)
 		return nil, errMinimalControlController
 	}
+	complete = true
 	return wire, nil
 }
