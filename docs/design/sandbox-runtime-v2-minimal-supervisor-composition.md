@@ -1,5 +1,15 @@
 # Minimal supervisor composition
 
+## Reached early peer-input rejection
+
+An additional forward holds a genuine first Exec inside its backend, before
+response writing. It sends a complete peer frame with the original valid request,
+session/binding and next ordinal. The original reader rejects this premature
+input, interrupts and joins the first operation and guest, and never advances
+admission or runs another backend call. Authenticated cleanup Inspect remains
+available. This is peer-protocol coverage, not a second admitted Client call;
+existing busy-call behavior is unchanged. No production code changes were needed.
+
 ## Reached candidate-before-commit forward
 
 The original prep mutex first blocks the genuine publisher after authentication
