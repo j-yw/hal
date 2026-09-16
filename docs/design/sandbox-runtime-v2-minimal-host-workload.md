@@ -39,3 +39,23 @@ Verification: focused host tests and race checks, existing controller/transport
 regressions, joint guest/host tests, unchanged command guards, vet and Darwin
 compilation. Source stays unintegrated until the original guest transport RED
 and the host/guest exchanges pass without exclusions.
+
+## Joint injected exchange checkpoint
+
+The host adapter now consumes guest transport `4c62975f` in its isolated test
+branch. The real Client, retained Unix bridge, cryptographic session, selected
+guest transport and actual Server.Serve exchange 50 sequential execs and 512 KiB
+copy-in/out. Exact command plans, output bytes, digest/publication responses,
+one connection and a fresh injected inspection before each operation are checked.
+Caller cancellation, either owner loss, host Close and a concurrent busy request
+are exercised while an actual injected backend call is blocked. No test release
+rescues that backend: cancellation must reach it and both owners must join.
+Corrupted ciphertext/header and truncated responses retire the original session
+without a result, reconnect or repeated backend execution.
+
+An initial joint test incorrectly expected the outer scope to infer the last
+operation failure despite its callback returning nil. The existing scope reports
+authentication and callback success; the corrected consumer returns its actual
+operation error. No production behavior or operation/cleanup assertion changed.
+The standalone first RED and partial-reader panic regression remain unchanged.
+Preparation/guest inspection and command execution remain injected, not live.
