@@ -28,6 +28,14 @@ executable, provider, credential path, native process or default lane is enabled
 
 ## Joint fixture private-directory prerequisite
 
+Whole-owner Close forward coverage additionally requires the new joint fixture's
+rescue to recognize when that original owner already disposed its listener.
+The fixture now captures both FD and pathname-entry identities before bootstrap;
+rescue checks the same still-owned FD before shutdown/close and the same entry
+before unlink. It never second-closes the raw number or removes a successor after
+whole Close has joined. This test-only ownership correction is separate from any
+assertion that the production compound I/O barrier orders whole-owner cleanup.
+
 The combined work receiver exposed another below-root fixture prerequisite:
 the inherited testing record directory was mode 0755, whereas the unchanged
 concrete constructor requires 0700. This early directory rejection is not a

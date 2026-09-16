@@ -108,10 +108,28 @@ func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisor
 			t.Fatal("ordinary cleanup listener", err)
 		}
 		original.owned.listenerFD, original.owned.listenerKey = fd, key
-		defer func() {
+		var listenerIdentity, listenerEntry unix.Stat_t
+		if unix.Fstat(fd, &listenerIdentity) != nil || unix.Fstatat(original.owned.store.directoryFD, key, &listenerEntry, unix.AT_SYMLINK_NOFOLLOW) != nil {
 			_ = unix.Close(fd)
-			_ = unix.Unlinkat(original.owned.store.directoryFD, key, 0)
-			original.owned.listenerFD, original.owned.listenerKey = -1, ""
+			t.Fatal("ordinary cleanup listener identity")
+		}
+		listenerCurrent := func() bool {
+			var current unix.Stat_t
+			return original.owned.listenerFD == fd && unix.Fstat(fd, &current) == nil &&
+				current.Dev == listenerIdentity.Dev && current.Ino == listenerIdentity.Ino
+		}
+		defer func() {
+			// Whole owned.close may already have disposed this listener. Never
+			// close its raw successor or remove a replacement pathname entry.
+			if listenerCurrent() {
+				_ = unix.Close(fd)
+				var current unix.Stat_t
+				if unix.Fstatat(original.owned.store.directoryFD, key, &current, unix.AT_SYMLINK_NOFOLLOW) == nil &&
+					current.Dev == listenerEntry.Dev && current.Ino == listenerEntry.Ino {
+					_ = unix.Unlinkat(original.owned.store.directoryFD, key, 0)
+				}
+				original.owned.listenerFD, original.owned.listenerKey = -1, ""
+			}
 		}()
 		parent, err := unix.FcntlInt(uintptr(original.peer), unix.F_DUPFD_CLOEXEC, 10)
 		if err != nil {
@@ -143,7 +161,9 @@ func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisor
 			if listener := f.listener.Load(); listener != nil {
 				_ = listener.Close()
 			}
-			_ = unix.Shutdown(fd, unix.SHUT_RDWR)
+			if listenerCurrent() {
+				_ = unix.Shutdown(fd, unix.SHUT_RDWR)
+			}
 			if started {
 				minimalJointAwait(t, f.done, "explicit serving rescue")
 				serving := f.serving(t)
