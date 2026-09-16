@@ -34,6 +34,11 @@ type minimalControlController struct {
 	retired   bool
 	// Historical local transcript completion, not retained readiness authority.
 	authenticated bool
+	workload      bool // Fixed by the explicit constructor before run starts.
+	workState     *session.State
+	pendingWork   *minimalControlWork
+	workOrdinal   uint64
+	workWriters   sync.WaitGroup
 }
 
 type minimalControlReadiness struct {
@@ -56,6 +61,10 @@ type minimalControlControllerPins struct {
 // Neither a waiter nor the consume callback can transfer the key or controller
 // lifetime out of this scope. Callback panics still close/join and clear the key.
 func withMinimalControlController(ctx context.Context, transport *minimalControlTransport, admission *minimalControlSupervisorAdmission, deadline time.Time, consume func(*minimalControlController) error) error {
+	return withMinimalControlControllerMode(ctx, transport, admission, deadline, false, consume)
+}
+
+func withMinimalControlControllerMode(ctx context.Context, transport *minimalControlTransport, admission *minimalControlSupervisorAdmission, deadline time.Time, workload bool, consume func(*minimalControlController) error) error {
 	if admission != nil {
 		defer clear(admission.controllerKey)
 	}
@@ -65,7 +74,7 @@ func withMinimalControlController(ctx context.Context, transport *minimalControl
 	}
 	owned, cancel := context.WithCancel(ctx)
 	c := &minimalControlController{ctx: owned, cancel: cancel, transport: transport,
-		readyDone: make(chan struct{}), loss: make(chan struct{}), done: make(chan struct{})}
+		readyDone: make(chan struct{}), loss: make(chan struct{}), done: make(chan struct{}), workload: workload}
 	defer c.Close()
 	go c.run(pins, admission.controllerKey, deadline)
 	if consume(c) != nil {
@@ -202,6 +211,7 @@ func (c *minimalControlController) run(pins minimalControlControllerPins, key ed
 		if idleDone != nil {
 			<-idleDone
 		}
+		c.workWriters.Wait()
 		if state != nil {
 			state.Revoke()
 		}
@@ -235,11 +245,19 @@ func (c *minimalControlController) run(pins minimalControlControllerPins, key ed
 	if stream.SetDeadline(hard) != nil {
 		return
 	}
+	c.mu.Lock()
+	c.workState = state
+	c.mu.Unlock()
 	idleDone = make(chan struct{})
 	armed := make(chan struct{})
 	go func() {
 		defer close(idleDone)
 		defer c.retire()
+		if c.workload {
+			close(armed)
+			c.readWorkloadResponses(stream, state, ready)
+			return
+		}
 		var unexpected [1]byte
 		defer clear(unexpected[:])
 		close(armed)
