@@ -101,3 +101,27 @@ under the race detector. These scoped checks do not hide the separately run
 original authenticated-transport RED: it still fails three times as expected,
 after authentication/readiness with zero backend exec calls. No branch-wide
 green, usable workload transport or live Linux acceptance is claimed.
+
+## Integration diagnostic source-lock follow-up
+
+The full default suite at `33248091` rejected the accepted shared-body source:
+the legacy D7 workload lock still pinned the original `isolation_linux.go`.
+Refresh that exact measured L4 file digest in both the workload lock and the
+generator's exact-value table. Build the generator twice with the unchanged
+pinned Go recipe, require byte-identical binaries, and retain their measured
+digest. Regenerate only the existing HL8Q/source-lock outputs and the downstream
+native-role artifact's embedded policy identity through their existing tools.
+The syscall catalog, role rules, runtime/L7 pins, source-set membership, native
+source/callsites, compiled filter and D4 installation inventory stay unchanged.
+
+```sh
+tools/microvm/l8/policy/verify-artifact.sh
+go run ./tools/microvm/l8/role-bootstrap/generate -check
+go test -race -count=3 ./tools/microvm/l8/policy/generate ./tools/microvm/l8/role-bootstrap/generate ./internal/sandboxruntime/microvm/guestagent/syscallpolicy
+```
+
+This refresh preserves the original deterministic-output and fail-closed HL8E
+tests, including `TestL8D7PointerTakenPID1Report`. Temporary default diagnostic
+fixture compilation/execution is not a native image build or VM acceptance.
+No accepted verifier implementation, source guard, prepared image, syscall
+policy behavior, HL8E issuance, runtime wiring or strict-security claim changes.
