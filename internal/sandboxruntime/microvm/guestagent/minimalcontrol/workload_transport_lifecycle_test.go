@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -30,6 +32,8 @@ func (workloadTransportVerifier) VerifyWorkloadIsolation(context.Context) (serve
 type workloadTransportBackend struct {
 	ready         func(context.Context) error
 	exec          func(context.Context, server.ExecPlan) (server.ExecResult, error)
+	copyIn        func(context.Context, server.CopyInPlan) (server.CopyResult, error)
+	copyOut       func(context.Context, server.CopyOutPlan) (server.CopyResult, error)
 	calls, closes atomic.Int32
 }
 
@@ -46,10 +50,16 @@ func (backend *workloadTransportBackend) Exec(ctx context.Context, plan server.E
 	}
 	return server.ExecResult{Stdout: []byte("exact output\n"), ExitCode: 7}, nil
 }
-func (*workloadTransportBackend) CopyIn(context.Context, server.CopyInPlan) (server.CopyResult, error) {
+func (backend *workloadTransportBackend) CopyIn(ctx context.Context, plan server.CopyInPlan) (server.CopyResult, error) {
+	if backend.copyIn != nil {
+		return backend.copyIn(ctx, plan)
+	}
 	return server.CopyResult{}, errors.New("unused copy")
 }
-func (*workloadTransportBackend) CopyOut(context.Context, server.CopyOutPlan) (server.CopyResult, error) {
+func (backend *workloadTransportBackend) CopyOut(ctx context.Context, plan server.CopyOutPlan) (server.CopyResult, error) {
+	if backend.copyOut != nil {
+		return backend.copyOut(ctx, plan)
+	}
 	return server.CopyResult{}, errors.New("unused copy")
 }
 func (backend *workloadTransportBackend) Close(context.Context) error {
@@ -57,7 +67,7 @@ func (backend *workloadTransportBackend) Close(context.Context) error {
 	return nil
 }
 
-func newWorkloadTransportFixture(t *testing.T, backend *workloadTransportBackend) *bootstrapFixture {
+func newWorkloadTransportFixture(t *testing.T, backend *workloadTransportBackend, change ...func(*server.Options)) *bootstrapFixture {
 	t.Helper()
 	common := testOptions()
 	owner := make(chan struct{})
@@ -66,8 +76,12 @@ func newWorkloadTransportFixture(t *testing.T, backend *workloadTransportBackend
 	if err != nil {
 		t.Fatal(err)
 	}
-	enclosing, err := server.New(server.Options{Transport: transport, Backend: backend, WorkloadIsolationVerifier: workloadTransportVerifier{},
-		RequireIsolationProofBeforeWork: true, RequireNetworkProofBeforeWork: true})
+	options := server.Options{Transport: transport, Backend: backend, WorkloadIsolationVerifier: workloadTransportVerifier{},
+		RequireIsolationProofBeforeWork: true, RequireNetworkProofBeforeWork: true}
+	for _, mutate := range change {
+		mutate(&options)
+	}
+	enclosing, err := server.New(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,5 +440,132 @@ func TestWorkloadTransportInvalidServeConsumesOriginalOneShot(t *testing.T) {
 	}
 	if err := transport.Serve(context.Background(), limits, nil); err != ErrUsed {
 		t.Fatal("invalid first Serve permitted reuse")
+	}
+}
+
+func TestWorkloadTransportMaximumCopyUsesExistingV1BytesAndDigest(t *testing.T) {
+	data := bytes.Repeat([]byte{0, 1, 127, 255}, int(server.DefaultCopyBytes)/4)
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+	var copied atomic.Int32
+	backend := &workloadTransportBackend{
+		copyIn: func(_ context.Context, plan server.CopyInPlan) (server.CopyResult, error) {
+			if plan.DestinationPath != "/workspace/payload.bin" || plan.MaxBytes != server.DefaultCopyBytes || plan.Digest != digest || !bytes.Equal(plan.Data, data) {
+				return server.CopyResult{}, errors.New("copy plan differs")
+			}
+			copied.Add(1)
+			return server.CopyResult{Published: true, SizeBytes: int64(len(data)), Digest: digest}, nil
+		},
+		copyOut: func(_ context.Context, plan server.CopyOutPlan) (server.CopyResult, error) {
+			if plan.SourcePath != "/workspace/payload.bin" || plan.MaxBytes != server.DefaultCopyBytes {
+				return server.CopyResult{}, errors.New("copy plan differs")
+			}
+			copied.Add(1)
+			return server.CopyResult{Data: data, SizeBytes: int64(len(data)), Digest: digest}, nil
+		},
+	}
+	fixture := newWorkloadTransportFixture(t, backend)
+	peer := fixture.connect(t)
+	state := fixture.authenticate(t, peer, true)
+	defer state.Revoke()
+	fixture.readiness(t, peer, state, fixture.binding)
+	request, err := json.Marshal(guestagent.CopyInRequest{ProtocolVersion: guestagent.ProtocolVersionV1, Operation: guestagent.OperationCopyIn,
+		DestinationPath: "/workspace/payload.bin", Payload: guestagent.PayloadMetadata{Data: base64.StdEncoding.EncodeToString(data), Encoding: guestagent.PayloadEncodingBase64,
+			SizeBytes: int64(len(data)), MaxBytes: server.DefaultCopyBytes, Digest: digest}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, peer, workloadRecord(t, fixture, state, request, 1))
+	response := workloadResponse(t, fixture, peer, state, 1)
+	var in guestagent.CopyInResponse
+	if json.Unmarshal(response, &in) != nil || in.Error != nil || in.Written.Digest != digest || in.Written.SizeBytes != int64(len(data)) {
+		t.Fatal("copy publication response differs")
+	}
+	clear(response)
+	request, err = json.Marshal(guestagent.CopyOutRequest{ProtocolVersion: guestagent.ProtocolVersionV1, Operation: guestagent.OperationCopyOut,
+		SourcePath: "/workspace/payload.bin", Payload: guestagent.PayloadMetadata{MaxBytes: server.DefaultCopyBytes, Encoding: guestagent.PayloadEncodingBase64}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, peer, workloadRecord(t, fixture, state, request, 2))
+	response = workloadResponse(t, fixture, peer, state, 2)
+	var out guestagent.CopyOutResponse
+	if json.Unmarshal(response, &out) != nil || out.Error != nil || out.Payload.Digest != digest || out.Payload.Data != base64.StdEncoding.EncodeToString(data) {
+		t.Fatal("copy-out response differs")
+	}
+	clear(response)
+	if copied.Load() != 2 || backend.calls.Load() != 0 || !bytes.Equal(data, bytes.Repeat([]byte{0, 1, 127, 255}, len(data)/4)) {
+		t.Fatal("copy output mutated or dispatched unrelated backend")
+	}
+}
+
+func TestWorkloadTransportRejectsInnerReadinessAndMalformedRequest(t *testing.T) {
+	backend := &workloadTransportBackend{}
+	fixture := newWorkloadTransportFixture(t, backend)
+	peer := fixture.connect(t)
+	state := fixture.authenticate(t, peer, true)
+	defer state.Revoke()
+	fixture.readiness(t, peer, state, fixture.binding)
+	for index, inner := range []string{`{"protocolVersion":"guest-agent-v1","operation":"readiness"}`, `{"operation":`, `null`} {
+		ordinal := uint64(index + 1)
+		write(t, peer, workloadRecord(t, fixture, state, []byte(inner), ordinal))
+		response := workloadResponse(t, fixture, peer, state, ordinal)
+		if !json.Valid(response) || !bytes.Contains(response, []byte(`"error"`)) {
+			t.Fatal("invalid inner request was not rejected by common parser")
+		}
+		clear(response)
+	}
+	if backend.calls.Load() != 0 {
+		t.Fatal("inner protocol rejection executed work")
+	}
+}
+
+func TestWorkloadTransportRequestHonorsSmallerEnclosingLimit(t *testing.T) {
+	backend := &workloadTransportBackend{}
+	fixture := newWorkloadTransportFixture(t, backend, func(options *server.Options) { options.MaxRequestBytes = 128 })
+	peer := fixture.connect(t)
+	state := fixture.authenticate(t, peer, true)
+	defer state.Revoke()
+	fixture.readiness(t, peer, state, fixture.binding)
+	inner := workloadInnerExec(t)
+	if len(inner) <= 128 {
+		t.Fatal("request fixture does not cross selected lower bound")
+	}
+	write(t, peer, workloadRecord(t, fixture, state, inner, 1))
+	assertClosed(t, peer)
+	fixture.wait(t)
+	if backend.calls.Load() != 0 {
+		t.Fatal("request enlarged enclosing limit")
+	}
+}
+
+func TestWorkloadTransportPanicRetiresWithoutRawPayload(t *testing.T) {
+	for _, stage := range []string{"prepare", "exec"} {
+		t.Run(stage, func(t *testing.T) {
+			backend := &workloadTransportBackend{}
+			if stage == "prepare" {
+				backend.ready = func(context.Context) error { panic("private-panic-canary") }
+			} else {
+				backend.exec = func(context.Context, server.ExecPlan) (server.ExecResult, error) { panic("private-panic-canary") }
+			}
+			fixture := newWorkloadTransportFixture(t, backend)
+			peer := fixture.connect(t)
+			state := fixture.authenticate(t, peer, true)
+			defer state.Revoke()
+			if stage == "prepare" {
+				wire, err := state.SealApplication(session.FrameTypeControlRequest, testRequest(t, fixture.binding, state.SessionID()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				write(t, peer, wire)
+			} else {
+				fixture.readiness(t, peer, state, fixture.binding)
+				write(t, peer, workloadRecord(t, fixture, state, workloadInnerExec(t), 1))
+			}
+			assertClosed(t, peer)
+			err := fixture.wait(t)
+			if err == nil || bytes.Contains([]byte(err.Error()), []byte("private-panic-canary")) {
+				t.Fatal("panic became success or leaked payload")
+			}
+		})
 	}
 }

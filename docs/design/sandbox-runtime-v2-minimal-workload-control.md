@@ -2,11 +2,12 @@
 
 ## Status and source boundary
 
-DESIGN ONLY, based on accepted `54195a3c711ec49449b45773fd29bcfd572e7987`
+Initial design based on accepted `54195a3c711ec49449b45773fd29bcfd572e7987`
 and the supervisor's `minimal-control-audit.md` update of 2026-09-07 14:18 UTC.
-This proposes coordinated host/guest exec and workspace copy on the original
-authenticated control connection. It adds no implementation, test scaffolds,
-image changes, protocol capability, credential authority or strict selection.
+This specifies coordinated host/guest exec and workspace copy on the original
+authenticated control connection. Implementation checkpoints below identify the
+completed injected boundaries; no image, credential or strict selection follows
+from those checkpoints alone.
 The Linux completion architecture and L8 minimal contract reset remain controlling.
 
 Source references below are relative to this revision; `guest/` means
@@ -164,10 +165,22 @@ Lock envelope sizes with independent golden bytes and max/max+1 tests.
 After Finished, the guest's one continuous reader validates readiness and then
 operations. It never synchronously waits for Backend.Ready, local inspection,
 Exec, Copy or a response write. A single tracked task performs preparation,
-HandleWorkload and the bounded response write, with no work queue. An incoming
-record while a task is occupied is a protocol violation: cancel/retire, do not
-spawn another handler or hold a queued command. A reader may retain at most one
-bounded in-progress frame in addition to that task's bounded buffers.
+HandleWorkload and the bounded response write. The initial no-pending-record
+rule is superseded by the response-writing refinement below, which handles an
+actual full-duplex stream ordering without a backend work queue.
+
+While preparation, inspection or a backend call is running, an incoming record
+is a protocol violation and retires the session. During response-writing only,
+one fully authenticated, exact-next-ordinal bounded request may be retained:
+the peer can consume the entire prior response before the guest Write returns.
+That request cannot run until the previous write has returned. The same task
+then consumes it serially; there is never a second active handler or writer.
+A second pending request retires the session. The sole reader continues reading
+so EOF, malformed/truncated input and owner loss still cancel a blocked writer.
+The memory bound is one active task's bounded buffers, one pending decoded
+payload (at most 1 MiB), and one bounded in-progress frame. This is not a general
+queue, pipeline, retry or resubmission facility. The refinement is justified by
+the deterministic held-Write-return test described in the guest checkpoint.
 
 Before OpenApplication cache sessionID, binding digest and expected ordinal.
 Its validator performs only bounded envelope validation/copy and frame-kind
@@ -414,3 +427,55 @@ claims a real process/network inspection. The workload transport scaffold and
 its original authenticated-exec RED are unchanged and still fail as expected.
 All transport, host reader, guest command, credentials, prepared workspace and
 image/live/terminal acceptance dependencies listed above remain incomplete.
+
+## Authenticated injected guest transport checkpoint
+
+The selected NewWorkloadTransport now enters the existing one-shot bootstrap
+owner with the actual enclosing WorkloadHandler. Invalid handler/limits consume
+that same one-shot and close the listener; copied adapters cannot reacquire it.
+New/NewBootstrap stay readiness-only. Shared bootstrap changes are private
+dispatch parameters, not new listener/session/key creation or a default switch.
+Both proof flags and the local verifier remain required by the selected server.
+The original authenticated-exec RED changes only its fixture constructor to
+select those accepted options; its wire/backend/readiness assertions remain.
+
+The reader validates original readiness, starts tracked preparation, then keeps
+reading during preparation, inspection, work and output. Preparation must pass
+before canonical readiness is emitted within the original handshake budget.
+The session's original hard-expiry timer is retained through all work, and the
+owner context can only narrow it. No operation creates a new session lifetime.
+Task failure/panic is sanitized, closes I/O, cancels, and joins before bootstrap
+revokes the session and returns to the enclosing server's cleanup owner.
+
+The selected writer seals an owned record under the existing cryptographic
+state lock, then performs I/O after releasing that lock. Validators use only
+the immutable binding, cached session ID, exact next ordinal and bounded pure
+codec; no handler/backend/state getter or I/O runs in the state validator.
+The original 8 KiB readiness reader is unchanged. Selected operation headers
+are checked before allocating at most 1,398,469 wire bytes. The enclosing
+request/response limits may narrow, but never enlarge, the fixed 1 MiB inner
+ceiling. Owned mutable wire/plaintext/pending buffers are cleared after their
+consumers finish; this is not a credential-wiping claim for v1 strings.
+
+The original transport RED and added lifecycle RED reproduced missing dispatch
+and preparation. A subsequent deterministic test held the return of a guest
+Write after the peer had consumed the full response; the original strict busy
+rule rejected the legitimate next request in three race runs. This establishes
+the need for the explicitly approved response-writing-only pending slot. Tests
+also hold an actual backend call, reject a second request during that call,
+reject a third frame while the writing slot is occupied, and prove EOF/owner
+loss joins the held writer without dispatching the pending request.
+
+Injected cryptographic tests cover ordered exec responses, 512 KiB copy-in/out
+through the unchanged v1 parser/digest/publication behavior, smaller configured
+request limits, frame/binding/session/ordinal rejection, oversized headers,
+malformed/readiness inner requests, blocked response writes, and sanitized
+preparation/backend panics. Preparation and blocked Exec are canceled by actual
+stream EOF, owner loss, caller cancellation and the retained deadline, without
+test rescue releasing the backend first. Fake verifier observations and backend
+plans prove these component boundaries only, not real process/network proof.
+
+Host transport, concrete Linux verifier and command selection are separate
+work. Guest entrypoint, prepared workspace/mount, credentials, runtime producer,
+image rebuild, live VM acceptance and strict/terminal claims remain unenabled
+by this checkpoint. A transport task join is still not guest-process absence.

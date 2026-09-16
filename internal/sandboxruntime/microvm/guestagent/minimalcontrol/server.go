@@ -117,11 +117,15 @@ func validServerDependencies(options Options) bool {
 func (server *Server) Done() <-chan struct{} { return server.done }
 
 func (server *Server) Serve(parent context.Context) (result error) {
+	return server.serve(parent, nil)
+}
+
+func (server *Server) serve(parent context.Context, workload *workloadConnection) (result error) {
 	if server == nil || !server.used.CompareAndSwap(false, true) {
 		return ErrUsed
 	}
 	defer close(server.done)
-	if parent == nil {
+	if parent == nil || workload != nil && !workload.valid() {
 		_ = server.options.Listener.Close()
 		return ErrInvalid
 	}
@@ -191,7 +195,7 @@ func (server *Server) Serve(parent context.Context) (result error) {
 		claimed, err := server.connection(ctx, stream, attempt, func() {
 			bootTimer.Stop()
 			closeAccept()
-		})
+		}, workload)
 		attempt.Fail()
 		_ = stream.Close()
 		mu.Lock()
@@ -207,7 +211,7 @@ func (server *Server) Serve(parent context.Context) (result error) {
 	return session.ErrPreAuthExhausted
 }
 
-func (server *Server) connection(parent context.Context, stream *ownedStream, attempt *session.Attempt, ready func()) (claimed bool, result error) {
+func (server *Server) connection(parent context.Context, stream *ownedStream, attempt *session.Attempt, ready func(), workload *workloadConnection) (claimed bool, result error) {
 	ctx, cancel := context.WithCancelCause(parent)
 	closed := make(chan struct{})
 	stopWatch := context.AfterFunc(ctx, func() { _ = stream.Close(); close(closed) })
@@ -293,6 +297,9 @@ func (server *Server) connection(parent context.Context, stream *ownedStream, at
 	session.DestroyBytes(plaintext)
 	if err != nil || ctx.Err() != nil || !clock.Now().Before(deadline) {
 		return true, ErrInvalid
+	}
+	if workload != nil {
+		return true, workload.serve(ctx, stream, state, binding, request, clock, deadline, timer, ready)
 	}
 	response, err := encodeReadiness(request, state.SessionID())
 	if err != nil || state.WriteApplication(stream, session.FrameTypeControlResponse, response) != nil || !timer.Stop() || ctx.Err() != nil || !clock.Now().Before(deadline) {
