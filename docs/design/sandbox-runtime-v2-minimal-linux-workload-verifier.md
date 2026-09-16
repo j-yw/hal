@@ -73,3 +73,31 @@ go test -p 2 -race -count=3 -timeout=180s -json ./internal/sandboxruntime/microv
 The nil/zero selected verifier control fails closed. Fresh-inspection mutation
 checks after the initial success are specified but cannot yet be reached. These
 results do not claim the shared-body GREEN or the pending transport is usable.
+
+## Shared-body implementation
+
+The selected constructor now requires the network dependency and retains the
+same concrete inspector as the legacy constructor. The two wrappers delegate
+to one private inspection body, byte-identical to the original body at the
+base above. The selected wrapper exposes no legacy request method. All old
+tests and the 291-line Linux RED remain unchanged.
+
+A forward test runs the concrete inspector against explicit fake boundaries
+inside actual selected `Server.Serve`. It proves the final-callback canceled
+snapshot cannot authorize exec, a subsequent invalid network observation still
+rejects work, and a later fresh valid observation can recover the original
+permit. The real serving lifetime joins and closes its fake backend exactly
+once. Another test checks that neither constructor inspects an explicit process
+or network boundary.
+
+The unchanged fake-only command guard rejected the new `!linux` test tag.
+With supervisor approval, its identical test body moved to Darwin and Windows
+filename-selected tests. No assertion, production behavior or guard changed.
+Cross-compiling these tests does not execute unsupported-platform behavior.
+
+Full server race testing (three repetitions) passes 1,314 test/subtest events,
+with no failures or skips. The unchanged focused command guards pass 75 events
+under the race detector. These scoped checks do not hide the separately run
+original authenticated-transport RED: it still fails three times as expected,
+after authentication/readiness with zero backend exec calls. No branch-wide
+green, usable workload transport or live Linux acceptance is claimed.

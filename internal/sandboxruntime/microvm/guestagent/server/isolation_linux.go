@@ -29,26 +29,40 @@ type linuxWorkloadIsolationVerifier struct {
 	verifier *linuxIsolationVerifier
 }
 
-// NewLinuxWorkloadIsolationVerifier is unavailable until the local inspection
-// body is shared without constructing a legacy proof request.
-func NewLinuxWorkloadIsolationVerifier(LinuxIsolationVerifierOptions) (WorkloadIsolationVerifier, error) {
-	return &linuxWorkloadIsolationVerifier{}, nil
+// NewLinuxWorkloadIsolationVerifier returns a no-request verifier for the current
+// process and requires a network verifier. Construction does not inspect either.
+func NewLinuxWorkloadIsolationVerifier(options LinuxIsolationVerifierOptions) (WorkloadIsolationVerifier, error) {
+	if !configuredDependency(options.NetworkVerifier) {
+		return nil, errLinuxIsolationUnverified
+	}
+	return &linuxWorkloadIsolationVerifier{verifier: newLinuxIsolationVerifier(options)}, nil
 }
 
-func (*linuxWorkloadIsolationVerifier) VerifyWorkloadIsolation(context.Context) (IsolationProofResult, error) {
-	return IsolationProofResult{}, errLinuxIsolationUnverified
+func (verifier *linuxWorkloadIsolationVerifier) VerifyWorkloadIsolation(ctx context.Context) (IsolationProofResult, error) {
+	if verifier == nil {
+		return IsolationProofResult{}, errLinuxIsolationUnverified
+	}
+	return verifier.verifier.verifyIsolation(ctx)
 }
 
 // NewLinuxIsolationVerifier returns a verifier for the exact current process.
 func NewLinuxIsolationVerifier(options LinuxIsolationVerifierOptions) (IsolationVerifier, error) {
+	return newLinuxIsolationVerifier(options), nil
+}
+
+func newLinuxIsolationVerifier(options LinuxIsolationVerifierOptions) *linuxIsolationVerifier {
 	process := options.ProcessBoundary
 	if !configuredDependency(process) {
 		process = liveLinuxProcessIsolationBoundary{}
 	}
-	return &linuxIsolationVerifier{process: process, network: options.NetworkVerifier}, nil
+	return &linuxIsolationVerifier{process: process, network: options.NetworkVerifier}
 }
 
 func (verifier *linuxIsolationVerifier) VerifyIsolation(ctx context.Context, _ guestagent.IsolationProofRequest) (IsolationProofResult, error) {
+	return verifier.verifyIsolation(ctx)
+}
+
+func (verifier *linuxIsolationVerifier) verifyIsolation(ctx context.Context) (IsolationProofResult, error) {
 	if verifier == nil || !configuredDependency(verifier.process) {
 		return IsolationProofResult{}, errLinuxIsolationUnverified
 	}
