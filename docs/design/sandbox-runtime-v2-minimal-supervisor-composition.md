@@ -271,3 +271,57 @@ Unix tests are component evidence; a real exec-boundary handoff and prepared
 Linux tests remain later gates. Freeze reached RED before paired bridge and
 supervisor-composition GREEN; no executable/default activation, native image,
 credential delivery, live result or feature-completion claim follows here.
+
+## Compiling joint RED checkpoint
+
+The private `owned.serveMinimalControlSupervisor(owner, admission)` entry takes
+the same original concrete FSM, not an options/controller factory or a new
+runtime constructor. It validates the retained store/genesis/UID/preparation,
+binds one serving object, and reuses the existing bootstrap. After actual
+revision 2 it captures the same selected session, lifecycle, launched process,
+manager and completed original R/D window under their bookkeeping locks, then
+runs the existing workload controller outside those locks. Its internal
+readiness callback reaches only the unavailable `publishWork` stub.
+
+The main task remains the existing cleanup accept/serve loop even when that
+controller task returns. Selected cleanup dispatch supplies the retained
+`closeIO` stub to the existing authenticated cleanup preflight; legacy nil
+serving still calls its unchanged handler. `closeIO` rejects rather than
+pretending I/O has joined. No loss-containment task, successful-publication/P
+transition, RD2 codec/rights carrier, work server or producer reader exists in
+this checkpoint. No executable/default path calls the new entry, and the root
+constructor is unchanged. Whole serving return revokes and joins the borrowed
+key consumer before admission can end; it does not call `owned.close` or erase
+cleanup records/listener because an I/O task ended. Unexpected listener failure
+still returns an error, not terminal cleanup or a receipt.
+
+The private producer launch object is only a retained resource holder. Its
+`awaitWork` and candidate Transport fail closed; there is no raw FD/event
+constructor and no issued candidate. The eventual original eight-role producer
+and its single original-channel reader remain unimplemented.
+
+The new ordinary-socket fixture extends the accepted original-manager fixture
+only before bootstrap: it keeps that FSM and manager, attaches an ordinary
+private cleanup listener, fills the existing concrete cleanup callbacks, and
+retains the actual producer peer/directory/config and read-only parent process
+observation. It does not call the root constructor or cross an exec boundary.
+Its fake process/cgroup and parent/self topology are not native/root/VM proof.
+The existing original-manager positive and all earlier RED tests stay intact.
+
+The first behavioral RED reaches actual gate release, durable revision 2,
+original-manager shared guest authentication, and an authenticated cleanup
+Inspect from the new serving entry before failing for the missing work
+candidate. The following Client-to-private-IPC-to-guest Exec assertion is
+explicitly unreached, not bridge coverage. A separate passing control blocks
+the real guest hello write and proves cleanup authentication/Inspect can still
+run. An independent RED sends authenticated StopReap after that control and
+receives rejection because the selected cleanup barrier is unavailable, before
+any containment. Its later I/O-join/containment assertions are also unreached.
+
+Every fixture task is rescued explicitly: cancel the shared guest, revoke
+preparation, shutdown the still-owned listener to interrupt accept, and join the
+serving/controller before closing listener FDs or returning the admission.
+Borrowed-key clearing is checked after that join. This rescue is not evidence
+for the missing selected cleanup barrier or loss-containment behavior. No
+source guard is relaxed. Freeze this reached RED for independent reproduction
+and approval before implementing the paired bridge, publication or barrier.

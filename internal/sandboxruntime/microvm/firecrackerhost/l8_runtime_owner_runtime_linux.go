@@ -39,6 +39,7 @@ type l8RuntimeOwnerLinuxRuntime struct {
 
 	minimalNamespaces  *minimalControlNamespaceProjection
 	minimalPreparation *minimalControlPreparation
+	minimalServing     *minimalControlSupervisorServing
 
 	mu         sync.Mutex
 	namespaces [2]*os.File
@@ -379,7 +380,16 @@ func (owned *l8RuntimeOwnerLinuxRuntime) serveController(owner *l8RuntimeOwnerSu
 			_ = owner.ControllerLost(context.Background())
 			return false, errL8RuntimeOwnerInvalid
 		}
-		response, handleErr := owner.HandleController(context.Background(), request)
+		var response l8RuntimeOwnerControlResult
+		var handleErr error
+		owned.mu.Lock()
+		serving := owned.minimalServing
+		owned.mu.Unlock()
+		if serving != nil {
+			response, handleErr = owner.handleControllerWithCleanup(context.Background(), request, serving.closeIO)
+		} else {
+			response, handleErr = owner.HandleController(context.Background(), request)
+		}
 		closeL8RuntimeOwnerFiles(request.Files)
 		if handleErr != nil || sendL8RuntimeOwnerControlResult(fd, response) != nil {
 			_ = sendL8RuntimeOwnerReject(fd)
