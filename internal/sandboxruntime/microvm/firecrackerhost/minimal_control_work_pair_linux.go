@@ -280,6 +280,7 @@ func (candidate *minimalControlWorkCandidate) RoundTrip(ctx context.Context, req
 		return result, errL8RuntimeOwnerInvalid
 	}
 	launch := candidate.launch
+	caller := ctx
 	if !l8RuntimeOwnerProcessAlive(launch.supervisor.pidfd) {
 		launch.retire()
 		return result, errL8RuntimeOwnerInvalid
@@ -302,9 +303,6 @@ func (candidate *minimalControlWorkCandidate) RoundTrip(ctx context.Context, req
 			launch.retire()
 			return result, errL8RuntimeOwnerInvalid
 		}
-		// The caller's earlier deadline is inherited automatically. Keep this
-		// one absolute budget through decoding and final cancellation joins.
-		ctx, cancelInspection = context.WithDeadline(ctx, inspectionStart.Add(minimalInspectionTimeout))
 	}
 	launch.ordinal++
 	op := &minimalProducerWork{header: minimalWorkHeader{direction: minimalWorkRequest, operation: request.Operation, ordinal: launch.ordinal,
@@ -313,7 +311,11 @@ func (candidate *minimalControlWorkCandidate) RoundTrip(ctx context.Context, req
 	launch.writers.Add(1)
 	launch.mu.Unlock()
 	defer launch.writers.Done() // Join the whole admitted call, not only its write.
-	if cancelInspection != nil {
+	if !inspectionStart.IsZero() {
+		// Derivation calls parent Context methods, so it runs outside the
+		// owner mutex, after reserving exactly one admitted slot. This keeps
+		// the already-sampled absolute budget through every final join.
+		ctx, cancelInspection = context.WithDeadline(caller, inspectionStart.Add(minimalInspectionTimeout))
 		defer cancelInspection()
 	}
 	interrupted := make(chan struct{})
@@ -323,7 +325,7 @@ func (candidate *minimalControlWorkCandidate) RoundTrip(ctx context.Context, req
 			<-interrupted
 		}
 		if cancelInspection != nil {
-			if resultErr == nil && !candidate.acceptInspection(ctx, inspectionStart, op) {
+			if resultErr == nil && !candidate.acceptInspection(caller, ctx, inspectionStart, op) {
 				resultErr = errL8RuntimeOwnerInvalid
 			}
 			if resultErr != nil {
@@ -376,13 +378,13 @@ func (candidate *minimalControlWorkCandidate) RoundTrip(ctx context.Context, req
 // Called after the actual request writer and its cancellation callback joined,
 // while the same admitted operation still excludes any competing call. The sole
 // response reader has completed/correlated this frame, not its continuing task.
-func (candidate *minimalControlWorkCandidate) acceptInspection(ctx context.Context, admitted time.Time, op *minimalProducerWork) bool {
+func (candidate *minimalControlWorkCandidate) acceptInspection(caller, ctx context.Context, admitted time.Time, op *minimalProducerWork) bool {
 	launch := candidate.launch
-	if !minimalWorkloadContextCurrent(ctx) || !l8RuntimeOwnerProcessAlive(launch.supervisor.pidfd) {
+	if !minimalWorkloadContextCurrent(caller) || !minimalWorkloadContextCurrent(ctx) || !l8RuntimeOwnerProcessAlive(launch.supervisor.pidfd) {
 		return false
 	}
 	reply, err := decodeMinimalHostInspection(op.response, launch.config.Control.Prelaunch["topologyGenerationId"], launch.config.Job.RuntimeGeneration)
-	if err != nil {
+	if err != nil || !minimalWorkloadContextCurrent(caller) || !minimalWorkloadContextCurrent(ctx) {
 		return false
 	}
 	launch.mu.Lock()
