@@ -92,6 +92,18 @@ func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisor
 		original.owner.opts.DuplicateNamespaces = original.owned.duplicateNamespaces
 		original.owner.opts.CloseNamespaces = original.owned.closeNamespaces
 		original.owner.opts.AbortStartingZero = original.owned.closeNamespaces
+		// Prepare the SAME inherited record directory before any launch. The
+		// root constructor already requires 0700; this below-root fixture did not.
+		var before, after unix.Stat_t
+		if unix.Fstat(original.owned.store.directoryFD, &before) != nil ||
+			unix.Fchmod(original.owned.store.directoryFD, 0o700) != nil ||
+			unix.Fstat(original.owned.store.directoryFD, &after) != nil ||
+			before.Dev != after.Dev || before.Ino != after.Ino || before.Uid != after.Uid ||
+			validateL8RuntimeOwnerDirectoryFD(original.owned.store.directoryFD) != nil ||
+			original.owned.selected.attempted || original.tracked.calls != 0 {
+			t.Fatal("same private record directory was not retained before launch")
+		}
+		t.Logf("same record directory private before bootstrap: old=%03o actual=%03o identity unchanged", before.Mode&0o777, after.Mode&0o777)
 		fd, key, err := openL8RuntimeOwnerReconnectListener(original.owned.store.directoryFD, original.owned.genesis.ReconnectListenerIdentity)
 		if err != nil {
 			t.Fatal("ordinary cleanup listener", err)

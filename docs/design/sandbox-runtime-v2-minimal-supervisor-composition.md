@@ -1,5 +1,18 @@
 # Minimal supervisor composition
 
+## Joint fixture private-directory prerequisite
+
+The combined work receiver exposed another below-root fixture prerequisite:
+the inherited testing record directory was mode 0755, whereas the unchanged
+concrete constructor requires 0700. This early directory rejection is not a
+functional publication/work RED. The new joint fixture now makes its same owned
+directory private before bootstrap, checks device/inode/UID continuity and
+actual mode, and confirms no tracked launch has run. No directory, original
+FSM, lifecycle, manager or process is replaced. The original-manager fixture,
+149-line joint RED and all production directory checks remain unchanged.
+The separate directory control checks the same private FD after bootstrap;
+its explicit test rescue still is not selected cleanup-barrier evidence.
+
 Design checkpoint from `0b18f8f2235428311d6eaf3ddea37dca7743a492`.
 This refines the [host controller design](sandbox-runtime-v2-minimal-host-controller.md)
 under the [Linux completion architecture](sandbox-runtime-v2-linux-completion-architecture.md)
