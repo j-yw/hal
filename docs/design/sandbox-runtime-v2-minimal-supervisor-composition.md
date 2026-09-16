@@ -25,8 +25,8 @@ The accepted workload transport also remains process-local. Its actual
 `minimalControlReadiness` cannot cross the supervisor's exec boundary. A worker
 receiving the public HLMINRD1 event cannot reconstruct that pointer, signing key,
 session, or process-manager authority. The old design permits no further parent
-messages on that channel. This is a separately required work/credential bridge,
-not something an event-only implementation may silently claim to provide.
+messages on that channel. The work bridge below preserves that rule; credentials
+remain a separate required bridge, not an event-only implementation claim.
 
 ## Supervisor-owned controller
 
@@ -51,10 +51,9 @@ owner. Construct exactly one `newMinimalControlTransport` and invoke the existin
 controller scope. Its connector exclusively owns pre-ACK retry; do not add a
 supervisor retry loop. Retain the original owner context and hard expiry H.
 
-The first composition may use the readiness-only constructor while the work
-bridge below is unresolved; it must remain private/unselected and unavailable
-as a usable provider. Selecting `withMinimalWorkloadController` alone is not a
-worker-facing execution implementation.
+Use `withMinimalWorkloadController` and pair it with the work bridge below.
+Do not first implement an HLMINRD1 publisher which the provider cannot use.
+Selecting that controller alone is not a worker-facing execution implementation.
 
 Start the owned controller/publisher task only after bootstrap has returned,
 then enter the existing cleanup accept loop concurrently. A blocked guest
@@ -67,17 +66,22 @@ admission callback returns, and key clearing remains owned by existing scopes.
 Only the original current readiness from that controller may feed the publisher.
 Recheck the retained selected generation/process/manager, original-channel owner,
 controller currentness, and half-open A/D/P bounds immediately before publication.
-Build HLMINRD1 from the admitted full config digest, actual supervisor generation,
+Build work-ready HLMINRD2 from the full config digest, supervisor generation,
 actual process handle, transport generation, session ID and the shared binding's
 session-bound digest. No caller-created event grants authority.
 
 Writing uses an identity-matched owned duplicate of the same original socket,
-with one registered operation, bounded remaining A and no ancillary descriptors.
+with one registered operation, bounded remaining A and exactly one ancillary
+descriptor: the producer endpoint of a new anonymous work socketpair.
 It owns its cancellation shutdown and joins its watcher before closing the
 duplicate. The preparation mutex does not cover send, controller observations
 or task joins. Failed, late or ambiguous sends retire readiness and shut down
 the original socket; a packet possibly reaching the parent does not imply a
-successful publication. Do not resend HLMINRD1.
+successful publication. Do not resend the event or replace its endpoint. A peer
+can receive the descriptor before sendmsg returns; the work server must not
+dispatch its first request until successful send completion and the post-send
+A/D/P publication decision. Failure shuts down original and work I/O, making any
+transferred copy unusable without claiming to close another process's FD.
 
 The observer needs an explicit successful-publication stop signal distinct from
 context cancellation. Publication and deadline cancellation must serialize at
@@ -127,7 +131,7 @@ its objects into another fixture is not a positive transport prerequisite.
 
 Required behavioral REDs are immediate revision-2 reply before blocked guest
 boot, cleanup serviceability during handshake, one real authenticated transcript
-and one original-channel event, admitted cleanup joining blocked guest I/O before
+and one work-ready event plus adopted endpoint, cleanup joining guest I/O before
 containment, and successful readiness surviving original P while continuing to
 observe owner loss. Verify real packet bytes/shared binding rather than a mocked
 ready flag. Ordinary fake process/cgroup fixtures still cannot prove live Jailer
@@ -143,22 +147,117 @@ compile, followed by integration-owned broad checks at the assembled head.
 
 ## Required producer and work bridge handoff
 
-The producer must validate revision 2 and the single ready event against its
-independently retained supervisor/process/config/25-field binding, own the sole
-reader, and retire on later EOF/error/extra bytes. Its opaque current result must
-remain provider-owned; cleanup reconnect can never reissue it.
+The producer must validate revision 2 and the single work-ready event against
+its independently retained supervisor/config/25 prelaunch fields, own the sole
+reader, and retire on later EOF/error/extra bytes. Obtain supervisor generation
+from the exact owned record plus observed supervisor PID/start identity, not by
+using the candidate event as its own expectation. Process handle and transport
+generation are late facts originating inside that retained supervisor; the
+producer does not independently own its process manager. Reconstruct and check
+the full shared binding/session digest before adopting the endpoint. The opaque
+current result stays provider-owned; cleanup reconnect can never reissue it.
 
-Before claiming a usable runtime, resolve the actual worker-to-supervisor work
-transport and credential activation route. It must call the existing authenticated
-controller inside the supervisor, enforce bounded payloads and exact job/session
-identity, carry cancellation without automatic retry, retain completed CopyIn
-publication, and close/join before containment. A process-local Go interface or
-public readiness digest does not provide that route. Any change to the old
-original-channel no-further-messages rule or inherited FD schema needs an explicit
-supersession design and reached cross-process tests; do not widen a validator or
-add a fallback as an incidental consequence of readiness composition.
+The concrete producer retains a private guestagent.Transport over the accepted
+endpoint. Its supervisor peer calls the existing authenticated controller's
+workloadTransport, not a second guest backend. Both peers belong to the original
+launch owner and close/join before containment. The neutral owner currently has
+no workload consumer: a subsequent explicit provider/worker composition must
+use this transport through that exact retained owner, never an exported raw-FD
+constructor or reconstructed readiness. The credential activation route is still
+required and must not use workspace CopyIn for secrets.
 
-This checkpoint chooses no new IPC schema. The bridge remains an explicit
-blocking dependency for provider activation, credential use and worker end-to-end
-acceptance. No executable/default selection, native image, live test, source-guard
-exception, public schema change or feature-completion claim belongs to this note.
+## Proposed paired work wire (review before implementation)
+
+This refinement follows independent review of design `675b8478`. It replaces
+that checkpoint's optional readiness-only publisher with one combined work-ready
+handoff and work bridge. It does not relax HLMINRD1, the six/seven/eight inherited
+roles, legacy bootstrap/cleanup validators, or the original monitor's ban on
+further parent packets. All earlier nil-rights HLMINRD1 controls remain valid.
+No codec or production implementation is authorized by this document alone.
+
+HLMINRD2 has the same bounded metadata layout as HLMINRD1, with its own eight-byte
+magic and version 2 at bytes 8..9. The fixed revision fields remain 1 and 2.
+It requires exactly one received AF_UNIX, connected anonymous SOCK_STREAM with
+CLOEXEC and no listening/pathname identity. This is a new private discriminator,
+not permissive fallback in the old decoder. The supervisor creates the pair and
+retains both endpoints in its partial owner before fallible setup; successful
+transfer releases its local copy of the producer endpoint only after the send
+operation joins. The producer immediately owns all received rights and closes
+all of them on malformed, truncated, duplicate, extra or mismatched input.
+Validate socket kind/address and retain the accepted endpoint under the original
+owner. Socketpair SO_PEERCRED describes creation-time credentials; it is not new
+authentication of the worker after SCM transfer. Authority comes from the exact
+retained original channel and independently correlated supervisor, not FD type,
+public metadata, or possession of a decoded event alone.
+
+The paired stream uses bounded length-prefix framing, not JSON/base64 wrappers
+around an already encoded guest request. Each frame is a uint32 big-endian body
+length followed by this 88-byte fixed header and a nonempty opaque v1 JSON body:
+
+| Header offset | Field |
+| --- | --- |
+| 0..7 | `HLMINWK1` magic |
+| 8 | Direction: request=1, response=2 |
+| 9 | Operation: exec=1, copy_in=2, copy_out=3 |
+| 10..11 | Reserved zero bytes |
+| 12..19 | uint64 ordinal, starting at 1, no wrap or replay |
+| 20..23 | uint32 maximum response bytes, 1 through 1,048,576 |
+| 24..55 | Original 32-byte session ID |
+| 56..87 | Original 32-byte session-bound binding digest |
+
+Responses echo the exact operation, ordinal, maximum, session and binding.
+Validate the fixed header and body length before allocating payloads; cap both
+directions at 1,048,576 payload bytes and the producer response at its smaller
+requested maximum. Do not increase existing inner guest limits or add
+readiness/credential/arbitrary operations. The bridge treats v1 JSON as opaque;
+the existing Client and guest Server retain semantic validation. Reuse existing
+framing helpers where they preserve header-first validation; do not change the
+shared guest framing protocol to fit this private envelope.
+
+Do not serialize/rebase a Go context or invent an operation timeout on the wire.
+The producer retains its original caller context and deadline locally. Admitted
+cancellation shuts down its work endpoint; the supervisor's continuous reader
+observes EOF/error and cancels the active RoundTrip. The supervisor enforces its
+original H and closes the work endpoint on expiry; the producer's sole reader
+observes that loss. The producer does not know H from this event or invent a new
+one. Both recheck their retained local owner before admission. Existing guest
+request timing metadata remains unchanged. The continuous-reader and
+blocked-backend cancellation tests are required for this no-wire-deadline choice.
+
+Exactly one producer call is admitted at a time. A pre-canceled or concurrent
+losing call sends nothing and does not retire the active owner. Use one continuous
+reader per endpoint so EOF still cancels an admitted operation while its backend
+or writer blocks. The supervisor has one active operation, no unbounded queue,
+and at most one bounded pending next frame while writing the prior response:
+the producer may consume that response and send its next request before the
+previous write returns. Do not dispatch that pending request until the previous
+operation joins, and reject further/premature pipeline input. A full pending
+slot must not stop EOF/loss observation. Reader state publication and write-phase
+transitions need one owner; no competing probe may consume stream bytes.
+
+Admitted cancellation retires the entire stream and original owner, with no
+reconnect, resend, retry or cancellation opcode. Preserve response bytes that
+the producer has already completely framed and correlated when cancellation
+wins: return those bytes with nil transport error even on the retired connection,
+and let the unchanged Client decide whether they establish CopyIn publication.
+Bytes received only by the supervisor, partial IPC responses and guessed outcomes
+do not qualify. There is no post-cancel drain or wait for a future reply. Clear
+owned partial buffers and sanitize errors/panics; do not clear caller-owned input.
+
+Original-channel loss, work stream loss, controller loss, explicit cancellation
+and H expiration converge on the same retained owner. The cleanup barrier shuts
+down I/O, joins both endpoint readers, active work, writers and watchers outside
+locks, then lets existing containment run. Neither reader joins itself. Pair
+allocation or transfer failure retains the genuine partial cleanup owner and
+uncertainty; neither a closed socket nor a successful event proves VM absence.
+
+The first joint test must use the same-manager prerequisite above, then reach
+Client -> adopted IPC endpoint -> original controller -> selected guest
+transport/Server with an injected backend and a counted real operation. Include
+early first work before send return, ambiguous descriptor transfer, original P
+survival, EOF during blocked work/write, bounded pending-next races, exact maximum
+copy, pre-canceled/busy isolation, and completed CopyIn after retirement. Ordinary
+Unix tests are component evidence; a real exec-boundary handoff and prepared
+Linux tests remain later gates. Freeze reached RED before paired bridge and
+supervisor-composition GREEN; no executable/default activation, native image,
+credential delivery, live result or feature-completion claim follows here.
