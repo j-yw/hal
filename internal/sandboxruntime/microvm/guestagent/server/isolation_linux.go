@@ -25,6 +25,20 @@ type linuxIsolationVerifier struct {
 
 type liveLinuxProcessIsolationBoundary struct{}
 
+type linuxWorkloadIsolationVerifier struct {
+	verifier *linuxIsolationVerifier
+}
+
+// NewLinuxWorkloadIsolationVerifier is unavailable until the local inspection
+// body is shared without constructing a legacy proof request.
+func NewLinuxWorkloadIsolationVerifier(LinuxIsolationVerifierOptions) (WorkloadIsolationVerifier, error) {
+	return &linuxWorkloadIsolationVerifier{}, nil
+}
+
+func (*linuxWorkloadIsolationVerifier) VerifyWorkloadIsolation(context.Context) (IsolationProofResult, error) {
+	return IsolationProofResult{}, errLinuxIsolationUnverified
+}
+
 // NewLinuxIsolationVerifier returns a verifier for the exact current process.
 func NewLinuxIsolationVerifier(options LinuxIsolationVerifierOptions) (IsolationVerifier, error) {
 	process := options.ProcessBoundary

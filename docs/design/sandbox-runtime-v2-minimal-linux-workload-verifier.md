@@ -54,3 +54,22 @@ must inject the actual L7 verifier from its retained validated boot/proxy
 configuration. Actual Linux backend/workspace, fresh image, prepared guest,
 transport/host ownership and live workload/credential/terminal acceptance remain
 separate requirements. This API alone does not complete L8, L10 or L11.
+
+## Compiling RED checkpoint
+
+The selected Linux constructor currently returns an inert unavailable wrapper;
+its method never invokes a boundary. The off-Linux constructor preserves the
+existing unsupported-platform error. The legacy Linux body is byte-identical.
+Across three race repetitions, the 78 independently specified legacy cases
+pass and the corresponding selected cases fail at the absent result/callback
+order. The network-required constructor and retained-boundary/fresh-inspection
+tests also fail. Including nested parent test events, the focused command has
+480 expected failures, 237 passes and no skips. No race report is emitted.
+
+```sh
+go test -p 2 -race -count=3 -timeout=180s -json ./internal/sandboxruntime/microvm/guestagent/server -run '^TestWorkloadLinuxIsolation'
+```
+
+The nil/zero selected verifier control fails closed. Fresh-inspection mutation
+checks after the initial success are specified but cannot yet be reached. These
+results do not claim the shared-body GREEN or the pending transport is usable.

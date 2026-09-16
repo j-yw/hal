@@ -19,3 +19,9 @@ func NewLinuxIsolationVerifier(LinuxIsolationVerifierOptions) (IsolationVerifier
 		Err:     errors.New(message),
 	}
 }
+
+// NewLinuxWorkloadIsolationVerifier fails closed without Linux inspection.
+func NewLinuxWorkloadIsolationVerifier(options LinuxIsolationVerifierOptions) (WorkloadIsolationVerifier, error) {
+	_, err := NewLinuxIsolationVerifier(options)
+	return nil, err
+}
