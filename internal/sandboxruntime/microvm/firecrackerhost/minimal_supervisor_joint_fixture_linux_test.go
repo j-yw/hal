@@ -5,7 +5,6 @@ package firecrackerhost
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"maps"
 	"net"
@@ -129,9 +128,15 @@ func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisor
 		config := original.admission.config
 		config.Control.Prelaunch = maps.Clone(config.Control.Prelaunch)
 		f.producer = &minimalControlProducerLaunch{original: parentFile, directory: directory, config: config, supervisor: observation}
+		producerContext, cancelProducer := context.WithCancel(context.Background())
+		defer cancelProducer()
+		defer f.producer.close()
+		if f.producer.start(producerContext) != nil {
+			t.Fatal("original prelaunch producer observation")
+		}
 		// Test rescue only: revoke existing preparation, interrupt the ordinary
 		// accept syscall without FD reuse, and join before admission returns.
-		// This is not evidence that the unavailable closeIO barrier works.
+		// This explicit rescue is not evidence that selected closeIO worked.
 		started := false
 		defer func() {
 			original.owned.minimalPreparation.revoke()
@@ -164,19 +169,19 @@ func withMinimalSupervisorJointFixture(t *testing.T, use func(*minimalSupervisor
 		if err := sendL8RuntimeOwnerSeqpacket(original.peer, original.packet, original.files); err != nil {
 			t.Fatal("actual original BootstrapStart", err)
 		}
-		for _, socket := range []int{original.gatePeer, original.peer} {
+		for _, socket := range []int{original.gatePeer} {
 			if setL8RuntimeOwnerSocketTimeout(socket, time.Second) != nil {
 				t.Fatal("bounded bootstrap observation")
 			}
 		}
 		gate, gateErr := receiveL8RuntimeOwnerSeqpacket(original.gatePeer)
 		defer closeL8RuntimeOwnerFiles(gate.Files)
-		reply, replyErr := receiveL8RuntimeOwnerSeqpacket(original.peer)
-		defer closeL8RuntimeOwnerFiles(reply.Files)
+		bootstrapContext, stopBootstrap := context.WithTimeout(context.Background(), time.Second)
+		defer stopBootstrap()
+		replyErr := f.producer.awaitBootstrap(bootstrapContext)
 		record, recordErr := original.owned.store.Load(context.Background())
 		if gateErr != nil || gate.Packet.Opcode != l8RuntimeOwnerOpcodeChildRelease || len(gate.Files) != 0 ||
-			replyErr != nil || reply.Packet.Opcode != l8RuntimeOwnerOpcodeBootstrapPublished || len(reply.Files) != 0 ||
-			len(reply.Packet.Body) != 8 || binary.BigEndian.Uint64(reply.Packet.Body) != 2 || recordErr != nil || record.Revision != 2 {
+			replyErr != nil || recordErr != nil || record.Revision != 2 {
 			t.Fatal("new serving entry did not reach actual gate/revision-2 reply", gateErr, replyErr, recordErr)
 		}
 		if !f.private.Load() || f.listener.Load() == nil {

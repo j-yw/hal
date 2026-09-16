@@ -27,6 +27,7 @@ type minimalControlPreparation struct {
 	stopPreparation context.CancelFunc
 	canceled        minimalControlPreparationLatch
 	observerDone    chan struct{}
+	publicationStop chan struct{}
 	ioDone          chan struct{}
 	ioErr           error
 	monitorDone     chan struct{}
@@ -56,10 +57,20 @@ func beginMinimalControlPreparation(admission *minimalControlSupervisorAdmission
 	prep := &minimalControlPreparation{correlation: admission.configDigest, configDigest: jailerRecoveryConfigDigest(config.jailerRecoverySupervisorConfig), deadline: deadline, borrowedFD: admission.borrowed[0],
 		original: os.NewFile(uintptr(fd), "minimal-preparation-original"), ctx: ctx, cancel: cancel, closeDone: make(chan struct{})}
 	prep.preparationCtx, prep.stopPreparation, prep.observerDone = prepCtx, stop, make(chan struct{})
+	prep.publicationStop = make(chan struct{})
 	go func() {
 		defer close(prep.observerDone)
-		<-prepCtx.Done()
-		prep.revoke()
+		select {
+		case <-prepCtx.Done():
+		case <-prep.publicationStop:
+		}
+		// Deadline observation and successful publication share this boundary.
+		// Explicit owner cancellation still publishes through the lock-free latch.
+		prep.mu.Lock()
+		if !prep.canceled.workPublished() {
+			prep.revoke()
+		}
+		prep.mu.Unlock()
 	}()
 	if !prep.current() {
 		_ = prep.close()

@@ -1,5 +1,31 @@
 # Minimal supervisor composition
 
+## First joined work-composition implementation checkpoint
+
+The private below-root serving entry now retains the original controller consume
+scope through RD2 publication and paired work. The original producer alone reads
+revision 2, checks the original record/config/supervisor identity, and adopts one
+anonymous endpoint after reconstructing the full shared session binding. The
+new fixture starts that producer before BootstrapStart and uses its sole-reader
+bootstrap observation; the original 149-line assertions are not changed.
+
+The work server starts its continuous reader before the single ancillary send,
+but dispatch waits for the post-send A/D/P decision on the existing atomic
+cancel/release word and admission-observer join. P-bounded launch guards remain
+unchanged; post-publication work retains the original context and controller H.
+The controller consume scope owns the registered partial pair even on panic.
+Only that scope joins its readers/writer; a separate loss task enters existing
+containment after the I/O barrier. The barrier does not join that lifecycle task
+or dispose of the still-needed cleanup listener/records.
+
+The first reached check is the unchanged joint handoff, Client Exec and blocked
+Hello StopReap assertions. This is a component checkpoint, not final acceptance:
+original-P survival, publication ambiguity/early requests, pending/full queues,
+EOF during backend/write, completed CopyIn at cancellation, ownership successors,
+outer-owner Close and cleanup/loss races still need reached forward evidence.
+Whole-host races, guards, vet and Darwin checks also remain required. No selected
+executable, provider, credential path, native process or default lane is enabled.
+
 ## Joint fixture private-directory prerequisite
 
 The combined work receiver exposed another below-root fixture prerequisite:
