@@ -24,26 +24,27 @@ type minimalWorkFrame struct {
 // The original serving object owns this pair before its first allocation. It
 // derives its only work transport from the original controller's readiness.
 type minimalControlWorkServer struct {
-	serving *minimalControlSupervisorServing
-	ready   *minimalControlReadiness
-	work    guestagent.Transport
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	files   [2]*os.File
-	conn    *net.UnixConn
-	retired bool
-	started bool
-	active  *minimalWorkFrame
-	pending *minimalWorkFrame
-	writing bool
-	ordinal uint64
-	binding [32]byte
-	wake    chan struct{}
-	commit  chan struct{}
-	reader  chan struct{}
-	worker  chan struct{}
-	watcher chan struct{}
+	serving    *minimalControlSupervisorServing
+	ready      *minimalControlReadiness
+	work       guestagent.Transport
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex
+	files      [2]*os.File
+	conn       *net.UnixConn
+	retired    bool
+	cleanupErr error
+	started    bool
+	active     *minimalWorkFrame
+	pending    *minimalWorkFrame
+	writing    bool
+	ordinal    uint64
+	binding    [32]byte
+	wake       chan struct{}
+	commit     chan struct{}
+	reader     chan struct{}
+	worker     chan struct{}
+	watcher    chan struct{}
 }
 
 func (serving *minimalControlSupervisorServing) newWorkServer(ready *minimalControlReadiness) (*minimalControlWorkServer, error) {
@@ -120,10 +121,14 @@ func (s *minimalControlWorkServer) retire() {
 	if !s.retired {
 		s.retired = true
 		if s.files[0] != nil {
-			_ = unix.Shutdown(int(s.files[0].Fd()), unix.SHUT_RDWR)
+			if unix.Shutdown(int(s.files[0].Fd()), unix.SHUT_RDWR) != nil {
+				s.cleanupErr = errL8RuntimeOwnerInvalid
+			}
 		}
 		if s.conn != nil {
-			_ = s.conn.Close()
+			if s.conn.Close() != nil {
+				s.cleanupErr = errL8RuntimeOwnerInvalid
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -143,16 +148,15 @@ func (s *minimalControlWorkServer) close() error {
 		clear(s.pending.payload)
 		s.pending = nil
 	}
-	var err error
 	for index, file := range s.files {
 		if file != nil {
 			if file.Close() != nil {
-				err = errL8RuntimeOwnerInvalid
+				s.cleanupErr = errL8RuntimeOwnerInvalid
 			}
 			s.files[index] = nil
 		}
 	}
-	return err
+	return s.cleanupErr
 }
 
 func (s *minimalControlWorkServer) readRequests() {

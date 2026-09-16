@@ -1,5 +1,33 @@
 # Minimal supervisor composition
 
+## Compound-close correction checkpoint
+
+The reached 141-line whole-Close/error RED is preserved unchanged. Selected
+`owned.close` now revokes the original preparation before serializing with serving
+installation, closes/joins the original compound I/O scope, and joins the separate
+lifecycle entrant outside bookkeeping/FSM locks. It retains listener, record and
+selected handles until the actual serving scope returns and its final joins close
+`scopeDone`; only then can the existing destructor run. Serving installation
+rechecks that same preparation under owned.mu, preventing a pre-lock currentness
+snapshot from installing after the nil-serving destruction decision. No new accept
+loop, lifecycle authority, raw descriptor retry or legacy route is introduced.
+
+Pair shutdown/Close errors and publication-operation Close errors are retained
+by the original controller scope and read by closeIO only after controllerDone.
+The barrier still joins preparation I/O, but reports stable sanitized failure on
+either source of uncertainty. Neither its loss entrant nor authenticated StopReap
+may enter containment through a falsely successful barrier. The actual retained
+alias-loss RED and live cleanup Inspect after concurrent Close now reach success.
+
+A further test preserves completed CopyIn at real cancellation: a test-only
+context forwards the actual context and cancels only after the original producer
+reader has published its complete correlated response. TryLock avoids Err callback
+reentry under the producer mutex. The actual Client keeps that publication result,
+while the original candidate remains retired; no fabricated bytes/currentness or
+production observer seam is used. These are scoped corrections, not full feature
+acceptance. Publication ambiguity/early work, pending/full queues, blocked writers,
+descriptor successors and remaining full QA still require completed evidence.
+
 ## First joined work-composition implementation checkpoint
 
 Forward evidence at this checkpoint exposed two unresolved whole-owner edges.

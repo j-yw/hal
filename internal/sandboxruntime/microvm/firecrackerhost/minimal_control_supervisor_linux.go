@@ -15,6 +15,7 @@ type minimalControlSupervisorServing struct {
 	admission       *minimalControlSupervisorAdmission
 	controllerDone  chan struct{}
 	controllerErr   error
+	cleanupErr      error // Owned controller task writes; barrier reads after join.
 	mu              sync.Mutex
 	controller      *minimalControlController
 	server          *minimalControlWorkServer
@@ -22,6 +23,7 @@ type minimalControlSupervisorServing struct {
 	closeDone       chan struct{}
 	closeErr        error
 	lifecycleDone   chan struct{}
+	scopeDone       chan struct{}
 	publicationDone chan struct{}
 }
 
@@ -38,9 +40,11 @@ func (owned *l8RuntimeOwnerLinuxRuntime) serveMinimalControlSupervisor(owner *l8
 		return errL8RuntimeOwnerInvalid
 	}
 	serving := &minimalControlSupervisorServing{owned: owned, owner: owner, admission: admission,
-		controllerDone: make(chan struct{}), closeDone: make(chan struct{}), lifecycleDone: make(chan struct{})}
+		controllerDone: make(chan struct{}), closeDone: make(chan struct{}), lifecycleDone: make(chan struct{}), scopeDone: make(chan struct{})}
 	owned.mu.Lock()
-	if owned.minimalServing != nil {
+	// Close revokes before taking this same lock. A pre-lock currentness
+	// observation cannot install serving after a nil-serving destruction path.
+	if owned.minimalServing != nil || !prep.current() {
 		owned.mu.Unlock()
 		return errL8RuntimeOwnerInvalid
 	}
@@ -48,7 +52,11 @@ func (owned *l8RuntimeOwnerLinuxRuntime) serveMinimalControlSupervisor(owner *l8
 	owned.mu.Unlock()
 	// Ending this entire serving scope joins its borrowed-key consumer. A
 	// controller task returning alone does not end the cleanup accept service.
-	defer func() { _ = serving.closeIO(); <-serving.lifecycleDone }()
+	defer func() {
+		_ = serving.closeIO()
+		<-serving.lifecycleDone
+		close(serving.scopeDone) // Final disposal is forbidden before this join.
+	}()
 	go func() {
 		defer close(serving.lifecycleDone)
 		<-prep.ctx.Done()
@@ -148,7 +156,9 @@ func (serving *minimalControlSupervisorServing) closeIO() error {
 	// Controller consume owns every partial pair and publication operation.
 	// Never join lifecycleDone: its entrant may need the caller's FSM locks.
 	<-serving.controllerDone
-	serving.closeErr = prep.close()
+	if prep.close() != nil || serving.cleanupErr != nil {
+		serving.closeErr = errL8RuntimeOwnerInvalid
+	}
 	close(serving.closeDone)
 	return serving.closeErr
 }

@@ -65,7 +65,9 @@ func (serving *minimalControlSupervisorServing) publishWork(ready *minimalContro
 		partial := serving.server
 		serving.mu.Unlock()
 		if partial != nil {
-			_ = partial.close()
+			if partial.close() != nil {
+				serving.cleanupErr = errL8RuntimeOwnerInvalid
+			}
 		}
 	}()
 	s, err := serving.newWorkServer(ready)
@@ -89,6 +91,9 @@ func (serving *minimalControlSupervisorServing) publishWork(ready *minimalContro
 	s.mu.Lock()
 	err = s.files[1].Close()
 	s.files[1] = nil
+	if err != nil {
+		s.cleanupErr = errL8RuntimeOwnerInvalid
+	}
 	s.mu.Unlock()
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
@@ -126,7 +131,9 @@ func (serving *minimalControlSupervisorServing) sendWorkEndpoint(ready *minimalC
 	file := os.NewFile(uintptr(fd), "minimal-work-publication")
 	var duplicate unix.Stat_t
 	if unix.Fstat(fd, &duplicate) != nil || duplicate.Dev != original.Dev || duplicate.Ino != original.Ino {
-		_ = file.Close()
+		if file.Close() != nil {
+			serving.cleanupErr = errL8RuntimeOwnerInvalid
+		}
 		return errL8RuntimeOwnerInvalid
 	}
 	ctx, cancel := context.WithDeadline(prep.ctx, bound)
@@ -146,7 +153,11 @@ func (serving *minimalControlSupervisorServing) sendWorkEndpoint(ready *minimalC
 		close(stop)
 		<-done
 		cancel()
-		if file.Close() != nil || shutdownErr != nil || !prep.current() || !time.Now().Before(bound) || !ready.Current() {
+		if file.Close() != nil || shutdownErr != nil {
+			serving.cleanupErr = errL8RuntimeOwnerInvalid
+			resultErr = errL8RuntimeOwnerInvalid
+		}
+		if !prep.current() || !time.Now().Before(bound) || !ready.Current() {
 			resultErr = errL8RuntimeOwnerInvalid
 		}
 	}()

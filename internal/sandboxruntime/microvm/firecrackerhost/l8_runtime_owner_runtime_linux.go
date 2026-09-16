@@ -232,6 +232,25 @@ func (owned *l8RuntimeOwnerLinuxRuntime) close() {
 	if owned == nil {
 		return
 	}
+	if owned.minimalPreparation != nil {
+		// Publish before the install/disposition lock. A waiting serving entry
+		// must recheck this original lifetime before registering itself.
+		owned.minimalPreparation.revoke()
+		owned.mu.Lock()
+		serving := owned.minimalServing
+		owned.mu.Unlock()
+		if serving != nil {
+			if serving.closeIO() != nil {
+				return // Retain cleanup uncertainty, including partial pair errors.
+			}
+			<-serving.lifecycleDone
+			select {
+			case <-serving.scopeDone:
+			default:
+				return // Existing cleanup service still owns listener and records.
+			}
+		}
+	}
 	if owned.minimalPreparation != nil && owned.shutdownMinimalControlPreparation() != nil {
 		return // Preserve unresolved owned handles; this is not terminal proof.
 	}
