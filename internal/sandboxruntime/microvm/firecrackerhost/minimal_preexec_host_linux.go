@@ -164,6 +164,20 @@ func validMinimalPreexecPolicy(policy networkenforcement.PolicyProxyPolicyInput)
 		p.Firewall == nil || p.Firewall.Mode != networkenforcement.FirewallIntentModeApply || p.Firewall.Mechanism != networkenforcement.EnforcementMechanismFirewall {
 		return false
 	}
+	// Fixed selected deny-by-default intent cannot carry a contradictory
+	// allow/audit override, even when that override is syntactically sanitized.
+	var postures []networkenforcement.Posture
+	if p.Category != nil {
+		postures = append(postures, p.Category.PrivateNetwork, p.Category.MetadataEndpoint)
+	}
+	if p.RawProtocols != nil {
+		postures = append(postures, p.RawProtocols.TCP, p.RawProtocols.UDP, p.RawProtocols.ICMP)
+	}
+	for _, posture := range postures {
+		if posture != "" && posture != networkenforcement.PostureUnspecified && posture != networkenforcement.PostureBlock {
+			return false
+		}
+	}
 	rules := networkenforcement.NormalizeAllowlistRules(policy.AllowlistRules)
 	if !rules.Valid {
 		return false
