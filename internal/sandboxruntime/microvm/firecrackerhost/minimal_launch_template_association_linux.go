@@ -105,8 +105,8 @@ func (provider *minimalLaunchProvider) ResolveMinimalSelection(ctx context.Conte
 	return source, nil
 }
 
-// A selection owns only its fresh verified files. No launch lease is taken by
-// acquisition/currentness, and no runtime or cleanup receipt exists here yet.
+// Acquisition/currentness never transfers. A claimed asset owner, once present,
+// exclusively retains the transferred files even after this handle is closed.
 type minimalTemplateSelection struct {
 	self     *minimalTemplateSelection
 	provider *minimalLaunchProvider
@@ -115,6 +115,7 @@ type minimalTemplateSelection struct {
 	identity sandboxruntime.MinimalLaunchSelectionIdentity
 	mu       sync.Mutex
 	assets   localresolver.VerifiedL8MinimalDistribution
+	owner    *minimalTemplateAssetOwner
 	closed   bool
 	closeErr error
 }
@@ -128,16 +129,36 @@ func (source *minimalTemplateSelection) Current(ctx context.Context) (sandboxrun
 	}
 	source.mu.Lock()
 	defer source.mu.Unlock()
-	if source.closed || source.template != source.provider.association.template || !validMinimalTemplateHints(source.hints, source.provider.association.scope) {
+	if source.closed || !source.matchesAssociation() {
 		return sandboxruntime.MinimalLaunchSelectionIdentity{}, sandboxruntime.ErrMinimalLaunchUnavailable
 	}
-	if err := source.assets.ConfirmCurrent(ctx); err != nil {
+	var err error
+	if owner := source.owner; owner != nil {
+		if owner.closed || !owner.sealed || !minimalTemplateOwnerCurrent(owner.context) || owner.lease == nil {
+			return sandboxruntime.MinimalLaunchSelectionIdentity{}, sandboxruntime.ErrMinimalLaunchUnavailable
+		}
+		err = owner.lease.ConfirmCurrent(ctx)
+	} else {
+		err = source.assets.ConfirmCurrent(ctx)
+	}
+	if err != nil {
 		return sandboxruntime.MinimalLaunchSelectionIdentity{}, minimalTemplateFailure(ctx)
 	}
 	if err := minimalTemplateContextError(ctx); err != nil {
 		return sandboxruntime.MinimalLaunchSelectionIdentity{}, err
 	}
+	if source.owner != nil && !minimalTemplateOwnerCurrent(source.owner.context) {
+		return sandboxruntime.MinimalLaunchSelectionIdentity{}, sandboxruntime.ErrMinimalLaunchUnavailable
+	}
 	return source.identity, nil
+}
+
+func (source *minimalTemplateSelection) matchesAssociation() bool {
+	scope, hints, identity := source.provider.association.scope, source.hints, source.identity
+	return source.template == source.provider.association.template && validMinimalTemplateHints(hints, scope) &&
+		identity.WorkerID == scope.WorkerID && identity.HostID == scope.HostID && identity.RuntimeID == hints.RuntimeID && identity.PlanID == hints.PlanID &&
+		identity.TemplatePolicyID == scope.TemplatePolicyID && identity.WorkspacePolicyID == scope.WorkspacePolicyID && identity.NetworkPolicyID == scope.NetworkPolicyID &&
+		sandboxruntime.ValidMinimalLaunchID(identity.RuntimeGeneration)
 }
 
 func (source *minimalTemplateSelection) Close() error {
@@ -148,7 +169,7 @@ func (source *minimalTemplateSelection) Close() error {
 	defer source.mu.Unlock()
 	if !source.closed {
 		source.closed = true
-		if source.assets.Close() != nil {
+		if source.owner == nil && source.assets.Close() != nil {
 			source.closeErr = sandboxruntime.ErrMinimalLaunchUnavailable
 		}
 	}

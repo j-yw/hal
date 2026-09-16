@@ -113,6 +113,42 @@ acquisition assertions remain unchanged and pass all 168 race test/subtest event
 The next step is supervisor reproduction/review of this fixed compiling RED,
 not an automatic GREEN or a claim of completed asset handoff.
 
+## Claimed asset handoff implementation checkpoint
+
+After independent reproduction of `0f76ae11`, the bounded GREEN consumes the
+original reservation Claim only through the exact configured provider/source
+and reservation.Context. Complete scope/revision, selected generation/hints,
+original template tuple and request correlation are checked before ownership
+transfer. The source retains a genuine partial owner before currentness,
+TakeLaunchLease or any snapshot callback can fail. That owner retains the exact
+original OwnedContext, claim and intent, one launch lease and actual sealed
+kernel/rootfs FDs. Raw rootfs SHA256 is independently checked against Expected,
+never substituted with the declared runtime OCI digest.
+
+Start hardwires the existing snapshotJailerRecoveryAsset with its 128 MiB kernel
+and 4 GiB rootfs limits; the private helper's narrow callback seam exists only
+to exercise real allocation faults in tests. Each returned FD is retained before
+error/metadata checks or the next callback, and panic returns the same partial
+owner without payload disclosure. Callbacks cannot reenter Current/Close/Finalize
+under source serialization or retain borrowed readers. No producer is called,
+so the existing producer's internal second transfer is not attempted.
+
+After completed snapshot checks, Current uses that same owner's lease and
+original ownership lifetime, not the spent distribution or preparation P.
+Selection/distribution aliases cannot close the owner's files. Finalize waits for
+the original borrow, closes all retained files idempotently, records close
+uncertainty and returns no receipt even when the asset closes succeed. Runtime
+and Recover remain unavailable; no owner commit/finalized revision is invented.
+
+The original 184-line RED remains unchanged. New reached tests use real
+acquisition/authority/Claim and copied/sealed bytes, including rejection of
+foreign/copied/mismatched inputs, cancellation/expiry after serialization waits,
+returned-FD errors, panic after an earlier copied asset, expired borrow views,
+mutated-then-restored rootfs reads, byte-identical child/parent replacements,
+partial-close uncertainty, actual borrow/Close/Finalize joins and independent
+concurrent production owners. These are synthetic fixture files and ordinary
+unprivileged memfd operations, not accepted B1/native image or live VM evidence.
+
 Design base `38f8f0b6d22a335313402219b7c25c644c821947`. This refines the
 provider proposal at `7144680c2d8b8ce1112a7a599c64da34e93d6cfc`, under the
 [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md) and
