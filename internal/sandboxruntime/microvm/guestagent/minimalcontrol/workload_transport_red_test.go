@@ -105,9 +105,10 @@ func newMinimalWorkloadFixture(t *testing.T) (*bootstrapFixture, *server.Server,
 		t.Fatal(err)
 	}
 	backend := &minimalWorkloadBackend{plans: make(chan server.ExecPlan, 1)}
-	// No gate is disabled or proof state written. This is the existing injected
-	// L4 construction, not the later selected Linux/local-proof command wiring.
-	enclosing, err := server.New(server.Options{Transport: transport, Backend: backend})
+	// The selected transport requires the accepted local-proof mode. This fake
+	// inspector is setup only, not evidence of real Linux isolation.
+	enclosing, err := server.New(server.Options{Transport: transport, Backend: backend,
+		WorkloadIsolationVerifier: workloadTransportVerifier{}, RequireIsolationProofBeforeWork: true, RequireNetworkProofBeforeWork: true})
 	if err != nil {
 		t.Fatal(err)
 	}
