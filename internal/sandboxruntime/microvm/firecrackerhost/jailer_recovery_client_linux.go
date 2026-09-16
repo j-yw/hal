@@ -8,6 +8,8 @@ import (
 	"errors"
 	"os"
 	"sync"
+
+	"golang.org/x/sys/unix"
 )
 
 // Only the surviving supervisor's retained coordinator can perform cleanup.
@@ -140,7 +142,7 @@ func jailerRecoveryClientExchange(ctx context.Context, fd int, packet l8RuntimeO
 	if ctx == nil || ctx.Err() != nil || sendL8RuntimeOwnerSeqpacket(fd, packet, nil) != nil {
 		return l8RuntimeOwnerPacketV1{}, errL8RuntimeOwnerInvalid
 	}
-	response, err := receiveL8RuntimeOwnerSeqpacket(fd)
+	response, err := receiveJailerRecoveryClientReply(ctx, fd, unix.Recvmsg)
 	defer closeL8RuntimeOwnerFiles(response.Files)
 	if err != nil || ctx.Err() != nil || validateJailerRecoveryClientReply(packet, response) != nil {
 		return l8RuntimeOwnerPacketV1{}, errL8RuntimeOwnerInvalid
