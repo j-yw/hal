@@ -57,9 +57,21 @@ func (starter *jailerRecoveryStarter) beginMinimalGateRelease(gate *minimalContr
 		gate.attempted || gate.closing || !starter.started || starter.closed || starter.released || starter.gate == nil || !starter.observation.pidfdOwned {
 		return nil, errL8RuntimeOwnerInvalid
 	}
+	if previous := gate.operation; previous != nil {
+		select {
+		case <-previous.done:
+		default:
+			return nil, errL8RuntimeOwnerInvalid
+		}
+	}
 	// Local I/O exclusion is additional to the original selected admission;
 	// failed/ambiguous I/O never clears that admission or its original window.
 	gate.attempted = true
+	return starter.newMinimalGateOperationLocked(gate)
+}
+
+// Caller holds starter.mu and has validated the retained binding and slot.
+func (starter *jailerRecoveryStarter) newMinimalGateOperationLocked(gate *minimalControlGateIO) (*minimalControlGateOperation, error) {
 	originalFD := int(starter.gate.Fd())
 	var original unix.Stat_t
 	flags, flagErr := unix.FcntlInt(uintptr(originalFD), unix.F_GETFD, 0)
@@ -72,7 +84,7 @@ func (starter *jailerRecoveryStarter) beginMinimalGateRelease(gate *minimalContr
 	if err != nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
-	file := os.NewFile(uintptr(fd), "minimal-gate-release")
+	file := os.NewFile(uintptr(fd), "minimal-gate-operation")
 	var duplicate unix.Stat_t
 	if unix.Fstat(fd, &duplicate) != nil || duplicate.Dev != original.Dev || duplicate.Ino != original.Ino || !gate.prep.current() {
 		if file.Close() != nil {

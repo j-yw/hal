@@ -175,3 +175,59 @@ those missing owners, so it should not be used as this receive test seam.
 This design requires supervisor approval before extraction/RED, then frozen RED
 reproduction before GREEN. Its only verification is source/call/lock tracing and
 `git diff --check`; no new behavioral or live acceptance result is claimed.
+
+## Approved RED and bounded GREEN checkpoint
+
+Compiling RED `64b9b535` adds only the selected context-only extraction at the
+actual post-child-inspection consumer and its new ordinary fixture wrapper.
+All original legacy statements and tests are unchanged. The 245-line RED blob
+`b44ef77531fa23435997864a4fd2c064ee97b7c2` is preserved in GREEN. Main independently
+reproduced fifteen passing controls and eighteen expected failing test/subtest
+events over three race repetitions, with no skips/races and joined rescue.
+
+The selected method now captures B once, registers one exact CLOEXEC gate
+duplicate, drops starter.mu, and watches its B/stage context and original
+preparation lifetime. The original bounded decoder/role check closes received
+rights. Completion stops/joins the watcher before closing its duplicate, restores
+starter.mu and rechecks original B/P/context before completing the slot. No new
+outer lock, cancellation authority, process observer or timer reset is added.
+Close keeps its existing revoke-first, local-operation-only join outside the
+mutex. Resource acquisition/lock waits are not claimed forcibly interruptible.
+
+The shared gate-duplicate helper is the existing identity/type/CLOEXEC algorithm
+factored for these two operations. Release may replace only a completed slot;
+the original admission CAS and R/D are untouched. A failed or completed arming
+slot cannot be used to perform arming again. Only successful actual StartChild
+returns the original Release callback.
+
+New forward evidence deliberately distinguishes these boundaries:
+
+- Real malformed/wrong-role/short/extra/truncated packets and one/eight received
+  rights reach the same receive; inode-count controls verify rejected rights do
+  not remain open. The parent-owned canary descriptor stays open.
+- Concurrent arming calls preserve the original operation; eight Close callers
+  revoke and join that operation. A raw pre-closure release rejects, but that is
+  not credited as proof of the later admission/slot guard.
+- Real ChildArmed completes its watcher/duplicate before actual revision 1 and
+  original admitted release. Separately, a deliberately unfinished retained-slot
+  mismatch at actual revision 1 makes that same captured Release win CAS and
+  reject without replacing the slot. It is not a claim that physically concurrent
+  original arming and its not-yet-returned Release callback were possible.
+- Cancellation, a real shorter derived stage, and natural original P occur after
+  the receive while starter.mu delays completion. The watcher still joins while
+  that mutex is held. Rejection must reach original runner start-failure Kill/Wait
+  on the fake process, not merely a later canceled record transition.
+- A genuine shorter stage interrupts blocked receive with its socket budget
+  capped accordingly. Retained original-socket and operation-FD successor
+  canaries survive all joined/repeated cleanup.
+
+External, nonshipping mutation overlays remove the active-slot check or the
+post-lock currentness check. The first fails the actual admitted retained-slot
+control; the second fails all three post-receive loss cases. Both compile and
+join with intended failures and no skips/races. These are sensitivity checks,
+not additional runtime authority or production implementations.
+
+Whole-host/focused races, unchanged guards, vet and Darwin evidence are recorded
+against the frozen submission in its handoff. Ordinary fixtures do not prove
+actual supervisor-child/Jailer/KVM ownership, native image execution or Linux
+end-to-end acceptance. Executable/controller/event activation remains separate.
