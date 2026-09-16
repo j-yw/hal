@@ -97,3 +97,21 @@ rebuilt release assets, live exec/copy/cancel/teardown, host runtime producer,
 credential delivery/cleanup, and correlated L10/L11 proof remain separate gates.
 The selected image has the reset same-UID topology, not workload privilege
 separation or a guest seccomp claim.
+
+## Initial compiling RED checkpoint
+
+The new constructor-only seam is used by `runMinimalGuestAgent`, but deliberately
+delegates unchanged bootstrap-only serving. The old listener-only helper remains
+temporarily shared with existing tests; GREEN removes it while evolving only
+their selected setup. No backend/proof constructor is called at this checkpoint.
+
+The whole command package under `-race -count=3` produces 33 expected failing
+test/subtest events, 201 passing events, and zero skips. Nine invalid L7/config
+cases reach the listener incorrectly; pre-canceled entry still passes. The actual
+entry route completes bootstrap, Finished, and the unchanged independent golden
+readiness, then authenticated exec fails with EOF and zero backend/proof calls.
+Construction/cleanup assertions independently expose the missing backend owner.
+Copy request fixtures validate before authentication, but copy dispatch and fresh
+proof assertions are not reached past the exec failure and are not claimed as
+executed acceptance. Existing command/config/legacy tests pass unchanged. All
+Serve/watchdog tasks join; no watchdog rescue or race report occurs.

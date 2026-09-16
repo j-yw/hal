@@ -69,7 +69,15 @@ func runGuestAgentEntry(ctx context.Context, dependencies guestAgentEntryDepende
 func runMinimalGuestAgent(parent context.Context, line string) error {
 	ctx, cancel := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	return runMinimalGuestAgentWithListener(ctx, line, vsock.ListenLinuxControl)
+	return runMinimalGuestAgentWithDependencies(ctx, line, minimalGuestAgentDependencies{
+		lookupEnvironment: os.LookupEnv,
+		listen:            vsock.ListenLinuxControl,
+		newBackend: func(options server.LinuxBackendOptions) (server.Backend, error) {
+			return server.NewLinuxBackend(options)
+		},
+		newNetworkVerifier:  guestnetwork.NewLinuxNetworkIsolationVerifier,
+		newWorkloadVerifier: server.NewLinuxWorkloadIsolationVerifier,
+	})
 }
 
 // Only the fixed listener is injected; the selected adapter constructs the
