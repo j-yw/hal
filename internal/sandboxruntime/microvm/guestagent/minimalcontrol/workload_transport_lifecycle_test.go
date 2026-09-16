@@ -318,6 +318,31 @@ func TestWorkloadTransportPendingWriterSlotIsBoundedAndCanceled(t *testing.T) {
 	}
 }
 
+func TestWorkloadTransportPendingRequestRechecksHardExpiryBeforeBackend(t *testing.T) {
+	backend := &workloadTransportBackend{}
+	fixture := newWorkloadTransportFixture(t, backend)
+	peer, held := connectHeldWorkloadWriter(t, fixture, 4)
+	state := fixture.authenticate(t, peer, true)
+	defer state.Revoke()
+	fixture.readiness(t, peer, state, fixture.binding)
+	write(t, peer, workloadRecord(t, fixture, state, workloadInnerExec(t), 1))
+	clear(workloadResponse(t, fixture, peer, state, 1))
+	await(t, held.held, "held writer after consumed response")
+	write(t, peer, workloadRecord(t, fixture, state, workloadInnerExec(t), 2))
+	// The reader has authenticated and retained request 2, and is now reading
+	// the next record. The timer callback may be scheduled after the deadline.
+	peer.other.awaitIO(t, 13, 4)
+	fixture.clock.mu.Lock()
+	fixture.clock.now = fixture.clock.now.Add(session.MaxGuestCredentialSessionLifetime)
+	fixture.clock.mu.Unlock()
+	close(held.release)
+	assertClosed(t, peer)
+	fixture.wait(t)
+	if backend.calls.Load() != 1 {
+		t.Fatal("already authenticated pending request began backend work after original hard expiry")
+	}
+}
+
 func TestWorkloadTransportBlockedExecCanceledWithoutBackendRelease(t *testing.T) {
 	for _, loss := range []string{"eof", "owner", "cancel", "hard-expiry", "second-request", "partial-header-eof", "partial-body-eof"} {
 		t.Run(loss, func(t *testing.T) {
