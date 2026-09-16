@@ -239,9 +239,18 @@ observer stops, joins, L7 calls or file/lease cleanup. Cancellation before setup
 enters is rechecked before allocation; a callback already in flight must
 join before its returned resource can be closed. A caller deadline while waiting
 returns unavailable and retains the attempt for a later Finalize, never closes
-under its active callback. Concurrent finalizers serialize the cleanup pass
-outside source.mu; recheck context after that wait. No callback reenters a held
-host/attempt/source mutex. Alias Close never gains the attempt's resources.
+under its active callback. Concurrent finalizers use cancellable cleanup
+admission, such as a done-channel/select, with source.mu free throughout the
+wait. A losing caller observes its own cancellation/deadline while waiting and
+returns unavailable, preserving the same owner/attempt without starting duplicate
+cleanup. After successful admission, recheck context before invoking cleanup.
+No callback reenters a held host/attempt/source mutex. Alias Close never gains
+the attempt's resources.
+
+An already admitted `AbortBeforeVM` call is synchronous and uses the Session's
+existing independently bounded cleanup context. Do not detach that callback,
+replace its budget or claim forced interruption when the caller loses context.
+Keep source.mu free during the admitted callback as well as admission waits.
 
 After setup joins, close owned prepared FDs, stop/join this attempt's context/
 loss observers and call the same Session's `AbortBeforeVM` for actual pre-exec
