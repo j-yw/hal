@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -45,33 +46,55 @@ func allowedHostTopologyImport(path string) bool {
 }
 
 func TestFirecrackerHostTopologyIsNotWiredIntoDefaultPaths(t *testing.T) {
+	if err := validateFirecrackerHostTopologySources(readFirecrackerHostTopologySources(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readFirecrackerHostTopologySources(t *testing.T) map[string][]byte {
+	t.Helper()
 	parent := ".."
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		t.Fatal(err)
 	}
+	sources := make(map[string][]byte)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
-		}
-		if entry.Name() == "l7_runtime_controller.go" || entry.Name() == "l7_live_composition.go" ||
-			entry.Name() == "l8_runtime_owner_recovery.go" || entry.Name() == "l8_l7_recovery_session_factory.go" {
 			continue
 		}
 		payload, err := os.ReadFile(filepath.Join(parent, entry.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if entry.Name() == "minimal_l7_config.go" {
+		sources[entry.Name()] = payload
+	}
+	return sources
+}
+
+func validateFirecrackerHostTopologySources(sources map[string][]byte) error {
+	names := make([]string, 0, len(sources))
+	for name := range sources {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if name == "l7_runtime_controller.go" || name == "l7_live_composition.go" ||
+			name == "l8_runtime_owner_recovery.go" || name == "l8_l7_recovery_session_factory.go" {
+			continue
+		}
+		payload := sources[name]
+		if name == "minimal_l7_config.go" {
 			if err := validateMinimalL7ConfigSource(payload); err != nil {
-				t.Fatalf("descriptor-only mapper %s: %v", entry.Name(), err)
+				return fmt.Errorf("descriptor-only mapper %s: %v", name, err)
 			}
 			continue
 		}
 		if strings.Contains(string(payload), "firecrackerhost/l7network") || strings.Contains(string(payload), "l7network.New(") {
-			t.Fatalf("default Firecracker host path %s wires explicit L7 topology", entry.Name())
+			return fmt.Errorf("default Firecracker host path %s wires explicit L7 topology", name)
 		}
 	}
+	return nil
 }
 
 // This is a closed check of the one pure mapper, not a blanket filename
