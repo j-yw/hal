@@ -376,10 +376,16 @@ func nilDependency(value any) bool {
 }
 
 func terminationCause(ctx context.Context) error {
+	// Err observes completed cancellation before Cause reads its payload. Reading
+	// Cause first can race its nil-cause fallback to Err and lose our sentinel.
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
 	switch cause := context.Cause(ctx); cause {
-	case nil, ErrOwnerLost, ErrTimeout:
+	case ErrOwnerLost, ErrTimeout:
 		return cause
 	default:
-		return ctx.Err()
+		return err
 	}
 }
