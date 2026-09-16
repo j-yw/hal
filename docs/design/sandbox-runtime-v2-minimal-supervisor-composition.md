@@ -1,5 +1,32 @@
 # Minimal supervisor composition
 
+## Reached backpressure and descriptor forwards
+
+The actual original-owner fixture now reaches a large CopyOut response writer
+blocked by a real small socket send buffer while its original producer reader
+waits for the producer mutex. Tests first join the existing publication commit
+channel before observing initialized pair fields: receipt of a candidate alone
+is deliberately not that observation. Nonzero kernel queued bytes plus an
+unfinished writer establish backpressure. Endpoint EOF interrupts and joins that
+writer; one pending next frame does not prevent EOF observation, and an excess
+first byte with the slot full retires the pair without another backend call.
+The pending-frame negative is opaque peer framing, not a second valid Client
+operation. All original reader/writer/controller/guest tasks join after loss.
+
+Real ancillary-send tests separately cover RD2's exact one-descriptor ownership,
+RD1 rejection, missing/extra/truncated rights, malformed/truncated payloads and
+regular/datagram/seqpacket/named/abstract endpoints (including an empty abstract
+address). They verify received descriptor cleanup and preserve sender ownership;
+their golden metadata is a codec fixture, not runtime authority.
+
+After genuine work, Inspect and final scope exit, held original starter locking
+now demonstrates that both concurrent final Close callers wait while owned.mu
+remains available. Once joined, later Close calls preserve an actually allocated
+successor at the exact old listener descriptor number and a replacement listener
+entry; a real write/read proves the successor socket remains usable. No descriptor
+is overwritten to create that successor. Earlier REDs and assertions stay intact.
+These forwards do not yet establish pre-commit early-work/send-ambiguity ordering.
+
 ## Compound-close correction checkpoint
 
 Independent exact `99008ee6` review reached a remaining final-disposal race:
