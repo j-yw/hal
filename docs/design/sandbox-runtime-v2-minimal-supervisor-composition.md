@@ -1,5 +1,22 @@
 # Minimal supervisor composition
 
+## Reached kernel-blocked ancillary publication
+
+The ordinary same-owner forward holds the actual producer's retirement mutex
+after its sole reader rejects malformed peer input, then fills the original
+seqpacket send queue with bounded nonblocking writes. Real guest authentication
+and pair construction still run. The original publisher is observed inside
+SendmsgN's kernel syscall while its original admission is current and backend
+count is zero. No replacement event, reader, send callback or authority is used.
+
+Original preparation cancellation interrupts the send before its unchanged
+admission deadline, with producer retirement still held. Publication, its watcher,
+the original preparation I/O watcher, controller/key scope and guest join before
+that held producer can shut down its endpoint. The test does not identify which
+supervisor cancellation watcher wins shutdown. Work never commits, the publication
+cannot retry, original R/D/P/H remain unchanged, all work/producer tasks join and
+authenticated cleanup Inspect remains available. No production change was needed.
+
 ## Reached cleanup and channel loss during publication
 
 The candidate-before-commit forward now also sends authenticated StopReap or
