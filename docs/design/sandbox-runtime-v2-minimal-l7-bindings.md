@@ -1,5 +1,33 @@
 # Selected minimal L7 bindings
 
+## Host inspection behavioral RED checkpoint
+
+The tests-only host slice starts at accepted integration `3031e096`: the selected
+guest inspection, pre-exec assembler and original supervisor/work composition are
+now integrated dependencies. The historical design status below remains the
+record of their status when this design was accepted, not their current status.
+This checkpoint changes no production code or legacy/public Client behavior.
+
+The existing generic `TransportRequest.ProtocolVersionV1` carrier metadata stays
+unchanged. Only its private operation is `inspect_isolation`; its inner JSON must
+be the exact 76-byte minimal-v1 request. The new REDs reach real opcode-4 codec
+rejection and original producer request rejection after genuine guest readiness.
+They also reach the incorrect forwarding of this payload under all three old
+Exec/Copy opcodes, through the original producer, server and controller to the
+actual encrypted guest Server. A concrete Linux no-request verifier consumes
+counted fake OS/network observations: initial Ready runs once; hidden inspection
+currently advances fresh inspection without backend/environment work.
+
+Positive opcode-4 response/H/ordinal assertions are not yet reached. Invalid
+opcode-4 header controls currently reject at the missing-opcode gate, so they do
+not yet prove implemented inspection-specific size guards. Pre-cancel/retired
+controls similarly cannot prove admitted-inspection loss handling. Later forwards
+must reach the original publication gate, host-added H versus guest timing,
+deadline/monotonic pinning, drift, busy/blocked inspection, delayed or completed
+replies, final writer/watcher joins and loss-wins acceptance. Keep unchanged
+ordinary Exec/CopyIn cancellation controls. No L7 binding or activation follows
+from this RED checkpoint; independent fixed RED review precedes host GREEN.
+
 DESIGN ONLY, from `372a279445d7c751eab1bd87d598e9948d4551e7`.
 The [Linux architecture](sandbox-runtime-v2-linux-completion-architecture.md)
 and [L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md) govern.
