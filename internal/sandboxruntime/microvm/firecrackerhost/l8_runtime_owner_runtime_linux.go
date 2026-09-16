@@ -37,9 +37,10 @@ type l8RuntimeOwnerLinuxRuntime struct {
 	configFD    int
 	assetFDs    [2]int
 
-	minimalNamespaces  *minimalControlNamespaceProjection
-	minimalPreparation *minimalControlPreparation
-	minimalServing     *minimalControlSupervisorServing
+	minimalNamespaces   *minimalControlNamespaceProjection
+	minimalPreparation  *minimalControlPreparation
+	minimalServing      *minimalControlSupervisorServing
+	minimalDisposalDone chan struct{} // Guarded by mu; selected final disposer join.
 
 	mu         sync.Mutex
 	namespaces [2]*os.File
@@ -250,6 +251,18 @@ func (owned *l8RuntimeOwnerLinuxRuntime) close() {
 				return // Existing cleanup service still owns listener and records.
 			}
 		}
+		// Scope completion permits disposal but does not elect its owner. Only
+		// this selected path needs the final-disposal join; legacy is unchanged.
+		owned.mu.Lock()
+		if done := owned.minimalDisposalDone; done != nil {
+			owned.mu.Unlock()
+			<-done
+			return
+		}
+		owned.minimalDisposalDone = make(chan struct{})
+		done := owned.minimalDisposalDone
+		owned.mu.Unlock()
+		defer close(done)
 	}
 	if owned.minimalPreparation != nil && owned.shutdownMinimalControlPreparation() != nil {
 		return // Preserve unresolved owned handles; this is not terminal proof.

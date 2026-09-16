@@ -11,6 +11,11 @@ its joined race evidence is distinct from the passing earlier barriers and full
 host suite. It does not claim a descriptor successor was actually closed. A
 selected-only final-disposer election must join losing Close callers outside
 bookkeeping/lifecycle locks and preserve unresolved-cleanup retention.
+The correction elects that one disposer under the original owned.mu only after
+the existing I/O/lifecycle/scope prerequisites. Losing selected callers release
+the mutex before waiting for its completion. The elected attempt is consumed
+even if preparation shutdown retains uncertainty; this is not a success receipt
+or permission to retry raw descriptor cleanup. Nil-preparation legacy is unchanged.
 
 The reached 141-line whole-Close/error RED is preserved unchanged. Selected
 `owned.close` now revokes the original preparation before serializing with serving
