@@ -44,6 +44,10 @@ func validateL6ProductionProxySource(path string, payload []byte) error {
 		}
 	}
 	if strings.Contains(string(payload), "internal/sandboxruntime/networkenforcement/policyproxy") {
+		if path == "internal/sandboxruntime/microvm/firecrackerhost/minimal_preexec_host_linux.go" ||
+			path == "internal/sandboxruntime/microvm/firecrackerhost/minimal_preexec_assembler_linux.go" {
+			return validateMinimalPreexecProxySource(filepath.Base(path), payload)
+		}
 		return fmt.Errorf("%s imports the L6 production proxy; L7 owns explicit runtime topology wiring", path)
 	}
 	return nil

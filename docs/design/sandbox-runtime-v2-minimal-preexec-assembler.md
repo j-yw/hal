@@ -322,3 +322,17 @@ itself has source-inspection/diff-check evidence only. Actual selected L7 guest/
 terminal adapters, trusted provisioning, eight-role exec/original-channel/work
 composition, credential delivery, durable directory/terminal retirement and
 prepared-Linux no-skip acceptance remain unimplemented here.
+
+## Default-source classification refinement
+
+The L6 proxy and Firecracker L7 default-source guards now explicitly recognize
+the two private pre-exec composition files described above. This narrowly
+supersedes their historical assumption that every unlisted host file is a
+default path; it does not enable a caller or change any runtime behavior.
+Recognition requires checked root-only entries, unchanged incapable proof
+returns, inert adapter constructors and closed wrapper/helper references.
+Mutation tests reject Start/default or newly unreviewed callers, init/global
+activation, callable escapes, exported entries and direct constructor activation.
+All other files retain the existing import protection, and the pure descriptor
+mapper retains its separate stricter guard and all negatives. These are bounded
+source regression checks, not whole-program reachability or live isolation proof.

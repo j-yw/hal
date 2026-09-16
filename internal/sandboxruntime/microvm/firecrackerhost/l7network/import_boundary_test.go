@@ -73,12 +73,18 @@ func readFirecrackerHostTopologySources(t *testing.T) map[string][]byte {
 }
 
 func validateFirecrackerHostTopologySources(sources map[string][]byte) error {
+	if err := validateMinimalPreexecSourceBoundary(sources); err != nil {
+		return err
+	}
 	names := make([]string, 0, len(sources))
 	for name := range sources {
 		names = append(names, name)
 	}
 	slices.Sort(names)
 	for _, name := range names {
+		if name == "minimal_preexec_host_linux.go" || name == "minimal_preexec_assembler_linux.go" {
+			continue // Recognized only after the closed boundary check above.
+		}
 		if name == "l7_runtime_controller.go" || name == "l7_live_composition.go" ||
 			name == "l8_runtime_owner_recovery.go" || name == "l8_l7_recovery_session_factory.go" {
 			continue
