@@ -4,9 +4,13 @@ package firecrackerhost
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +18,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost/l7network"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
+	"golang.org/x/sys/unix"
 )
 
 type minimalPreexecAssemblyFixture struct {
@@ -23,12 +28,18 @@ type minimalPreexecAssemblyFixture struct {
 	namespace                                                        *minimalPreexecTestNamespace
 	seed                                                             *minimalSeedProducerFixture
 	command                                                          *minimalL7ConfigTestTAP
+	configureNetwork                                                 func(*l7network.Options)
 	networkCalls, seedCalls, entropyCalls, duplicateCalls, sealCalls atomic.Int32
 }
 
-func newMinimalPreexecAssemblyFixture(t *testing.T) *minimalPreexecAssemblyFixture {
+func newMinimalPreexecAssemblyFixture(t *testing.T, original ...*minimalPreexecFixture) *minimalPreexecAssemblyFixture {
 	t.Helper()
-	f := &minimalPreexecAssemblyFixture{base: newMinimalPreexecFixture(t)}
+	f := &minimalPreexecAssemblyFixture{}
+	if len(original) == 0 {
+		f.base = newMinimalPreexecAssemblyClaim(t)
+	} else {
+		f.base = original[0]
+	}
 	var err error
 	f.host, err = newMinimalPreexecHostForUID(f.base.preparation, f.base.handoff.provider, f.base.inputs, uint32(os.Geteuid()))
 	if f.host != nil {
@@ -46,6 +57,7 @@ func newMinimalPreexecAssemblyFixture(t *testing.T) *minimalPreexecAssemblyFixtu
 			claim := f.base.reservation.Identity()
 			if identity.SandboxID != claim.SandboxID || identity.ExecutionID != claim.ExecutionID || identity.WorkerID != claim.WorkerID || identity.RuntimeGenerationID != claim.RuntimeGeneration ||
 				identity.PolicySnapshotID != f.base.inputs.proxy.Policy.PlanMetadata().PolicySnapshot.ID || identity.PlanID == claim.PlanID || plan.ID != identity.PlanID || plan.Proxy.ProxySessionID != identity.ProxySessionID {
+				t.Logf("network callback identity equality: snapshot=%t plan=%t proxy=%t", identity.PolicySnapshotID == f.base.inputs.proxy.Policy.PlanMetadata().PolicySnapshot.ID, plan.ID == identity.PlanID, plan.Proxy.ProxySessionID == identity.ProxySessionID)
 				return nil, errors.New("incorrect real preparation identity")
 			}
 			tapOptions := input.tap
@@ -54,10 +66,14 @@ func newMinimalPreexecAssemblyFixture(t *testing.T) *minimalPreexecAssemblyFixtu
 			if err != nil {
 				return nil, err
 			}
-			return l7network.New(l7network.Options{Enabled: true,
+			options := l7network.Options{Enabled: true,
 				Proxy:    &minimalL7ConfigTestProxy{endpoint: "127.0.0.1:43123", loss: make(chan struct{})},
 				Topology: &minimalPreexecTestTopology{namespace: f.namespace}, TAP: tap, Rules: minimalL7ConfigTestRules{},
-				GuestIsolation: minimalL7ConfigTestNoGuest{}, VMTermination: minimalL7ConfigTestNoGuest{}, StateDir: input.networkStateDirectory, CleanupTimeout: time.Second})
+				GuestIsolation: minimalL7ConfigTestNoGuest{}, VMTermination: minimalL7ConfigTestNoGuest{}, StateDir: input.networkStateDirectory, CleanupTimeout: time.Second}
+			if f.configureNetwork != nil {
+				f.configureNetwork(&options)
+			}
+			return l7network.New(options)
 		},
 		seed: func(ctx context.Context) (*minimalControllerSeedOwner, error) {
 			f.seedCalls.Add(1)
@@ -91,6 +107,86 @@ func newMinimalPreexecAssemblyFixture(t *testing.T) *minimalPreexecAssemblyFixtu
 	return f
 }
 
+// Select valid strict Firecracker paths BEFORE Reserve/Claim. The original RED
+// fixture remains byte-identical; no claimed identity is repaired in place.
+func newMinimalPreexecAssemblyClaim(t *testing.T, shared ...*minimalTemplateHandoffFixture) *minimalPreexecFixture {
+	t.Helper()
+	h := &minimalTemplateHandoffFixture{}
+	if len(shared) == 0 {
+		h.inputs = newMinimalTemplateFixture(t)
+	} else {
+		h.inputs = shared[0].inputs
+	}
+	var cancel context.CancelFunc
+	h.ctx, cancel = context.WithTimeout(context.Background(), 4*time.Second)
+	t.Cleanup(cancel)
+	h.owned, cancel = context.WithTimeout(context.Background(), 6*time.Second)
+	t.Cleanup(cancel)
+	var err error
+	if len(shared) == 0 {
+		h.provider, err = newMinimalLaunchProvider(h.inputs.association, h.inputs.options)
+	} else {
+		h.provider = shared[0].provider
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := &minimalTemplateHandoffProbe{minimalLaunchProvider: h.provider, snapshot: snapshotJailerRecoveryAsset}
+	h.binding, err = sandboxruntime.NewMinimalLaunchProviderBinding(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := sandboxruntime.NewAuthenticatedWorkerPrincipalAuthority("preexec-authority", "preexec-authority-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.principal, err = authority.IssueAuthenticatedWorkerPrincipal(h.inputs.association.scope.PrincipalID, 1000, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.authorizer, err = sandboxruntime.NewMinimalLaunchAuthorizer(authority, h.binding, []sandboxruntime.MinimalLaunchScope{h.inputs.association.scope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.authorizer.Close)
+	hints := minimalTemplateHints()
+	hints.RuntimeID = "fc-preexec-job"
+	if len(shared) != 0 {
+		hints.RuntimeID += "-two"
+		hints.SandboxID += "-two"
+		hints.ExecutionID += "-two"
+		hints.SubmissionID += "-two"
+		hints.PlanID += "-two"
+	}
+	h.selected, err = h.authorizer.ResolveSelection(h.ctx, h.principal, h.inputs.association.scope.WorkerID, hints, h.inputs.association.template)
+	if err != nil || probe.source == nil {
+		t.Fatal("actual fc-prefixed selection", err)
+	}
+	t.Cleanup(func() { _ = h.selected.Close() })
+	r, err := h.selected.Reserve(h.ctx, h.owned, "preexec-job", "preexec-job-generation", "request-v2-"+strings.Repeat("c", 64), time.Now().Add(3*time.Second),
+		sandboxruntime.MinimalLaunchRequestCorrelation{AdmissionGrantID: "original-admission", AdmissionGrantRevision: 7})
+	if err != nil || r.ArmDispatch(h.ctx, r.Identity()) != nil {
+		t.Fatal("actual same selection Reserve/Arm", err)
+	}
+	t.Cleanup(r.Revoke)
+	f := &minimalPreexecFixture{handoff: h, probe: probe, reservation: r, preparation: r.Context()}
+	f.p, _ = r.Context().Deadline()
+	f.owner = startMinimalTemplateProbe(t, h, probe, r)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, _ = f.owner.Finalize(ctx)
+	})
+	if len(shared) == 0 {
+		f.assertClaimed(t)
+	} else if f.owner != probe.owner || probe.source.owner != f.owner || f.owner.lease == nil || f.owner.lease.ConfirmCurrent(f.preparation) != nil ||
+		f.owner.Identity() != r.Identity() || f.owner.context != r.OwnedContext() || h.selected.Current(f.preparation) != nil || h.inputs.requests.Load() != 4 {
+		t.Fatal("second genuine provider acquisition/Claim control failed")
+	}
+	f.inputs = minimalPreexecHostFixtureInputs(t, h.inputs.association.scope.NetworkPolicyID)
+	return f
+}
+
 func TestMinimalPreexecAssemblesOnOriginalClaimedOwner(t *testing.T) {
 	f := newMinimalPreexecAssemblyFixture(t)
 	owner, lease, assets := f.base.owner, f.base.owner.lease, f.base.owner.files
@@ -98,6 +194,13 @@ func TestMinimalPreexecAssemblesOnOriginalClaimedOwner(t *testing.T) {
 		t.Fatal("Claim did not retain the exact original reservation/context/P")
 	}
 	if err := owner.prepareMinimalInputsWithOps(f.host, f.ops); err != nil {
+		t.Logf("reached stages: duplicates=%d entropy=%d network=%d seed=%d seals=%d", f.duplicateCalls.Load(), f.entropyCalls.Load(), f.networkCalls.Load(), f.seedCalls.Load(), f.sealCalls.Load())
+		if a := owner.attempt; a != nil {
+			t.Logf("retained stages: coordinator=%t session=%t prepare-returned=%t prepare-success=%t user=%t net=%t", a.coordinator != nil, a.session != nil, a.prepareReturned, a.successfulPrepare, a.namespace[0] != nil, a.namespace[1] != nil)
+			if a.session != nil {
+				t.Logf("retained Session status=%s", a.session.Metadata().Status)
+			}
+		}
 		t.Fatal("missing same-owner pre-exec assembly after genuine host/Claim controls", err)
 	}
 	a := owner.attempt
@@ -112,6 +215,31 @@ func TestMinimalPreexecAssemblesOnOriginalClaimedOwner(t *testing.T) {
 		a.config.Control.Prelaunch["planId"] != owner.identity.PlanID || a.config.Control.Prelaunch["networkPlanId"] != a.networkIdentity.PlanID ||
 		a.config.Control.Prelaunch["admissionGrantId"] != owner.request.AdmissionGrantID || a.config.Control.LaunchGrantID != owner.identity.LaunchGrantID {
 		t.Fatal("assembly conflated original launch/request/image/network identities")
+	}
+	claim, scope, n := f.base.reservation.Identity(), f.base.handoff.inputs.association.scope, a.networkIdentity
+	expected := map[string]string{
+		"sandboxId": claim.SandboxID, "executionId": claim.ExecutionID, "workerId": claim.WorkerID, "hostId": claim.HostID,
+		"runtimeId": claim.RuntimeID, "runtimeGeneration": claim.RuntimeGeneration, "workerJobId": claim.WorkerJobID,
+		"submissionId": claim.SubmissionID, "planId": claim.PlanID, "jobGeneration": claim.JobGeneration, "principalId": claim.PrincipalID,
+		"runtimeDriver": "microvm", "admissionGrantId": "original-admission", "admissionRevision": "7",
+		"templatePolicyId": scope.TemplatePolicyID, "workspacePolicyId": scope.WorkspacePolicyID,
+		"networkPlanId": n.PlanID, "policySnapshotId": n.PolicySnapshotID, "proxySessionId": n.ProxySessionID,
+		"proxyGenerationId": n.ProxyGenerationID, "topologyGenerationId": n.TopologyGenerationID, "ruleGenerationId": n.RuleGenerationID,
+		"bootGeneration": a.publicGenerations[0], "imageGeneration": a.publicGenerations[1], "imageDigest": "sha256-" + f.base.handoff.inputs.association.expected.RootfsSHA256,
+	}
+	if !reflect.DeepEqual(a.config.Control.Prelaunch, expected) || a.config.Control.LaunchPolicyRevision != strconv.FormatUint(claim.LaunchPolicyRevision, 10) {
+		t.Fatal("not every selected value came from its original independent source")
+	}
+	payload, err := io.ReadAll(io.NewSectionReader(a.configFile, 0, l8RuntimeOwnerSupervisorConfigLimit+1))
+	decoded, public, decodeErr := decodeMinimalControlSupervisorConfig(payload)
+	fc, fcErr := readMinimalControlFirecrackerConfig(int(a.fcFile.Fd()), a.config.Config)
+	if err != nil || decodeErr != nil || fcErr != nil || !reflect.DeepEqual(decoded, a.config) || sha256.Sum256(payload) != a.configDigest ||
+		validateMinimalControlFirecrackerConfig(fc, decoded, public) != nil || fc.MachineConfig.VCPUCount != f.base.inputs.vcpus || int64(fc.MachineConfig.MemSizeMiB) != f.base.inputs.memoryMiB ||
+		fc.BootSource.KernelImagePath != "/boot/vmlinux" || len(fc.Drives) != 1 || fc.Drives[0].PathOnHost != "/images/rootfs.ext4" || fc.Vsock == nil || fc.Vsock.GuestCID != 3 {
+		t.Fatal("actual sealed selected/FC config readback failed")
+	}
+	if entries, err := a.directory.ReadDir(-1); err != nil || len(entries) != 0 {
+		t.Fatal("per-job directory is not an actual new empty directory", err)
 	}
 	if metadata := a.session.Metadata(); metadata.Status != l7network.StatusHostPrepared || metadata.RawPacketIsolationVerified || metadata.Identity != a.networkIdentity {
 		t.Fatal("assembled Session is not the actual pre-exec-only preparation")
@@ -139,4 +267,10 @@ func TestMinimalPreexecAssemblesOnOriginalClaimedOwner(t *testing.T) {
 		t.Fatal("cleanup discarded or replaced its original owner/attempt identity")
 	}
 	minimalPreexecAssertBorrowedInputs(t, f.base.inputs)
+	minimalPreexecFinalizeFixture(t, f)
+	var entry unix.Stat_t
+	if unix.Fstatat(int(f.base.inputs.stateRoot.Fd()), claim.RuntimeGeneration, &entry, unix.AT_SYMLINK_NOFOLLOW) != nil ||
+		uint64(entry.Dev) != a.directoryPin.Device || entry.Ino != a.directoryPin.Inode || entry.Mode&0o7777 != 0o700 {
+		t.Fatal("documented empty directory retention lost its original identity")
+	}
 }

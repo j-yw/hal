@@ -149,16 +149,64 @@ func (owner *minimalTemplateAssetOwner) Identity() sandboxruntime.MinimalLaunchI
 }
 
 func (owner *minimalTemplateAssetOwner) Finalize(ctx context.Context) (sandboxruntime.MinimalLaunchCleanupReceipt, error) {
+	result := sandboxruntime.MinimalLaunchCleanupReceipt{}
 	if owner == nil || owner.self != owner || owner.source == nil || minimalTemplateContextError(ctx) != nil {
-		return sandboxruntime.MinimalLaunchCleanupReceipt{}, sandboxruntime.ErrMinimalLaunchUnavailable
+		return result, sandboxruntime.ErrMinimalLaunchUnavailable
 	}
 	owner.source.mu.Lock()
-	defer owner.source.mu.Unlock()
 	if owner.source.owner != owner || minimalTemplateContextError(ctx) != nil {
-		return sandboxruntime.MinimalLaunchCleanupReceipt{}, sandboxruntime.ErrMinimalLaunchUnavailable
+		owner.source.mu.Unlock()
+		return result, sandboxruntime.ErrMinimalLaunchUnavailable
 	}
-	if !owner.closed {
-		owner.closed = true
+	owner.closed = true
+	attempt := owner.attempt
+	if attempt != nil {
+		attempt.retired.Store(true)
+	}
+	owner.source.mu.Unlock()
+	if attempt != nil {
+		attempt.cancel()
+		if !minimalPreexecWait(ctx, attempt.setupDone) {
+			return result, sandboxruntime.ErrMinimalLaunchUnavailable
+		}
+	}
+	// Losing cleanup contenders observe their own context while the winner
+	// runs outside source.mu. The original owner/attempt is never reset.
+	for {
+		owner.source.mu.Lock()
+		if minimalTemplateContextError(ctx) != nil {
+			owner.source.mu.Unlock()
+			return result, sandboxruntime.ErrMinimalLaunchUnavailable
+		}
+		if done := owner.cleanupDone; done != nil {
+			owner.source.mu.Unlock()
+			if !minimalPreexecWait(ctx, done) {
+				return result, sandboxruntime.ErrMinimalLaunchUnavailable
+			}
+			continue
+		}
+		done := make(chan struct{})
+		owner.cleanupDone = done
+		owner.source.mu.Unlock()
+		defer func() {
+			owner.source.mu.Lock()
+			owner.cleanupDone = nil
+			close(done)
+			owner.source.mu.Unlock()
+		}()
+		break
+	}
+	if minimalTemplateContextError(ctx) != nil {
+		return result, sandboxruntime.ErrMinimalLaunchUnavailable
+	}
+	if attempt != nil {
+		attempt.cleanup(ctx)
+		if attempt.closeErr != nil {
+			owner.closeErr = sandboxruntime.ErrMinimalLaunchUnavailable
+		}
+	}
+	if !owner.assetsClosed {
+		owner.assetsClosed = true
 		for _, file := range owner.files {
 			if file != nil && file.Close() != nil {
 				owner.closeErr = sandboxruntime.ErrMinimalLaunchUnavailable
@@ -175,7 +223,7 @@ func (owner *minimalTemplateAssetOwner) Finalize(ctx context.Context) (sandboxru
 		}
 	}
 	// Even successful asset closure is not runtime/terminal cleanup proof.
-	return sandboxruntime.MinimalLaunchCleanupReceipt{}, sandboxruntime.ErrMinimalLaunchUnavailable
+	return result, sandboxruntime.ErrMinimalLaunchUnavailable
 }
 
 // Recovery remains cleanup-only and unavailable without its original owner.
