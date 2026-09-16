@@ -303,17 +303,25 @@ func loadL8RuntimeOwnerStableKeyFD(fd int, uid uint32, ops l8RuntimeOwnerKeyFDOp
 	if ops.Stat == nil || ops.Pread == nil || ops.Close == nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
+	var buf []byte
+	transferred := false
+	defer func() {
+		if !transferred {
+			clear(buf)
+		}
+	}()
 	defer func() {
 		if ops.Close(fd) != nil {
 			key = nil
 			err = errL8RuntimeOwnerInvalid
 		}
+		transferred = err == nil && len(key) == 32
 	}()
 	first, statErr := ops.Stat(fd)
 	if statErr != nil || !validL8RuntimeOwnerKeyIdentity(first, uid) {
 		return nil, errL8RuntimeOwnerInvalid
 	}
-	buf := make([]byte, 32)
+	buf = make([]byte, 32)
 	read, readErr := ops.Pread(fd, buf, 0)
 	if readErr != nil || read != 32 {
 		return nil, errL8RuntimeOwnerInvalid

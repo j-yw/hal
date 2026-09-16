@@ -44,3 +44,19 @@ Run focused and original-control race tests, unchanged relevant guards, whole
 host race tests, vet and Darwin compilation at the frozen final version. Ordinary
 FD tests and cross-compilation do not claim root admission, physical memory
 erasure, VM boot, credential usability or complete Sandbox v2 acceptance.
+
+## Implemented checkpoint
+
+RED `05065691` preserves the original loader and old tests. Its returned-error
+cases plus old controls reproduced 33 passes / 18 expected failures under race
+x3; the additional panic cases reproduced 3 controls / 15 expected failures.
+The latter retain the exact propagated marker and existing FD behavior: a Close
+callback that panics before its syscall still leaves that FD to the test-owned
+cleanup, while the helper itself makes no retry or second Close attempt.
+
+The helper now retains its local slice and clears it unless the existing Close
+defer finishes and commits a valid successful result. The only production change
+is this local ownership bookkeeping; no recovery or new closure action is added.
+All 23 focused test/subtest events, including old controls, now pass. Both new
+RED files remain unchanged through GREEN. Broader frozen-version checks are
+recorded separately in the exact review handoff.
