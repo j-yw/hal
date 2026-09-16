@@ -408,3 +408,23 @@ func TestWorkloadTransportBlockedResponseWriteObservesEOF(t *testing.T) {
 	await(t, fixture.server.Done(), "blocked response write joined after EOF")
 	fixture.wait(t)
 }
+
+func TestWorkloadTransportInvalidServeConsumesOriginalOneShot(t *testing.T) {
+	common := testOptions()
+	transport, err := NewWorkloadTransport(BootstrapOptions{Listener: common.Listener, Boot: testBoot(t), OwnerDone: common.OwnerDone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := server.Limits{MaxRequestBytes: server.DefaultMaxRequestBytes, MaxResponseBytes: server.DefaultMaxResponseBytes}
+	if err := transport.Serve(context.Background(), limits, nil); err != ErrInvalid {
+		t.Fatal("invalid handler accepted")
+	}
+	select {
+	case <-transport.(*workloadTransport).bootstrap.Done():
+	default:
+		t.Fatal("invalid selected Serve failed to consume and finish original one-shot")
+	}
+	if err := transport.Serve(context.Background(), limits, nil); err != ErrUsed {
+		t.Fatal("invalid first Serve permitted reuse")
+	}
+}
