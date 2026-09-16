@@ -413,3 +413,7 @@ result is a defensive input copy. RetainedWorkerOwner is identity-bound cleanup
 access after revocation, not readiness. Start returns this same slot; no later
 callback/return reconstructs it. Copied/foreign/mismatched input fails closed while
 partial cleanup ownership remains retained. Unbound compatibility Start is unchanged.
+The first RED uses these genuine neutral admission controls plus original worker
+store-lock/readback controls. Missing binding methods fail before the subsequent
+copy/negative/blocking-callback assertions; those later boundaries are not reached
+evidence yet. Selected worker opt-in/wiring remains a separate required step.
