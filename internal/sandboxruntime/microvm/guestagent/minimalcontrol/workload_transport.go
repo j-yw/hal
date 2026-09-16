@@ -1,6 +1,7 @@
 package minimalcontrol
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"sync"
@@ -109,7 +110,34 @@ func (workload *workloadConnection) serve(parent context.Context, stream *ownedS
 		if !clock.Now().Before(hardExpiry) {
 			return ErrTimeout
 		}
-		response := workload.handler.HandleWorkload(ctx, server.Request{Encoded: request.inner})
+		inspection := selectsInspection(request.inner)
+		failed := false
+		var response server.Response
+		if inspection {
+			if !bytes.Equal(request.inner, []byte(inspectionRequest)) {
+				return ErrInvalid
+			}
+			inspector, _ := workload.handler.(workloadInspector)
+			var observed server.IsolationProofResult
+			var err error
+			if nilDependency(inspector) {
+				err = ErrUnavailable
+			} else {
+				observed, err = inspector.InspectWorkloadIsolation(ctx)
+			}
+			if ctx.Err() != nil || !clock.Now().Before(hardExpiry) {
+				return ErrUnavailable
+			}
+			if err == nil {
+				response.Encoded, err = binding.encodeInspection(observed)
+			}
+			if err != nil {
+				response.Encoded = []byte(inspectionUnavailable)
+				failed = true
+			}
+		} else {
+			response = workload.handler.HandleWorkload(ctx, server.Request{Encoded: request.inner})
+		}
 		defer clear(response.Encoded)
 		if len(response.Encoded) == 0 || int64(len(response.Encoded)) > workload.limits.MaxResponseBytes {
 			return ErrInvalid
@@ -118,7 +146,13 @@ func (workload *workloadConnection) serve(parent context.Context, stream *ownedS
 		if err != nil {
 			return ErrInvalid
 		}
-		return write(payload)
+		if err := write(payload); err != nil {
+			return err
+		}
+		if inspection && (failed || ctx.Err() != nil || !clock.Now().Before(hardExpiry)) {
+			return ErrUnavailable
+		}
+		return nil
 	}
 	start := func(run func() error) {
 		tasks.Add(1)

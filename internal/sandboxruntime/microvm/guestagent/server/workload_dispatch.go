@@ -33,14 +33,24 @@ func (server *Server) HandleWorkload(ctx context.Context, request Request) Respo
 }
 
 func (server *Server) inspectWorkload(ctx context.Context, prepare bool) (err error) {
-	if err := workloadContextError(ctx); err != nil {
-		return err
-	}
-	attempt := server.beginIsolationProofAttempt()
 	defer func() {
 		if recover() != nil {
 			err = errServerNotReady
 		}
+	}()
+	_, err = server.inspectWorkloadResult(ctx, prepare)
+	return err
+}
+
+// The result is transferred only after the same proof-attempt/state checks used
+// by work. Panic unwinding invalidates the attempt before reaching its caller.
+func (server *Server) inspectWorkloadResult(ctx context.Context, prepare bool) (result IsolationProofResult, err error) {
+	if err := workloadContextError(ctx); err != nil {
+		return IsolationProofResult{}, err
+	}
+	err = errServerNotReady
+	attempt := server.beginIsolationProofAttempt()
+	defer func() {
 		server.mu.Lock()
 		defer server.mu.Unlock()
 		if ctxErr := workloadContextError(ctx); ctxErr != nil {
@@ -52,20 +62,23 @@ func (server *Server) inspectWorkload(ctx context.Context, prepare bool) (err er
 		if attempt == server.currentProofAttempt {
 			server.isolationProven = err == nil
 		}
+		if err != nil {
+			result = IsolationProofResult{}
+		}
 	}()
 	if prepare {
 		if err := server.backend.Ready(ctx); err != nil {
-			return errServerNotReady
+			return IsolationProofResult{}, errServerNotReady
 		}
 		if err := workloadContextError(ctx); err != nil {
-			return err
+			return IsolationProofResult{}, err
 		}
 	}
-	result, err := server.workloadIsolationVerifier.VerifyWorkloadIsolation(ctx)
-	if err != nil || !processIsolationVerified(result) || !networkIsolationVerified(result) {
-		return errServerNotReady
+	observed, inspectErr := server.workloadIsolationVerifier.VerifyWorkloadIsolation(ctx)
+	if inspectErr != nil || !processIsolationVerified(observed) || !networkIsolationVerified(observed) {
+		return IsolationProofResult{}, errServerNotReady
 	}
-	return nil
+	return observed, nil
 }
 
 func workloadContextError(ctx context.Context) error {

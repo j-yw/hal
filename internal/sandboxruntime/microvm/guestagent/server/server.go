@@ -363,6 +363,25 @@ func (server *Server) markTransportDone() {
 }
 
 func (server *Server) beginBackendCall(ctx context.Context, stateChanging bool) (context.Context, func(), error) {
+	callCtx, release, err := server.beginOperation(ctx, stateChanging)
+	if err != nil {
+		return nil, nil, err
+	}
+	if stateChanging && server.workloadIsolationVerifier != nil {
+		// Selected work never relies solely on a cached success (or remains
+		// permanently closed by a cached failure). The fresh check is tracked
+		// inside this exact permit and the request's already-bounded context.
+		if err := server.inspectWorkload(callCtx, false); err != nil {
+			release()
+			return nil, nil, err
+		}
+	}
+	return callCtx, release, nil
+}
+
+// beginOperation owns the same admission and lifetime for work and inspection.
+// It does not itself inspect, allowing a result-bearing caller exactly one pass.
+func (server *Server) beginOperation(ctx context.Context, stateChanging bool) (context.Context, func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -399,15 +418,6 @@ func (server *Server) beginBackendCall(ctx context.Context, stateChanging bool) 
 		server.operations.Done()
 		if stateChanging {
 			<-server.admission
-		}
-	}
-	if stateChanging && server.workloadIsolationVerifier != nil {
-		// Selected work never relies solely on a cached success (or remains
-		// permanently closed by a cached failure). The fresh check is tracked
-		// inside this exact permit and the request's already-bounded context.
-		if err := server.inspectWorkload(callCtx, false); err != nil {
-			release()
-			return nil, nil, err
 		}
 	}
 	return callCtx, release, nil
