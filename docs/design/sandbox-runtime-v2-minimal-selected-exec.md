@@ -398,3 +398,18 @@ pidfd/no replay, not VM policy; rescue is not cleanup. Fixed candidates need foc
 old guards, broad default/race/vet/build/docs/platform checks. Separate prepared-Linux gates:
 real root eight-role exec, fresh Jailer/digest-locked guest/isolation/rules, all credential
 modes/restart cleanup, no required skips. This design has source-review/diff-check only.
+
+## Binding declaration and RED checkpoint
+
+The first staged journal surface adds `CheckMinimalLaunchReservation(ctx, original)`
+as typed admission/readback on the SAME worker-entry journal, not a generic callback
+or effect/persistence authority. Its present admission-only interface cannot admit
+Prepare, Run, credentials or Commit until the full typed effect contract exists.
+`MinimalLaunchWorkerInput` retains original principal, Exec, credential admission
+intent (Identity still zero) and request key, never serializable durable state.
+RegisterWorkerOwner follows genuine Claim, attaching the ONE reservation owner
+slot before Identity/journal callbacks, including error/panic paths. Its successful
+result is a defensive input copy. RetainedWorkerOwner is identity-bound cleanup
+access after revocation, not readiness. Start returns this same slot; no later
+callback/return reconstructs it. Copied/foreign/mismatched input fails closed while
+partial cleanup ownership remains retained. Unbound compatibility Start is unchanged.
