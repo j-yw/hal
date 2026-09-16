@@ -155,7 +155,15 @@ using the candidate event as its own expectation. Process handle and transport
 generation are late facts originating inside that retained supervisor; the
 producer does not independently own its process manager. Reconstruct and check
 the full shared binding/session digest before adopting the endpoint. The opaque
-current result stays provider-owned; cleanup reconnect can never reissue it.
+candidate stays provider-owned; cleanup reconnect can never reissue it. Receiving
+RD2 plus its endpoint does not establish the supervisor's post-send publication
+commit: channel liveness cannot distinguish a delayed sender in that interval.
+The first work request waits at the supervisor publication gate and fails closed
+on publication loss. This slice therefore exposes a candidate work carrier, not
+an independently publication-ready result, and selects no worker/runtime success
+consumer. A later API promising readiness before first work must obtain an actual
+post-commit observation; it cannot just rename this candidate or assume liveness
+proves that commitment. No extra acknowledgment is introduced in this slice.
 
 The concrete producer retains a private guestagent.Transport over the accepted
 endpoint. Its supervisor peer calls the existing authenticated controller's
@@ -192,7 +200,9 @@ public metadata, or possession of a decoded event alone.
 
 The paired stream uses bounded length-prefix framing, not JSON/base64 wrappers
 around an already encoded guest request. Each frame is a uint32 big-endian body
-length followed by this 88-byte fixed header and a nonempty opaque v1 JSON body:
+length followed by this 88-byte fixed header and a nonempty opaque v1 JSON payload.
+The prefix is exactly 88 plus payload length (89 through 1,048,664), excluding
+the prefix's own four bytes:
 
 | Header offset | Field |
 | --- | --- |
