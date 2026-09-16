@@ -444,6 +444,9 @@ reading during preparation, inspection, work and output. Preparation must pass
 before canonical readiness is emitted within the original handshake budget.
 The session's original hard-expiry timer is retained through all work, and the
 owner context can only narrow it. No operation creates a new session lifetime.
+Each task also checks the retained deadline immediately before preparation or
+work admission: a delayed timer callback cannot permit an authenticated pending
+request to begin backend work after the original hard expiry.
 Task failure/panic is sanitized, closes I/O, cancels, and joins before bootstrap
 revokes the session and returns to the enclosing server's cleanup owner.
 

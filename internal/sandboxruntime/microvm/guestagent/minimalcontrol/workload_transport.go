@@ -83,7 +83,8 @@ func (workload *workloadConnection) serve(parent context.Context, stream *ownedS
 		}
 	}()
 	sessionID := state.SessionID()
-	hardTimer := clock.AfterFunc(state.HardExpiry().Sub(clock.Now()), func() { stop(ErrTimeout) })
+	hardExpiry := state.HardExpiry()
+	hardTimer := clock.AfterFunc(hardExpiry.Sub(clock.Now()), func() { stop(ErrTimeout) })
 	defer hardTimer.Stop()
 	write := func(payload []byte) error {
 		defer clear(payload)
@@ -104,6 +105,9 @@ func (workload *workloadConnection) serve(parent context.Context, stream *ownedS
 		defer clear(request.inner)
 		if ctx.Err() != nil {
 			return ErrUnavailable
+		}
+		if !clock.Now().Before(hardExpiry) {
+			return ErrTimeout
 		}
 		response := workload.handler.HandleWorkload(ctx, server.Request{Encoded: request.inner})
 		defer clear(response.Encoded)
@@ -149,6 +153,9 @@ func (workload *workloadConnection) serve(parent context.Context, stream *ownedS
 		}()
 	}
 	start(func() error {
+		if ctx.Err() != nil || !clock.Now().Before(deadline) {
+			return ErrTimeout
+		}
 		if err := workload.handler.PrepareWorkload(ctx); err != nil || ctx.Err() != nil || !clock.Now().Before(deadline) {
 			return ErrUnavailable
 		}
