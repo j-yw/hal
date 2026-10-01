@@ -444,6 +444,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				Target:         target,
 				Workspace:      factorySandboxWorkspaceStateFromRecord(record),
 				Save:           deps.persistSandboxState,
+				Now:            deps.now,
 			}); err != nil {
 				return err
 			}
@@ -489,7 +490,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 				}
 				record.Sandbox.Workspace.Branch = localBundle.RunBranch
 				record.Sandbox.Workspace = sanitizeFactorySandboxFailureWorkspaceMetadata(record.Sandbox.Workspace)
-				if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{SandboxHostID: req.SandboxHostID, SandboxRuntime: req.SandboxRuntime, Target: target, Workspace: factorySandboxWorkspaceStateFromRecord(record), Save: deps.persistSandboxState}); err != nil {
+				if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{SandboxHostID: req.SandboxHostID, SandboxRuntime: req.SandboxRuntime, Target: target, Workspace: factorySandboxWorkspaceStateFromRecord(record), Save: deps.persistSandboxState, Now: deps.now}); err != nil {
 					return err
 				}
 				return saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor)

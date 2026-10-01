@@ -406,6 +406,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 				Target:         target,
 				Workspace:      req.Workspace,
 				Save:           deps.persistSandboxState,
+				Now:            deps.now,
 			}); err != nil {
 				return err
 			}

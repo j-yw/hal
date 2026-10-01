@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -14,6 +15,8 @@ type sandboxCommandStatePersistenceRequest struct {
 	Target         *sandbox.SandboxState
 	Workspace      *sandbox.SandboxWorkspace
 	Save           func(*sandbox.SandboxState) error
+	// Now stamps CreatedAt on the first save of a worker sandbox; defaults to time.Now.
+	Now func() time.Time
 }
 
 func persistSandboxCommandSelectedState(req sandboxCommandStatePersistenceRequest) error {
@@ -26,6 +29,13 @@ func persistSandboxCommandSelectedState(req sandboxCommandStatePersistenceReques
 	state := sandboxCommandPersistentState(req.Target, req.Workspace)
 	if state == nil {
 		return nil
+	}
+	if state.CreatedAt.IsZero() {
+		now := req.Now
+		if now == nil {
+			now = time.Now
+		}
+		state.CreatedAt = now().UTC()
 	}
 	if err := req.Save(state); err != nil {
 		return fmt.Errorf("persist selected worker sandbox state %q: %w", state.Name, err)
