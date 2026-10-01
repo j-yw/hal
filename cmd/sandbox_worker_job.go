@@ -346,18 +346,28 @@ func writeSandboxWorkerJobLogs(command sandboxexec.CommandRequest, records []san
 	return nil
 }
 
+// sanitizeSandboxWorkerJobLogData redacts sensitive lines of one job log
+// record. Records are chunks that may span many lines, so each line is checked
+// on its own: one sensitive line must not swallow its neighbours.
 func sanitizeSandboxWorkerJobLogData(data string) string {
 	data = strings.ToValidUTF8(data, "\uFFFD")
 	if strings.TrimSpace(data) == "" {
 		return data
 	}
-	if factoryArtifactStringNeedsRedaction(data) || factoryLogContainsSecretAssignment(data) {
-		if strings.HasSuffix(data, "\n") {
-			return "[redacted]\n"
+	var out strings.Builder
+	for _, line := range strings.SplitAfter(data, "\n") {
+		content := strings.TrimRight(line, "\r\n")
+		ending := line[len(content):]
+		switch {
+		case strings.TrimSpace(content) == "":
+			out.WriteString(line)
+		case factoryArtifactStringNeedsRedaction(content) || factoryLogContainsSecretAssignment(content):
+			out.WriteString("[redacted]" + ending)
+		default:
+			out.WriteString(sanitizeCredentialedRemoteReferences(content) + ending)
 		}
-		return "[redacted]"
 	}
-	return sanitizeCredentialedRemoteReferences(data)
+	return out.String()
 }
 
 func sandboxWorkerJobReference(job sandboxworker.Job, cursor uint64) *sandboxexecution.WorkerJobReference {

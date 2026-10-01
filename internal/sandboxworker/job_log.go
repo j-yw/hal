@@ -494,8 +494,14 @@ func addJobLiteralLines(unique map[string]bool, value []byte) {
 	}
 }
 
+// minJobLiteralPatternBytes is the shortest argv/env/stdin line masked as a
+// literal. Shorter tokens such as "sh", "-c" or "true" are not meaningful
+// secrets, and masking them corrupts unrelated output (`--short` becomes
+// `--[redacted]ort`). Structural secret masking still applies to every line.
+const minJobLiteralPatternBytes = 8
+
 func addJobLiteralPattern(unique map[string]bool, value []byte) {
-	if len(value) > 0 {
+	if len(bytes.TrimSpace(value)) >= minJobLiteralPatternBytes {
 		unique[string(value)] = true
 	}
 }
