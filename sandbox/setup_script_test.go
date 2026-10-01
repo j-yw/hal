@@ -19,8 +19,8 @@ func TestSandboxImageVersionPinsStayAligned(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
-		"GO_VERSION": "1.25.7", "NODE_MAJOR": "22", "CLAUDE_CODE_VERSION": "2.1.207",
-		"PI_CODING_AGENT_VERSION": "0.85.0", "CODEX_VERSION": "0.144.1",
+		"GO_VERSION": "1.25.7", "NODE_MAJOR": "22", "CLAUDE_CODE_VERSION": "2.1.281",
+		"PI_CODING_AGENT_VERSION": "0.99.1", "CODEX_VERSION": "0.159.2",
 	} {
 		t.Run(name, func(t *testing.T) {
 			setupPattern := regexp.MustCompile(`(?m)^` + name + `="\$\{` + name + `:-([^}]+)\}"$`)
@@ -39,7 +39,7 @@ func TestSandboxReadmeDocumentsPinnedAgentVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"| **Claude Code** | 2.1.207 |", "| **Pi** | 0.85.0 |", "| **Codex** | 0.144.1 |"} {
+	for _, want := range []string{"| **Claude Code** | 2.1.281 |", "| **Pi** | 0.99.1 |", "| **Codex** | 0.159.2 |"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("README.md is missing pinned version %q", want)
 		}
