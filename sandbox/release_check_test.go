@@ -63,6 +63,8 @@ env) printf '%s\n' "$RELEASE_TEST_ROOT"; exit 0 ;;
 esac
 case " $* " in
 *' -json '*)
+case " $* " in
+*' -race '*)
 case "$RELEASE_TEST_CASE" in
 skip) echo '{"Action":"skip","Test":"TestPodmanIntegrationLifecycleExecAndCopy"}'; exit 0 ;;
 package-skip) echo '{"Action":"skip","Package":"example"}'; exit 0 ;;
@@ -70,6 +72,8 @@ fail) echo '{"Action":"fail","Package":"example"}'; exit 0 ;;
 exit) exit 1 ;;
 empty) exit 0 ;;
 malformed) echo 'not json'; exit 0 ;;
+esac
+;;
 esac
 for test in TestPodmanIntegrationLifecycleExecAndCopy TestWorkerJobPodmanIntegrationSurvivesClientDisconnect TestL3PreparedLinuxRecoveryE2E TestWorkerIntegrationRootlessPodmanExecutionThroughSharedResolver TestFactoryRootlessBundleRealGitPreservesSourceBaseAndRun TestFactoryFinalizationRecoveryRealGit TestFactoryFinalizationRecoveryWorkerRoundTrip; do
 printf '{"Action":"pass","Test":"%s"}\n' "$test"

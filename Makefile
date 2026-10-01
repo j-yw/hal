@@ -11,7 +11,7 @@ export GOCACHE
 
 DOCS_CLI_DIR := docs/cli
 
-.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check docs-cli docs-check sandbox-build sandbox-build-amd64 sandbox-test sandbox-shell sandbox-lab-prepare sandbox-lab-start sandbox-lab-status sandbox-lab-destroy
+.PHONY: all build install uninstall clean test vet fmt lint run help release-dry-run release-check docs-cli docs-check sandbox-build sandbox-build-amd64 sandbox-test sandbox-shell sandbox-lab-prepare sandbox-lab-start sandbox-lab-status sandbox-lab-destroy sandbox-release-check
 
 ## Default target
 all: build
@@ -150,6 +150,10 @@ sandbox-lab-status:
 sandbox-lab-destroy:
 	@./sandbox/podman-lab.sh destroy
 
+## Verify Sandbox v2.0 on native Linux rootless Podman (no model tokens by default)
+sandbox-release-check:
+	@./sandbox/release-check.sh $(ARGS)
+
 ## Show help
 help:
 	@echo "Hal Makefile"
@@ -176,6 +180,7 @@ help:
 	@echo "  make sandbox-lab-start    Start and register the lab worker"
 	@echo "  make sandbox-lab-status   Show isolated lab status"
 	@echo "  make sandbox-lab-destroy  Remove all isolated lab resources"
+	@echo "  make sandbox-release-check  Run the native rootless v2.0 release gate"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make install"
