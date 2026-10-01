@@ -56,5 +56,8 @@ func sandboxClaudeAuthFiles() []factorySandboxAuthFile {
 // factorySandboxEngineAuthDeps returns deps whose engine auth files match the
 // engine the factory run will use inside the sandbox.
 func factorySandboxEngineAuthDeps(req factorySandboxExecutorRequest, deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
+	engineName := strings.TrimSpace(req.RemoteAuto.Engine)
+	engineName = sandboxEffectiveEngine(engineName, engineName != "", req.RunRecord.RepoPath)
+	deps.engineAuthFiles = sandboxEngineAuthFilesFor(engineName, deps.engineAuthFiles)
 	return deps
 }
