@@ -1,2 +1,0 @@
-/bin/busybox f 0755 0 0 - - - - -
-/workspace d 0700 1000 1000 - - - - -
