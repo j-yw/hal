@@ -10,9 +10,9 @@ a registered worker host, local Podman, Docker, or GitHub Codespaces.
 | **Go** | 1.25.7 | Build hal and Go projects |
 | **Node.js** | 22.x | Runtime for JS-based CLI tools |
 | **gh** | repository-selected (distro fallback) | GitHub CLI (authenticated via GITHUB_TOKEN) |
-| **Claude Code** | 2.1.207 | AI coding assistant |
-| **Pi** | 0.85.0 | Coding agent harness |
-| **Codex** | 0.144.1 | OpenAI Codex CLI |
+| **Claude Code** | 2.1.281 | AI coding assistant |
+| **Pi** | 0.99.1 | Coding agent harness |
+| **Codex** | 0.159.2 | OpenAI Codex CLI |
 | **hal** | built from source | This project |
 | **tmux** | distro package | Terminal multiplexer (keep sessions alive) |
 | **ripgrep** | distro package | Fast search |
@@ -104,15 +104,16 @@ cp sandbox/.env.example sandbox/.env
 ## Version Defaults
 
 AI CLI tools use the exact versions in the table above, not the latest npm release.
-Pi 0.85.0 matches the host version exercised in the native Linux rootless game
-smoke, including its xAI OAuth provider. Other agent pins are unchanged. Override
+All three pins match the host versions exercised in the 2026-10-01 native Linux
+rootless smoke, so current host configs and model selections work inside the
+image (older pins rejected current models with ChatGPT-account auth). Override
 versions explicitly with environment variables for direct bootstrap:
 
 ```bash
-PI_CODING_AGENT_VERSION=0.85.0 ./sandbox/setup.sh
+PI_CODING_AGENT_VERSION=0.99.1 ./sandbox/setup.sh
 ```
 
-For image builds, use `--build-arg PI_CODING_AGENT_VERSION=0.85.0` (or the
+For image builds, use `--build-arg PI_CODING_AGENT_VERSION=0.99.1` (or the
 corresponding variable for another tool). The Dockerfile passes its build-argument
 defaults to `setup.sh`; deterministic Go tests keep both sets of defaults aligned.
 Node is pinned only to major 22, and OS packages are repository-selected, so the

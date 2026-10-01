@@ -21,9 +21,9 @@ set -euo pipefail
 # ── Version defaults (keep aligned with Dockerfile build args) ───────────────
 GO_VERSION="${GO_VERSION:-1.25.7}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
-CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.207}"
-PI_CODING_AGENT_VERSION="${PI_CODING_AGENT_VERSION:-0.85.0}"
-CODEX_VERSION="${CODEX_VERSION:-0.144.1}"
+CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.281}"
+PI_CODING_AGENT_VERSION="${PI_CODING_AGENT_VERSION:-0.99.1}"
+CODEX_VERSION="${CODEX_VERSION:-0.159.2}"
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
