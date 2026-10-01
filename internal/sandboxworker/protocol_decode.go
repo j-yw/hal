@@ -77,26 +77,6 @@ func decodeWorkerResponseInto(reader io.Reader, maxBytes int64, output *Response
 	return nil
 }
 
-func decodeStoredJobStateV2Into(reader io.Reader, maxBytes int64, output *storedJobStateV2) error {
-	raw, err := readWorkerJSONBoundedV2(reader, maxBytes)
-	if err != nil {
-		return err
-	}
-	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil {
-		return err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(output); err != nil {
-		return err
-	}
-	var trailing struct{}
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return errors.New("trailing JSON")
-	}
-	return nil
-}
-
 func decodeWorkerResponse(reader io.Reader) (Response, error) {
 	var output Response
 	if err := decodeWorkerResponseInto(reader, defaultMaxResponseBytes, &output); err != nil {

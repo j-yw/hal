@@ -488,54 +488,13 @@ func assertActiveCredentialDeliveryStatus(t *testing.T, label string, status *sa
 
 func credentialDeliveryProjectionHTTPProxyActivationResult(t *testing.T, proven bool) credentialdelivery.ActivationResult {
 	t.Helper()
-	binding := credentialdelivery.Binding{
-		ID:                    "delivery-binding-http-proxy",
-		PolicySnapshotID:      "policy-snapshot-01",
-		SecretRef:             "env:GITHUB_TOKEN",
-		NetworkProxySessionID: "network-proxy-session-01",
-		ServiceID:             "service-source-control",
-		DestinationCategory:   credentialdelivery.DestinationPublicInternet,
-		DeliveryMode:          credentialdelivery.ModeHTTPProxy,
-		Status:                credentialdelivery.StatusPlanned,
-		ReasonCode:            credentialdelivery.ReasonRequested,
-	}
-	plan := credentialdelivery.Plan{
-		ID:                    "delivery-plan-http-proxy",
-		RequestID:             "delivery-request-http-proxy",
-		NetworkProxySessionID: "network-proxy-session-01",
-		HTTPProxyProof: &credentialdelivery.HTTPProxyProof{
-			BindingID:                binding.ID,
-			SecretID:                 binding.SecretRef,
-			SecretBrokerSessionID:    "secret-broker-session-01",
-			CredentialProxyPlanID:    "credential-proxy-plan-01",
-			CredentialProxySessionID: "credential-proxy-session-01",
-			CredentialProxyBindingID: "credential-proxy-binding-01",
-			NetworkEnforcement: &sandbox.SandboxNetworkEnforcementProofMetadata{
-				NetworkProxySessionID:    "network-proxy-session-01",
-				PolicySnapshotID:         "policy-snapshot-01",
-				NetworkEnforcementPlanID: "network-enforcement-plan-01",
-				ProxyLifecycleStatus:     "active",
-				ProxyLifecycleReasonCode: "active",
-				ResultOutcome:            "success",
-				ResultEnforcementMode:    sandbox.SandboxNetworkEnforcementModeProxyFirewall,
-				ResultSupported:          true,
-			},
-		},
-		RequestedModes: []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
-		ActiveModes:    []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
-		Status:         credentialdelivery.StatusPlanned,
-	}
+	result := credentialDeliveryProjectionRawActivation(credentialdelivery.ModeHTTPProxy, proven)
+	result.ID = "delivery-activation-http-proxy"
+	result.PlanID = "delivery-plan-http-proxy"
 	if !proven {
-		plan.HTTPProxyProof.NetworkEnforcement.ResultSupported = false
-	}
-
-	result := credentialdelivery.ActivateDelivery(credentialdelivery.ActivationRequest{
-		ActivationID: "delivery-activation-http-proxy",
-		Plan:         plan,
-		Bindings:     []credentialdelivery.Binding{binding},
-	}, credentialDeliveryProjectionActivationAdapter{})
-	if proven && result.Status != credentialdelivery.StatusActive {
-		t.Fatalf("fixture activation = %#v, want active", result)
+		result.Status = credentialdelivery.StatusSkipped
+		result.ActiveModes = nil
+		result.ReasonCode = credentialdelivery.ReasonMissingActivationProof
 	}
 	return result
 }
@@ -628,35 +587,6 @@ func credentialDeliveryProjectionSecretBrokerSessionID(mode credentialdelivery.M
 
 func credentialDeliveryProjectionNetworkProxySessionID(mode credentialdelivery.Mode) string {
 	return "network-proxy-session-" + strings.ReplaceAll(string(mode), "_", "-")
-}
-
-type credentialDeliveryProjectionActivationAdapter struct{}
-
-func (credentialDeliveryProjectionActivationAdapter) ActivateCredentialDelivery(input credentialdelivery.SanitizedActivationRequest) (credentialdelivery.ActivationResult, error) {
-	request := input.Request()
-	result := credentialdelivery.ActivationResult{
-		ID:             request.ActivationID,
-		PlanID:         request.Plan.ID,
-		RequestedModes: request.Plan.RequestedModes,
-		ActiveModes:    request.Plan.RequestedModes,
-		Status:         credentialdelivery.StatusActive,
-	}
-	for _, binding := range request.Bindings {
-		proofID := "credential-proof-" + binding.ID
-		result.Bindings = append(result.Bindings, credentialdelivery.BindingActivationResult{
-			BindingID:    binding.ID,
-			DeliveryMode: binding.DeliveryMode,
-			Status:       credentialdelivery.StatusActive,
-			ReasonCode:   credentialdelivery.ReasonRequested,
-			ProofRef:     proofID,
-		})
-		result.ProofRefs = append(result.ProofRefs, credentialdelivery.ActivationProofReference{
-			ProofID:      proofID,
-			BindingID:    binding.ID,
-			DeliveryMode: binding.DeliveryMode,
-		})
-	}
-	return result, nil
 }
 
 func containsString(values []string, want string) bool {

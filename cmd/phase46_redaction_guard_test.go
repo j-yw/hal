@@ -211,32 +211,13 @@ func (f phase46CommandFixture) securityRequest() sandbox.SecurityEvaluationReque
 }
 
 func phase46SanitizedActivationFailure(f phase46CommandFixture) credentialdelivery.ActivationResult {
-	return credentialdelivery.ActivateDelivery(credentialdelivery.ActivationRequest{
-		ActivationID: "activation-phase46",
-		Plan: credentialdelivery.Plan{
-			ID:             "delivery-plan-phase46",
-			RequestID:      f.rawURL,
-			RequestedModes: []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy, credentialdelivery.Mode(f.commandLine), credentialdelivery.Mode(f.envValue)},
-			ActiveModes:    []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
-			Status:         credentialdelivery.StatusPlanned,
-		},
-		Bindings: []credentialdelivery.Binding{{
-			ID:                    "binding-phase46",
-			SecretRef:             "env:GITHUB_TOKEN",
-			PolicySnapshotID:      f.localPath,
-			NetworkProxySessionID: f.socketPath,
-			ServiceID:             f.rawURL,
-			DeliveryMode:          credentialdelivery.Mode(f.headerValue),
-		}},
-	}, phase46FailingActivationAdapter{err: errors.New("provider echoed " + f.secretValue + " " + f.commandLine)})
-}
-
-type phase46FailingActivationAdapter struct {
-	err error
-}
-
-func (a phase46FailingActivationAdapter) ActivateCredentialDelivery(credentialdelivery.SanitizedActivationRequest) (credentialdelivery.ActivationResult, error) {
-	return credentialdelivery.ActivationResult{}, a.err
+	return credentialdelivery.SanitizeActivationResultMetadata(credentialdelivery.ActivationResult{
+		ID:             "activation-phase46",
+		PlanID:         "delivery-plan-phase46",
+		RequestedModes: []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy, credentialdelivery.Mode(f.commandLine), credentialdelivery.Mode(f.envValue)},
+		Status:         credentialdelivery.StatusFailed,
+		ReasonCode:     credentialdelivery.ReasonActivationUnavailable,
+	})
 }
 
 func phase46CommandDecisionLogs(f phase46CommandFixture) []sandbox.SandboxNetworkPolicyDecisionLogRecord {

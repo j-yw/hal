@@ -80,46 +80,6 @@ func TestWorkerJSONSlashEscapesRoundTrip(t *testing.T) {
 	}
 }
 
-func TestWorkerJSONSlashEscapesStoredStateDecodePreservesValidationBoundary(t *testing.T) {
-	valid := storedJobStateV2{
-		JobV2:            l8WorkerV2QueuedJob(),
-		RequestKey:       "request-v2-" + strings.Repeat("0", 64),
-		PrincipalID:      "principal-owner",
-		DaemonGeneration: l8WorkerV2DaemonGeneration,
-	}
-	valid.JobV2.CredentialIntent = JobCredentialIntentV2{}
-	if err := valid.Validate(); err != nil {
-		t.Fatalf("baseline stored-state fixture is invalid: %v", err)
-	}
-	var baseline storedJobStateV2
-	if err := decodeStoredJobStateV2Into(bytes.NewReader(workerJSONSlashMarshal(t, valid, false)), maxStoredJobStateV2Bytes, &baseline); err != nil {
-		t.Fatalf("valid baseline state rejected: %v", err)
-	}
-	if !reflect.DeepEqual(baseline, valid) || baseline.Validate() != nil {
-		t.Fatal("valid baseline stored-state round trip failed")
-	}
-	for count := 0; count <= 8; count++ {
-		for _, escapeSlashes := range []bool{false, true} {
-			t.Run(fmt.Sprintf("backslash_run_%d/escaped_slash_%t", count, escapeSlashes), func(t *testing.T) {
-				// This is a decoder-only probe, not a valid persisted authority:
-				// slash-bearing request keys must still fail state validation.
-				state := valid
-				state.RequestKey = "request-v2-" + strings.Repeat("\\", count) + "/"
-				var decoded storedJobStateV2
-				if err := decodeStoredJobStateV2Into(bytes.NewReader(workerJSONSlashMarshal(t, state, escapeSlashes)), maxStoredJobStateV2Bytes, &decoded); err != nil {
-					t.Fatalf("valid stored-state JSON rejected: %v", err)
-				}
-				if !reflect.DeepEqual(decoded, state) {
-					t.Fatal("stored-state bytes changed during strict decode")
-				}
-				if err := decoded.Validate(); err == nil || err.Error() != "stored worker job request identity is invalid" {
-					t.Fatal("slash-bearing metadata acquired stored-state authority")
-				}
-			})
-		}
-	}
-}
-
 func TestWorkerJSONSlashEscapesKeepStrictRejections(t *testing.T) {
 	request := workerJSONSlashRequest("payload-marker")
 	canonical := string(workerJSONSlashMarshal(t, request, false))

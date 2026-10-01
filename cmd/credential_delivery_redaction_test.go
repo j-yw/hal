@@ -2,12 +2,10 @@ package cmd
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jywlabs/hal/internal/credentialdelivery"
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
@@ -98,74 +96,6 @@ func TestCredentialDeliveryRedactionAcrossDurableSurfaces(t *testing.T) {
 	for label, value := range surfaces {
 		assertCredentialDeliveryRawValuesAbsent(t, label, value, rawValues)
 	}
-}
-
-func TestCredentialDeliveryActivationRedactionForSuccessAndFailure(t *testing.T) {
-	rawValues := credentialDeliveryRawRedactionValues()
-	plan := credentialdelivery.Plan{
-		ID:                    "credential-plan-01",
-		RequestID:             "credential-request-01",
-		NetworkProxySessionID: "network-proxy-session-01",
-		RequestedModes:        []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
-		ActiveModes:           []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
-		Status:                credentialdelivery.StatusPlanned,
-	}
-	bindings := []credentialdelivery.Binding{{
-		ID:                    "credential-binding-01",
-		SecretRef:             "env:GITHUB_TOKEN",
-		NetworkProxySessionID: "network-proxy-session-01",
-		ServiceID:             "service-openai",
-		DeliveryMode:          credentialdelivery.ModeHTTPProxy,
-	}}
-	success := credentialdelivery.ActivateDelivery(credentialdelivery.ActivationRequest{
-		ActivationID: "credential-activation-01",
-		Plan:         plan,
-		Bindings:     bindings,
-	}, credentialDeliveryFakeActivationAdapter{})
-	failure := credentialdelivery.ActivateDelivery(credentialdelivery.ActivationRequest{
-		ActivationID: rawValues[0],
-		Plan: credentialdelivery.Plan{
-			ID:             "credential-plan-02",
-			RequestedModes: []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
-			Status:         credentialdelivery.StatusPlanned,
-		},
-		Bindings: []credentialdelivery.Binding{{
-			ID:           rawValues[1],
-			SecretRef:    rawValues[2],
-			DeliveryMode: credentialdelivery.ModeHTTPProxy,
-		}},
-	}, credentialDeliveryFailingActivationAdapter{})
-
-	assertCredentialDeliveryRawValuesAbsent(t, "successful fake activation", success, rawValues)
-	assertCredentialDeliveryRawValuesAbsent(t, "failed fake activation", failure, rawValues)
-}
-
-type credentialDeliveryFakeActivationAdapter struct{}
-
-func (credentialDeliveryFakeActivationAdapter) ActivateCredentialDelivery(req credentialdelivery.SanitizedActivationRequest) (credentialdelivery.ActivationResult, error) {
-	plan := req.Plan()
-	bindings := req.Bindings()
-	result := credentialdelivery.ActivationResult{
-		ID:             "credential-activation-01",
-		PlanID:         plan.ID,
-		RequestedModes: plan.RequestedModes,
-		ActiveModes:    []credentialdelivery.Mode{credentialdelivery.ModeHTTPProxy},
-		Status:         credentialdelivery.StatusActive,
-	}
-	for _, binding := range bindings {
-		result.Bindings = append(result.Bindings, credentialdelivery.BindingActivationResult{
-			BindingID:    binding.ID,
-			DeliveryMode: binding.DeliveryMode,
-			Status:       credentialdelivery.StatusActive,
-		})
-	}
-	return result, nil
-}
-
-type credentialDeliveryFailingActivationAdapter struct{}
-
-func (credentialDeliveryFailingActivationAdapter) ActivateCredentialDelivery(credentialdelivery.SanitizedActivationRequest) (credentialdelivery.ActivationResult, error) {
-	return credentialdelivery.ActivationResult{}, errors.New("provider returned secret-bearing response")
 }
 
 func credentialDeliveryRawRedactionValues() []string {

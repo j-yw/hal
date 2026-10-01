@@ -2,9 +2,21 @@ package credentialdelivery
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func assertPlanModes(t *testing.T, got, want []Mode) {
+	t.Helper()
+
+	if len(got) == 0 && len(want) == 0 {
+		return
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("modes = %#v, want %#v", got, want)
+	}
+}
 
 func TestStatusMetadataFromPlanDoesNotProjectActiveModes(t *testing.T) {
 	got := StatusMetadataFromPlan(Plan{

@@ -78,21 +78,6 @@ func activationStatusReason(activation ActivationResult) ReasonCode {
 	return ReasonRequested
 }
 
-func secureActiveStatusModes(modes []Mode) []Mode {
-	if modes == nil {
-		return nil
-	}
-	active := newPlanModeSet()
-	for _, mode := range modes {
-		mode = normalizeMode(mode)
-		if mode == ModeEnv || mode == ModeLegacyAuthSync {
-			continue
-		}
-		active.add(mode)
-	}
-	return active.ordered()
-}
-
 func secureActiveStatusProofSummaries(activation ActivationResult) []sandbox.SandboxCredentialDeliveryProofSummary {
 	if activation.Status != StatusActive || activation.ID == "" {
 		return nil
@@ -164,6 +149,40 @@ func secureActiveStatusProofSource(mode Mode) string {
 	default:
 		return ""
 	}
+}
+
+type planModeSet struct {
+	values map[Mode]struct{}
+}
+
+func newPlanModeSet() *planModeSet {
+	return &planModeSet{values: make(map[Mode]struct{})}
+}
+
+func (s *planModeSet) add(mode Mode) {
+	mode = normalizeMode(mode)
+	if mode == "" || !validMode(mode) {
+		return
+	}
+	s.values[mode] = struct{}{}
+}
+
+func (s *planModeSet) contains(mode Mode) bool {
+	_, ok := s.values[mode]
+	return ok
+}
+
+func (s *planModeSet) ordered() []Mode {
+	if len(s.values) == 0 {
+		return nil
+	}
+	out := make([]Mode, 0, len(s.values))
+	for _, mode := range SupportedModes() {
+		if s.contains(mode) {
+			out = append(out, mode)
+		}
+	}
+	return out
 }
 
 func secureActivationMissingProofReason(activation ActivationResult) ReasonCode {
