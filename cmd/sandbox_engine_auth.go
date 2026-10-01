@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/compound"
@@ -20,12 +22,33 @@ func sandboxEffectiveEngine(flagEngine string, flagChanged bool, projectDir stri
 }
 
 // sandboxEngineAuthFilesFor returns the auth files to sync into a sandbox that
-// runs engineName.
+// runs engineName. Claude credentials are added only for the Claude engine;
+// the broad ~/.claude.json state file (MCP tokens, project history) is never
+// copied.
 func sandboxEngineAuthFilesFor(engineName string, base func() []factorySandboxAuthFile) func() []factorySandboxAuthFile {
 	return func() []factorySandboxAuthFile {
-		if base == nil {
+		var files []factorySandboxAuthFile
+		if base != nil {
+			files = base()
+		}
+		if strings.EqualFold(strings.TrimSpace(engineName), "claude") {
+			files = append(files, sandboxClaudeAuthFiles()...)
+		}
+		return files
+	}
+}
+
+func sandboxClaudeAuthFiles() []factorySandboxAuthFile {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		var err error
+		if home, err = os.UserHomeDir(); err != nil || strings.TrimSpace(home) == "" {
 			return nil
 		}
-		return base()
 	}
+	source := filepath.Join(home, ".claude", ".credentials.json")
+	if info, err := os.Stat(source); err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	return []factorySandboxAuthFile{{SourcePath: source, RemotePath: ".claude/.credentials.json"}}
 }
