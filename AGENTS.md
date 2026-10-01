@@ -87,7 +87,7 @@ If a useful automated test is impractical, explain why and use the narrowest rep
 - Default tests must be deterministic and avoid live network/CLI dependencies. Select integration/live tests explicitly with their required tags and environment. A missing prerequisite or skipped required acceptance check is incomplete, not a pass.
 - `make lint` can exit successfully when `golangci-lint` is absent. Check `command -v golangci-lint` before reporting lint as passed.
 - Command changes must preserve machine-contract compatibility and single-document JSON output. Update the relevant contract/examples and generated CLI docs; verify with `make docs-check`.
-- For Sandbox v2 work, read the current issue/task and [Linux completion architecture](docs/design/sandbox-runtime-v2-linux-completion-architecture.md), including the later [L8 minimal guest contract reset](docs/design/sandbox-runtime-v2-l8-credential-runtime-contract-reset.md). Historical phase notes are scoped evidence, not blanket restrictions or proof that a lane is complete. Report only isolation/enforcement/cleanup actually verified on the selected path.
+- For Sandbox v2 work, read the current issue/task. Historical phase notes are scoped evidence, not blanket restrictions or proof that a lane is complete. Report only isolation/enforcement/cleanup actually verified on the selected path.
 - Use single-line Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`, `chore:`). PRs should link the issue/PRD and list checks run; include story IDs when applicable.
 
 ## 6. Project Learnings

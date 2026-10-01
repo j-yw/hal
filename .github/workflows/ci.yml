@@ -152,4 +152,3 @@ jobs:
         if: steps.changes.outputs.integration == 'true'
         run: |
           go test -tags=podman_integration -v -timeout 5m ./internal/sandboxruntime/rootlesspodman
-          go test -tags=firecracker_live -v -timeout 5m ./internal/sandboxruntime/microvm/firecracker

@@ -36,8 +36,6 @@ var forbiddenSandboxSecurityCapabilityImports = []sandboxSecurityCapabilityForbi
 	{name: "credential activation implementation package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/credentialdelivery")},
 	{name: "template acquisition implementation package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxtemplate/acquisition")},
 	{name: "concrete provider adapter package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider")},
-	{name: "live network enforcement implementation package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement")},
-	{name: "concrete microVM runtime package", match: sandboxSecurityCapabilityModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/microvm")},
 	{
 		name: "concrete runtime adapter package",
 		match: func(importPath string) bool {
@@ -183,9 +181,6 @@ func TestSecurityCapabilityForbiddenImportListCoversRequiredBoundaries(t *testin
 		{name: "credential activation implementation", importPath: "github.com/jywlabs/hal/internal/credentialdelivery"},
 		{name: "template acquisition implementation", importPath: "github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"},
 		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner"},
-		{name: "live network enforcement implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"},
-		{name: "concrete microVM runtime implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm"},
-		{name: "concrete Firecracker runtime implementation", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"},
 		{name: "concrete SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
 		{name: "concrete rootless Podman runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"},
 		{name: "standard network package", importPath: "net"},

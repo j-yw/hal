@@ -72,8 +72,6 @@ func TestSandboxTemplateForbiddenImportListCoversRequiredBoundaries(t *testing.T
 		{name: "provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner", want: "concrete provider package"},
 		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime package"},
 		{name: "SSH-machine runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine", want: "concrete runtime package"},
-		{name: "Firecracker runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete runtime package"},
-		{name: "Firecracker host", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost", want: "concrete runtime package"},
 		{name: "exec", importPath: "os/exec", want: "process execution package"},
 		{name: "syscall", importPath: "syscall", want: "process execution package"},
 		{name: "x/sys", importPath: "golang.org/x/sys/unix", want: "process execution package"},
@@ -101,10 +99,8 @@ func TestSandboxTemplateAllowedImportListCoversCurrentPureDependencies(t *testin
 		file       string
 		importPath string
 	}{
-		{file: "contracts.go", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"},
 		{file: "projection.go", importPath: "github.com/jywlabs/hal/internal/sandbox"},
 		{file: "projection.go", importPath: "github.com/jywlabs/hal/internal/sandboxruntime"},
-		{file: "projection.go", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"},
 		{file: "decode.go", importPath: "encoding/json"},
 		{file: "decode.go", importPath: "gopkg.in/yaml.v3"},
 		{file: "validation.go", importPath: "strings"},
@@ -159,8 +155,6 @@ func sandboxTemplateAllowedImport(fileName, importPath string) bool {
 		return fileName == "projection.go"
 	case "github.com/jywlabs/hal/internal/sandboxruntime":
 		return fileName == "projection.go"
-	case "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets":
-		return fileName == "contracts.go" || fileName == "normalize.go" || fileName == "projection.go"
 	default:
 		return false
 	}
@@ -179,9 +173,7 @@ func sandboxTemplateForbiddenImports() []sandboxTemplateForbiddenImport {
 		{name: "concrete provider package", match: moduleImport("github.com/jywlabs/hal/internal/sandbox/provider")},
 		{name: "concrete runtime package", match: func(path string) bool {
 			return moduleImport("github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman")(path) ||
-				moduleImport("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")(path) ||
-				moduleImport("github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker")(path) ||
-				moduleImport("github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost")(path)
+				moduleImport("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")(path)
 		}},
 		{name: "process execution package", match: func(path string) bool {
 			return path == "os/exec" || path == "syscall" || strings.HasPrefix(path, "golang.org/x/sys")

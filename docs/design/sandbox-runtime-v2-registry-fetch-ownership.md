@@ -2,8 +2,7 @@
 
 ## Scope and authority
 
-This follows the Linux completion architecture and L8 contract reset. Review of
-the selected template provider at `56b6e490` exposed two inherited registry
+Review of the selected template provider at `56b6e490` exposed two inherited registry
 prerequisites: last-owner cancellation returned before borrowed fetch cleanup
 finished, and a background layer callback panic escaped synchronous provider
 recovery. Neither problem was introduced by that provider change.

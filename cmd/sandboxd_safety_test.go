@@ -132,7 +132,6 @@ func TestSandboxdProductionCodeDoesNotOwnNetworkEnforcementPlanningOrSetup(t *te
 func TestCommandAndSandboxdProductionSecurityPathsAvoidLiveMutationDependencies(t *testing.T) {
 	productionFiles := []string{
 		"sandboxd.go",
-		"sandboxd_firecracker_live_driver.go",
 		"sandbox_security_projection.go",
 		"sandbox_runtime_contracts.go",
 		"sandbox_host_mapping.go",
@@ -144,7 +143,6 @@ func TestCommandAndSandboxdProductionSecurityPathsAvoidLiveMutationDependencies(
 		"net":               "direct listener or socket mutation",
 		"net/http":          "direct HTTP proxy/listener setup",
 		"net/http/httputil": "direct reverse proxy setup",
-		"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement": "direct planner or adapter package usage",
 	}
 	forbiddenSource := []struct {
 		needle string

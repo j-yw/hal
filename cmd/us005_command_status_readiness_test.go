@@ -227,7 +227,6 @@ func TestUS005CommandStatusReadinessFilesAvoidLiveEnforcementImplementation(t *t
 			for _, imported := range parsed.Imports {
 				path := strings.Trim(imported.Path.Value, `"`)
 				for _, forbidden := range []string{
-					"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement",
 					"net",
 					"net/http",
 					"os/exec",

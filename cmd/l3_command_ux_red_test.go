@@ -456,9 +456,6 @@ func TestL3CommandFilesExcludeL4AndLaterDependencies(t *testing.T) {
 	sort.Strings(l3Files)
 
 	forbidden := []string{
-		"internal/sandboxruntime/microvm/guestagent",
-		"internal/sandboxruntime/microvm/firecrackerhost",
-		"internal/sandbox/networkenforcement",
 		"internal/sandboxtemplate/acquisition",
 		"credentialactivation",
 		"firecracker",

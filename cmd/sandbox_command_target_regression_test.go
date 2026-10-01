@@ -18,6 +18,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtarget"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
@@ -3531,7 +3532,7 @@ func TestWorkerRootlessTargetSelectionHumanErrorUsesSafeEndpointSummary(t *testi
 	}
 }
 
-func TestWorkerMicroVMRuntimeResolverSelectsMicroVMAndDoesNotFallback(t *testing.T) {
+func TestWorkerMicroVMRuntimeResolverRejectsReservedDriverWithoutFallback(t *testing.T) {
 	resolvers := []struct {
 		name  string
 		build func(func(string) (sandbox.Provider, error)) func(sandboxruntime.Target) (sandboxruntime.Driver, error)
@@ -3573,14 +3574,12 @@ func TestWorkerMicroVMRuntimeResolverSelectsMicroVMAndDoesNotFallback(t *testing
 					IsolationLevel: sandbox.SandboxIsolationLevelVM,
 				},
 			})
-			if err != nil {
-				t.Fatalf("resolveRuntimeDriver() error = %v", err)
+			var failure *sandboxtarget.Failure
+			if !errors.As(err, &failure) || failure.Reason != sandboxtarget.FailureReasonRuntimeUnsupported {
+				t.Fatalf("resolveRuntimeDriver() error = %v, want runtime_unsupported", err)
 			}
-			if driver == nil {
-				t.Fatal("resolveRuntimeDriver() driver = nil, want microVM driver")
-			}
-			if driver.ID() != sandboxruntime.DriverMicroVM {
-				t.Fatalf("driver ID = %q, want %q", driver.ID(), sandboxruntime.DriverMicroVM)
+			if driver != nil {
+				t.Fatal("resolveRuntimeDriver() returned a driver for reserved microvm metadata")
 			}
 		})
 	}

@@ -67,12 +67,8 @@ func TestTrustPolicyForbiddenImportListCoversArchitectureBoundaries(t *testing.T
 		{name: "sandbox worker", importPath: "github.com/jywlabs/hal/internal/sandboxworker", want: "runtime startup package"},
 		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime driver package"},
 		{name: "SSH-machine runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine", want: "concrete runtime driver package"},
-		{name: "microVM runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm", want: "concrete runtime driver package"},
-		{name: "Firecracker runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete runtime driver package"},
-		{name: "Firecracker host runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost", want: "concrete runtime driver package"},
 		{name: "credential delivery package", importPath: "github.com/jywlabs/hal/internal/credentialdelivery", want: "credential delivery package"},
 		{name: "SSH agent", importPath: "golang.org/x/crypto/ssh/agent", want: "credential delivery package"},
-		{name: "network enforcement package", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement", want: "network enforcement package"},
 		{name: "net", importPath: "net", want: "network enforcement package"},
 		{name: "HTTP", importPath: "net/http", want: "network enforcement package"},
 		{name: "gRPC", importPath: "google.golang.org/grpc", want: "network enforcement package"},
@@ -124,7 +120,6 @@ func TestTrustPolicyImportBoundaryRejectsUnapprovedInternalAndThirdPartyPackages
 		want       string
 	}{
 		{name: "sandbox root package", importPath: "github.com/jywlabs/hal/internal/sandbox", want: "unapproved internal package"},
-		{name: "microvm assets", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets", want: "concrete runtime driver package"},
 		{name: "YAML", importPath: "gopkg.in/yaml.v3", want: "unapproved dependency"},
 		{name: "testify", importPath: "github.com/stretchr/testify/require", want: "unapproved dependency"},
 	} {
@@ -223,8 +218,7 @@ var trustPolicyForbiddenImports = []trustPolicyForbiddenImport{
 		name: "concrete runtime driver package",
 		match: func(importPath string) bool {
 			return trustPolicyModuleImport("github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman")(importPath) ||
-				trustPolicyModuleImport("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")(importPath) ||
-				trustPolicyModuleImport("github.com/jywlabs/hal/internal/sandboxruntime/microvm")(importPath)
+				trustPolicyModuleImport("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")(importPath)
 		},
 	},
 	{
@@ -242,8 +236,7 @@ var trustPolicyForbiddenImports = []trustPolicyForbiddenImport{
 			case "net", "net/http", "net/rpc", "net/smtp":
 				return true
 			default:
-				return trustPolicyModuleImport("github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement")(importPath) ||
-					strings.HasPrefix(importPath, "net/http/") ||
+				return strings.HasPrefix(importPath, "net/http/") ||
 					strings.HasPrefix(importPath, "google.golang.org/grpc") ||
 					strings.HasPrefix(importPath, "golang.org/x/net") ||
 					strings.HasPrefix(importPath, "github.com/coreos/go-iptables") ||

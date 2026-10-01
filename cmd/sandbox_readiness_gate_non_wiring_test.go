@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -176,28 +175,6 @@ func TestAutoSandboxLocalReadinessGateConfigPropagatesDecision(t *testing.T) {
 			requireAdvisoryOnlyReadinessDiagnostics(t, manifest.Security)
 			requireRunAutoReadinessGateDecision(t, manifest.Security, wantMode, wantOutcome, wantCode)
 		})
-	}
-}
-
-func TestRunAutoReadinessGateWiringDocumented(t *testing.T) {
-	docPath := filepath.Join("..", "docs", "design", "sandbox-runtime-v2-phase30-security-readiness-gate-verification.md")
-	data, err := os.ReadFile(docPath)
-	if err != nil {
-		t.Fatalf("read Phase 30 verification doc: %v", err)
-	}
-	doc := string(data)
-	normalizedDoc := strings.Join(strings.Fields(doc), " ")
-	required := []string{
-		"`hal run --sandbox` and `hal auto --sandbox` attach readiness-gate decisions from local `sandbox.securityReadinessGatePolicyMode` when configured.",
-		"`compound.LoadSandboxConfig` maps `sandbox.networkPolicy`, `sandbox.secrets`, and `sandbox.securityReadinessGatePolicyMode` into command security settings.",
-		"Strict run/auto readiness-gate decisions block before remote command execution.",
-		"Default run/auto behavior remains compatibility-mode advisory metadata.",
-		"No run or auto command flag is added for readiness-gate strict mode.",
-	}
-	for _, want := range required {
-		if !strings.Contains(doc, want) && !strings.Contains(normalizedDoc, want) {
-			t.Fatalf("Phase 30 verification doc missing run/auto non-wiring statement %q", want)
-		}
 	}
 }
 

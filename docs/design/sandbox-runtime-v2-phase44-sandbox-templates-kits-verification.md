@@ -32,10 +32,10 @@ sanitization, projection, and import-boundary tests:
 go test -count=1 -timeout=180s ./internal/sandboxtemplate
 ```
 
-Run adjacent sandbox and microVM metadata contracts:
+Run adjacent sandbox and runtime metadata contracts:
 
 ```sh
-go test -count=1 -timeout=180s ./internal/sandbox ./internal/sandboxruntime/microvm
+go test -count=1 -timeout=180s ./internal/sandbox ./internal/sandboxruntime
 ```
 
 Run Phase 44 documentation guards:
@@ -79,7 +79,7 @@ import parsing, source guards, and projection into existing metadata structs.
 - `TestValidateTemplateRejectsUnsafeURLsPathsSecretsAndCommands`
 - `TestSanitizeTemplateRemovesUnsafeOptionalMetadata`
 - `TestSanitizeTemplateOmitsUnsafeRequiredRecords`
-- `TestProjectRuntimeStatePreservesBaseAndLaunchDigests`
+- `TestProjectRuntimeStatePreservesBaseAndReferenceDigests`
 - `TestProjectWorkspacePreservesModesAndTrustMetadata`
 - `TestProjectNetworkPolicyDoesNotClaimEnforcement`
 - `TestProjectCredentialRequirementsRequestedOnly`

@@ -21,7 +21,7 @@ func TestPhase44SandboxTemplatesVerificationDocs(t *testing.T) {
 		"data-only projection into existing sandbox/runtime DTOs",
 		"Phase 44 does not implement image builds, OCI pulls, Git fetches, runtime execution, workspace mutation, network enforcement, credential delivery, Docker AI Sandboxes, Docker Hub requirements, hosted services, or live provider integration.",
 		"go test -count=1 -timeout=180s ./internal/sandboxtemplate",
-		"go test -count=1 -timeout=180s ./internal/sandbox ./internal/sandboxruntime/microvm",
+		"go test -count=1 -timeout=180s ./internal/sandbox ./internal/sandboxruntime",
 		"go test -count=1 ./cmd -run 'TestPhase44SandboxTemplates'",
 		"go test -count=1 -timeout=420s ./...",
 		"go vet ./...",
@@ -35,7 +35,7 @@ func TestPhase44SandboxTemplatesVerificationDocs(t *testing.T) {
 		"TestNormalizeTemplateTrimsSafeFieldsAndNormalizesEnums",
 		"TestValidateTemplateRejectsUnsafeURLsPathsSecretsAndCommands",
 		"TestSanitizeTemplateRemovesUnsafeOptionalMetadata",
-		"TestProjectRuntimeStatePreservesBaseAndLaunchDigests",
+		"TestProjectRuntimeStatePreservesBaseAndReferenceDigests",
 		"TestProjectNetworkPolicyDoesNotClaimEnforcement",
 		"TestSandboxTemplateProductionImportsStayPure",
 	}

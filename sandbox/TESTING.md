@@ -119,22 +119,6 @@ HAL_PODMAN_TEST_IMAGE=hal-sandbox:latest \
 The test exercises create, start, inspect, exec, copy, stop, and delete. It
 skips when the image is not configured or Podman is unavailable.
 
-### Firecracker
-
-The Firecracker live test requires a Linux KVM host plus explicit executable,
-kernel, and root filesystem paths. Run:
-
-```bash
-HAL_FIRECRACKER_LIVE_FIRECRACKER=/path/to/firecracker \
-HAL_FIRECRACKER_LIVE_KERNEL=/path/to/vmlinux \
-HAL_FIRECRACKER_LIVE_ROOTFS=/path/to/rootfs.ext4 \
-  go test -tags=firecracker_live -v -timeout 5m \
-  ./internal/sandboxruntime/microvm/firecracker
-```
-
-The test validates a real boot/start/stop/delete lifecycle and skips with a
-clear prerequisite message when the host cannot run it.
-
 ### CI behavior
 
 The `integration-test` job compiles and runs the opt-in runtime test packages.

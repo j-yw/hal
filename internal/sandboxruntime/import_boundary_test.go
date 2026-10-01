@@ -12,7 +12,6 @@ import (
 )
 
 const sandboxruntimePackagePath = "github.com/jywlabs/hal/internal/sandboxruntime"
-const sandboxruntimeNetworkEnforcementPackagePath = "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 
 var forbiddenSandboxruntimeImports = []sandboxruntimeForbiddenImport{
 	{
@@ -58,8 +57,7 @@ var forbiddenSandboxruntimeNetworkEnforcementImports = []sandboxruntimeForbidden
 	{
 		name: "concrete runtime package",
 		match: func(importPath string) bool {
-			return strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/sandboxruntime/") &&
-				importPath != sandboxruntimeNetworkEnforcementPackagePath
+			return strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/sandboxruntime/")
 		},
 	},
 	{
@@ -148,7 +146,6 @@ var forbiddenSandboxruntimeCredentialDeliveryActivationImports = []sandboxruntim
 	{name: "concrete provider package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider")},
 	{name: "concrete runtime package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman")},
 	{name: "concrete runtime package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")},
-	{name: "concrete runtime package", match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/microvm")},
 	{
 		name: "network client or HTTP server package",
 		match: func(importPath string) bool {
@@ -330,7 +327,6 @@ func TestSandboxruntimeCredentialDeliveryActivationForbiddenImportListCoversLive
 		{name: "worker", importPath: "github.com/jywlabs/hal/internal/sandboxworker", want: "worker package"},
 		{name: "provider", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner", want: "concrete provider package"},
 		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime package"},
-		{name: "microVM runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete runtime package"},
 		{name: "network", importPath: "net", want: "network client or HTTP server package"},
 		{name: "HTTP", importPath: "net/http", want: "network client or HTTP server package"},
 		{name: "process", importPath: "os/exec", want: "process execution package"},
@@ -418,7 +414,7 @@ func TestSandboxruntimeNetworkEnforcementForbiddenImportListCoversLiveSurfaces(t
 		{name: "cmd", importPath: "github.com/jywlabs/hal/cmd", want: "cmd package"},
 		{name: "factory", importPath: "github.com/jywlabs/hal/internal/factory", want: "factory package"},
 		{name: "worker", importPath: "github.com/jywlabs/hal/internal/sandboxworker", want: "worker package"},
-		{name: "microVM runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm", want: "concrete runtime package"},
+		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime package"},
 		{name: "network", importPath: "net", want: "network package"},
 		{name: "HTTP", importPath: "net/http", want: "network package"},
 		{name: "gRPC", importPath: "google.golang.org/grpc", want: "network package"},
@@ -445,7 +441,6 @@ func TestSandboxruntimeNetworkEnforcementAllowsProjectionContractsOnly(t *testin
 		"encoding/json",
 		"strings",
 		"github.com/jywlabs/hal/internal/sandbox",
-		sandboxruntimeNetworkEnforcementPackagePath,
 	} {
 		t.Run(importPath, func(t *testing.T) {
 			if message := sandboxruntimeNetworkEnforcementImportBoundaryMessage("network_enforcement.go", importPath); message != "" {
@@ -555,8 +550,7 @@ func sandboxruntimeNetworkEnforcementAllowedImport(importPath string) bool {
 	switch importPath {
 	case "encoding/json",
 		"strings",
-		"github.com/jywlabs/hal/internal/sandbox",
-		sandboxruntimeNetworkEnforcementPackagePath:
+		"github.com/jywlabs/hal/internal/sandbox":
 		return true
 	default:
 		return false

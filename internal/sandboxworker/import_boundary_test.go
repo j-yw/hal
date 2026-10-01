@@ -66,7 +66,6 @@ var forbiddenSandboxworkerCredentialDeliveryDefaultImports = []sandboxworkerForb
 	{name: "durable sandbox state package", match: sandboxworkerModuleImportMatcher("github.com/jywlabs/hal/internal/sandbox")},
 	{name: "concrete runtime package", match: sandboxworkerModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman")},
 	{name: "concrete runtime package", match: sandboxworkerModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/sshmachine")},
-	{name: "concrete runtime package", match: sandboxworkerModuleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/microvm")},
 	{
 		name: "network client or HTTP server package",
 		match: func(importPath string) bool {
@@ -248,7 +247,6 @@ func TestSandboxworkerCredentialDeliveryDefaultForbiddenImportListCoversLiveSurf
 		{name: "sandbox state", importPath: "github.com/jywlabs/hal/internal/sandbox", want: "durable sandbox state package"},
 		{name: "provider", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner", want: "concrete provider package"},
 		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime package"},
-		{name: "microVM runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete runtime package"},
 		{name: "network", importPath: "net", want: "network client or HTTP server package"},
 		{name: "HTTP", importPath: "net/http", want: "network client or HTTP server package"},
 		{name: "process", importPath: "os/exec", want: "process execution package"},

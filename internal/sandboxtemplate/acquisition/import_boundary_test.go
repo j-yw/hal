@@ -78,8 +78,6 @@ func TestSandboxTemplateAcquisitionForbiddenImportListCoversDefaultAcquisitionBo
 		{name: "target scheduler", importPath: "github.com/jywlabs/hal/internal/sandboxtarget", want: "sandbox execution or startup package"},
 		{name: "rootless Podman runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman", want: "concrete runtime package"},
 		{name: "SSH-machine runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine", want: "concrete runtime package"},
-		{name: "Firecracker runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker", want: "concrete runtime package"},
-		{name: "network enforcement runtime", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement", want: "concrete runtime package"},
 		{name: "process execution", importPath: "os/exec", want: "process execution or kernel package"},
 		{name: "syscall", importPath: "syscall", want: "process execution or kernel package"},
 		{name: "x/sys", importPath: "golang.org/x/sys/unix", want: "process execution or kernel package"},

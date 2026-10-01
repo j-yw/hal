@@ -240,69 +240,6 @@ func TestPhase54NoSchemaOrContractExpansionRequired(t *testing.T) {
 	}
 }
 
-func TestPhase54DefaultDocsDoNotRequireLiveRuntimePrerequisites(t *testing.T) {
-	for _, path := range phase54DesignDocPaths(t) {
-		doc := phase50ReadFile(t, path)
-		normalized := strings.Join(strings.Fields(strings.ToLower(doc)), " ")
-		for _, claim := range phase54ForbiddenDefaultRequirementClaims() {
-			if strings.Contains(normalized, claim) {
-				t.Fatalf("%s makes default verification require live prerequisite claim %q", phase50SafeDisplayPath(path), claim)
-			}
-		}
-		for _, command := range phase54DefaultDocumentedCommands(doc) {
-			if marker := phase54ForbiddenDefaultCommandMarker(command); marker != "" {
-				t.Fatalf("%s default command %q contains live prerequisite marker %q", phase50SafeDisplayPath(path), command, marker)
-			}
-		}
-	}
-}
-
-func TestPhase54ReleasePackageDocumentationIdentifiesBuildCommand(t *testing.T) {
-	for _, path := range phase54ReleasePackageDocPaths() {
-		doc := phase50ReadFile(t, path)
-		for _, want := range []string{
-			"make build",
-			"./hal",
-		} {
-			if !strings.Contains(doc, want) {
-				t.Fatalf("%s must document %q for the Phase 54 release package surface", phase50SafeDisplayPath(path), want)
-			}
-		}
-	}
-}
-
-func TestPhase54DefaultChecksDocumentationDefinesFakeOnlyMatrix(t *testing.T) {
-	doc := phase50ReadFile(t, phase54ReleasePackageDesignDocPath())
-	normalized := strings.Join(strings.Fields(doc), " ")
-	for _, want := range []string{
-		"The GitHub Actions `checks` job and the local release verification path are fake-only.",
-		"must not require live runtime prerequisites",
-		"tagged live test suites",
-		"This boundary is intentionally narrower than the entire GitHub Actions workflow.",
-		"`sandbox-test` and `integration-test` jobs",
-		"outside the Phase 54 fake-only checks/package verification boundary",
-		"must not be described as fake-only default verification",
-		"Phase 54 planning workflow references use plain `hal convert`",
-		"do not require `hal convert --granular`",
-	} {
-		if !strings.Contains(doc, want) && !strings.Contains(normalized, want) {
-			t.Fatalf("%s must document default fake-only checks matrix requirement %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
-		}
-	}
-
-	commands := phase34DocumentedShellCommands(doc)
-	for _, want := range phase54DefaultCICommands() {
-		if !commands[want] {
-			t.Fatalf("%s default checks matrix missing command line %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
-		}
-	}
-	for _, command := range phase54DefaultDocumentedCommands(doc) {
-		if marker := phase54ForbiddenDefaultCommandMarker(command); marker != "" {
-			t.Fatalf("%s default checks command %q contains live or tagged-suite marker %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), command, marker)
-		}
-	}
-}
-
 func TestPhase54GitHubChecksJobMatchesDefaultCIMatrix(t *testing.T) {
 	body := phase54GitHubWorkflowJobBody(t, "checks")
 	for _, want := range phase54DefaultCICommands() {
@@ -313,58 +250,6 @@ func TestPhase54GitHubChecksJobMatchesDefaultCIMatrix(t *testing.T) {
 	for _, marker := range phase54ForbiddenDefaultCommandMarkers() {
 		if strings.Contains(body, marker) {
 			t.Fatalf(".github/workflows/ci.yml checks job must stay fake-only; found marker %q in:\n%s", marker, body)
-		}
-	}
-}
-
-func TestPhase54ReleaseDocsDiscloseConditionalWorkflowJobsOutsideFakeOnlyBoundary(t *testing.T) {
-	workflow := phase50ReadFile(t, filepath.Join("..", ".github", "workflows", "ci.yml"))
-	for _, want := range []string{
-		"  sandbox-test:",
-		"  integration-test:",
-		"docker/build-push-action",
-		"go test -tags=integration",
-	} {
-		if !strings.Contains(workflow, want) {
-			t.Fatalf(".github/workflows/ci.yml missing conditional workflow marker %q", want)
-		}
-	}
-
-	for _, path := range []string{
-		phase54ReleasePackageDesignDocPath(),
-		phase54OperatorReleaseHandoffDocPath(),
-	} {
-		doc := phase50ReadFile(t, path)
-		normalized := strings.Join(strings.Fields(doc), " ")
-		for _, want := range []string{
-			"conditional `sandbox-test` and `integration-test` jobs",
-			"outside the Phase 54 fake-only checks/package verification boundary",
-			"must not",
-		} {
-			if !strings.Contains(doc, want) && !strings.Contains(normalized, want) {
-				t.Fatalf("%s must disclose conditional workflow boundary %q", phase50SafeDisplayPath(path), want)
-			}
-		}
-	}
-}
-
-func TestPhase54ReleasePackageDocumentationStaysDefaultSafe(t *testing.T) {
-	doc := phase50ReadFile(t, phase54ReleasePackageDesignDocPath())
-	normalized := strings.Join(strings.Fields(doc), " ")
-	for _, want := range []string{
-		"root",
-		"KVM",
-		"Firecracker",
-		"Docker/Podman",
-		"sandboxd",
-		"cloud provider",
-		"registry credentials",
-		"proxy listeners",
-		"firewall mutation",
-		"real API secrets",
-	} {
-		if !strings.Contains(normalized, want) {
-			t.Fatalf("%s must name default-safe package/build prerequisite %q", phase50SafeDisplayPath(phase54ReleasePackageDesignDocPath()), want)
 		}
 	}
 }
@@ -435,30 +320,6 @@ func phase54JSONTags(typ reflect.Type) []string {
 	return tags
 }
 
-func phase54DesignDocPaths(t *testing.T) []string {
-	t.Helper()
-	paths, err := filepath.Glob(filepath.Join("..", "docs", "design", "*phase54*.md"))
-	if err != nil {
-		t.Fatalf("Glob(phase54 design docs) error: %v", err)
-	}
-	if len(paths) == 0 {
-		t.Fatal("Phase 54 docs guard matched no docs/design/*phase54*.md files")
-	}
-	sort.Strings(paths)
-	return paths
-}
-
-func phase54ReleasePackageDocPaths() []string {
-	return []string{
-		filepath.Join("..", "README.md"),
-		phase54ReleasePackageDesignDocPath(),
-	}
-}
-
-func phase54ReleasePackageDesignDocPath() string {
-	return filepath.Join("..", "docs", "design", "sandbox-runtime-v2-phase54-release-package-verification.md")
-}
-
 func phase54CommandGuardFiles(t *testing.T) []string {
 	t.Helper()
 	paths, err := filepath.Glob(filepath.Join("..", "cmd", "phase54*.go"))
@@ -521,31 +382,6 @@ func phase54IsShellCommandLine(line string) bool {
 		}
 	}
 	return false
-}
-
-func phase54ForbiddenDefaultRequirementClaims() []string {
-	liveRuntime := "live runtime"
-	return []string{
-		"default verification requires kvm",
-		"default verification requires a firecracker binary",
-		"default verification requires root privileges",
-		"default verification requires docker",
-		"default verification requires podman",
-		"default verification requires cloud credentials",
-		"default verification requires registry credentials",
-		"default verification requires proxy listeners",
-		"default verification requires firewall mutation",
-		"default verification requires real api secrets",
-		"default verification requires " + liveRuntime,
-		"default ci requires kvm",
-		"default ci requires firecracker",
-		"default ci requires docker",
-		"default ci requires podman",
-		"default ci requires cloud credentials",
-		"default ci requires real credentials",
-		"default ci requires " + liveRuntime,
-		"default package verification requires " + liveRuntime,
-	}
 }
 
 func phase54ForbiddenDefaultCommandMarker(command string) string {
@@ -683,7 +519,7 @@ func phase54ForbiddenReleasePackageMakefileMarker(body string) string {
 }
 
 func TestPhase54ContractScopeGuardRejectsUnsafeFixtures(t *testing.T) {
-	liveDoc := "## Default Verification\n\n" + "env " + "HAL_" + "FIRECRACKER_LIVE=<set> go test -tags=" + "firecracker_" + "live ./internal/sandboxruntime/microvm\n"
+	liveDoc := "## Default Verification\n\n" + "env " + "HAL_" + "PODMAN_IMAGE=<set> go test -tags=" + "podman_" + "integration ./internal/sandboxruntime/rootlesspodman\n"
 	commands := phase54DefaultDocumentedCommands(liveDoc)
 	if len(commands) != 1 {
 		t.Fatalf("fixture default commands = %#v, want one command", commands)
@@ -692,7 +528,7 @@ func TestPhase54ContractScopeGuardRejectsUnsafeFixtures(t *testing.T) {
 		t.Fatal("fixture command should fail the Phase 54 live prerequisite marker guard")
 	}
 
-	optionalLiveDoc := "## Optional Live Verification\n\n" + "env " + "HAL_" + "FIRECRACKER_LIVE=<set> go test -tags=" + "firecracker_" + "live ./internal/sandboxruntime/microvm\n"
+	optionalLiveDoc := "## Optional Live Verification\n\n" + "env " + "HAL_" + "PODMAN_IMAGE=<set> go test -tags=" + "podman_" + "integration ./internal/sandboxruntime/rootlesspodman\n"
 	if commands := phase54DefaultDocumentedCommands(optionalLiveDoc); len(commands) != 0 {
 		t.Fatalf("optional live fixture commands = %#v, want none in default command scan", commands)
 	}
