@@ -804,6 +804,11 @@ destroy() {
 	# Go module caches are intentionally read-only. The lab root has already
 	# passed the absolute-path and leaf-name safety checks above.
 	chmod -R u+w "$LAB_ROOT" 2>/dev/null || true
+	if [ "$PODMAN_MODE" = "native" ] && command -v podman >/dev/null 2>&1; then
+		# Native rootless image layers are owned by subordinate UIDs that only
+		# the Podman user namespace can remove.
+		podman unshare rm -rf "$LAB_ROOT" >/dev/null 2>&1 || true
+	fi
 	rm -rf "$LAB_ROOT"
 	if [ -e "$LAB_ROOT" ]; then
 		echo "failed to remove lab root: $LAB_ROOT" >&2
