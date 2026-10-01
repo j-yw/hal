@@ -142,9 +142,6 @@ func TestL3RecoveryCommandsFinalizeConcreteDurableActionsWithoutForbiddenWork(t 
 					rootlessPodman: func() sandboxruntime.Driver {
 						panic("L3 recovery constructed a host runtime")
 					},
-					microVM: func() sandboxruntime.Driver {
-						panic("L3 recovery constructed a microVM runtime")
-					},
 				}
 			}
 			t.Cleanup(func() {

@@ -5,8 +5,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	launchassets "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 func TestSandboxTemplateContractConstants(t *testing.T) {
@@ -66,7 +64,6 @@ func TestSandboxTemplateContractFieldsAndJSONTags(t *testing.T) {
 	assertTemplateField(t, runtimeType, "Labels", reflect.TypeOf(map[string]string{}), `json:"labels,omitempty" yaml:"labels,omitempty"`)
 
 	launchType := reflect.TypeOf(LaunchRequirements{})
-	assertTemplateField(t, launchType, "Descriptor", reflect.TypeOf((*launchassets.LaunchDescriptor)(nil)), `json:"descriptor,omitempty" yaml:"descriptor,omitempty"`)
 	assertTemplateField(t, launchType, "DescriptorRef", reflect.TypeOf((*ImmutableRef)(nil)), `json:"descriptorRef,omitempty" yaml:"descriptorRef,omitempty"`)
 
 	workspaceType := reflect.TypeOf(WorkspaceRequirements{})
@@ -124,9 +121,7 @@ func TestSandboxTemplateJSONShapeIncludesCoreContractMetadata(t *testing.T) {
 			IsolationLevel: IsolationLevelVM,
 			Image:          &ImmutableRef{Kind: ReferenceKindOCIImage, Ref: "ghcr.io/acme/go-agent:1.2.0"},
 			Launch: &LaunchRequirements{
-				Descriptor: &launchassets.LaunchDescriptor{
-					ID: "go-agent-launch",
-				},
+				DescriptorRef: &ImmutableRef{Kind: ReferenceKindOCIArtifact, Ref: "ghcr.io/acme/launch:1.2.0"},
 			},
 		},
 		Workspace: &WorkspaceRequirements{
@@ -172,8 +167,8 @@ func TestSandboxTemplateJSONShapeIncludesCoreContractMetadata(t *testing.T) {
 
 	runtime := raw["runtime"].(map[string]any)
 	launch := runtime["launch"].(map[string]any)
-	if _, ok := launch["descriptor"].(map[string]any); !ok {
-		t.Fatalf("runtime.launch.descriptor = %#v, want embedded Phase 41 launch descriptor object", launch["descriptor"])
+	if _, ok := launch["descriptorRef"].(map[string]any); !ok {
+		t.Fatalf("runtime.launch.descriptorRef = %#v, want immutable reference object", launch["descriptorRef"])
 	}
 }
 

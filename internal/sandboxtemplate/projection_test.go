@@ -6,23 +6,15 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
-	launchassets "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
-func TestProjectRuntimeStatePreservesBaseAndLaunchDigests(t *testing.T) {
+func TestProjectRuntimeStatePreservesBaseAndReferenceDigests(t *testing.T) {
 	tmpl := validTemplateForValidation()
 	tmpl.Runtime.Image.Digest = &DigestMetadata{Algorithm: DigestAlgorithmSHA256, Value: strings.Repeat("b", 64)}
 	tmpl.Runtime.Launch = &LaunchRequirements{
-		Descriptor: &launchassets.LaunchDescriptor{
-			Assets: []launchassets.LaunchAsset{{
-				ID:     "kernel",
-				Role:   launchassets.AssetRoleKernel,
-				Labels: []launchassets.SafeLabel{"boot"},
-				Lock: launchassets.LockMetadata{Digest: launchassets.DigestMetadata{
-					Algorithm: launchassets.DigestAlgorithmSHA256,
-					Value:     strings.Repeat("c", 64),
-				}},
-			}},
+		DescriptorRef: &ImmutableRef{
+			Kind: ReferenceKindOCIArtifact, Ref: "ghcr.io/acme/launch:1.2.0",
+			Digest: &DigestMetadata{Algorithm: DigestAlgorithmSHA256, Value: strings.Repeat("c", 64)},
 		},
 	}
 	base := sandboxruntime.RuntimeState{
@@ -46,8 +38,8 @@ func TestProjectRuntimeStatePreservesBaseAndLaunchDigests(t *testing.T) {
 		t.Fatalf("operation plan = %#v", got.Metadata)
 	}
 	asset := got.Metadata.OperationPlan.Payloads[0].Assets[0]
-	if asset.AssetRole != "kernel" || asset.ID != "kernel" || asset.Digest == nil || asset.Digest.Value != strings.Repeat("c", 64) {
-		t.Fatalf("projected launch asset = %#v", asset)
+	if asset.ID != "launch-descriptor-ref" || asset.Digest == nil || asset.Digest.Value != strings.Repeat("c", 64) {
+		t.Fatalf("projected launch reference = %#v", asset)
 	}
 	if got.Metadata.CapabilityLabels[0] != "existing" {
 		t.Fatalf("metadata capability labels = %#v, want existing preserved", got.Metadata.CapabilityLabels)

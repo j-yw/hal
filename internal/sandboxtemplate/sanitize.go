@@ -67,10 +67,9 @@ func sanitizeLaunchRequirements(launch *LaunchRequirements) *LaunchRequirements 
 		return nil
 	}
 	out := LaunchRequirements{
-		Descriptor:    cloneLaunchDescriptor(launch.Descriptor),
 		DescriptorRef: sanitizeReference(launch.DescriptorRef),
 	}
-	if out.Descriptor == nil && out.DescriptorRef == nil {
+	if out.DescriptorRef == nil {
 		return nil
 	}
 	return &out

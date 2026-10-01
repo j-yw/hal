@@ -2,14 +2,12 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
-	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 )
 
 func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
@@ -39,9 +37,6 @@ func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
 			},
 			rootlessPodman: func() sandboxruntime.Driver {
 				return fakeRuntimeResolverDriver{id: sandboxruntime.DriverRootlessPodman}
-			},
-			microVM: func() sandboxruntime.Driver {
-				return fakeRuntimeResolverDriver{id: sandboxruntime.DriverMicroVM}
 			},
 		}
 	}
@@ -115,7 +110,7 @@ func TestExistingSandboxExecutionDefaultResolversStayWorkerOptIn(t *testing.T) {
 				RuntimeID:      "microvm-dev",
 				IsolationLevel: sandbox.SandboxIsolationLevelVM,
 			},
-			wantID: sandboxruntime.DriverMicroVM,
+			wantErr: `runtime driver "microvm" is not supported`,
 		},
 	}
 
@@ -201,10 +196,6 @@ func TestSandboxRuntimeCompatRejectsUnknownSelectedRuntimeDrivers(t *testing.T) 
 					t.Fatal("rootless Podman factory should not be used for unsupported selected runtime metadata")
 					return nil
 				},
-				microVM: func() sandboxruntime.Driver {
-					t.Fatal("microVM factory should not be used for unsupported selected runtime metadata")
-					return nil
-				},
 			})
 			if err == nil {
 				t.Fatal("sandboxRuntimeDriverFromTargetWithFactories() error = nil, want unsupported selected runtime")
@@ -216,142 +207,6 @@ func TestSandboxRuntimeCompatRejectsUnknownSelectedRuntimeDrivers(t *testing.T) 
 				t.Fatalf("error = %q, want unsupported runtime driver", err.Error())
 			}
 		})
-	}
-}
-
-func TestSandboxRuntimeCompatSelectsMicroVMAndDefersUnavailableToDriver(t *testing.T) {
-	target := sandboxruntime.Target{
-		Provider: "worker",
-		Runtime: sandboxruntime.RuntimeState{
-			Driver:         sandboxruntime.DriverMicroVM,
-			WorkerID:       "worker-a",
-			RuntimeID:      "vm-123",
-			IsolationLevel: sandbox.SandboxIsolationLevelVM,
-		},
-	}
-
-	driver, err := sandboxRuntimeDriverFromTargetWithFactories(target, func(string) (sandbox.Provider, error) {
-		t.Fatal("resolveProvider should not run for explicit microVM runtime metadata")
-		return nil, nil
-	}, sandboxRuntimeDriverFactories{
-		sshMachine: func(sandbox.Provider) sandboxruntime.Driver {
-			t.Fatal("SSH-machine factory should not be used for explicit microVM runtime metadata")
-			return nil
-		},
-		rootlessPodman: func() sandboxruntime.Driver {
-			t.Fatal("rootless Podman factory should not be used for explicit microVM runtime metadata")
-			return nil
-		},
-		microVM: func() sandboxruntime.Driver {
-			return microvm.NewDriver(microvm.DriverOptions{
-				CapabilityDetector: microvm.CapabilityDetectorFunc(func(microvm.CapabilityDetectionRequest) microvm.CapabilityReport {
-					return microvm.CapabilityReport{
-						OS:           "linux",
-						Architecture: "amd64",
-						Availability: microvm.CapabilityAvailabilityUnavailable,
-						ReasonCode:   microvm.CapabilityReasonKVMDeviceMissing,
-						Error:        microvm.NewUnavailableCapabilityError("detect_capability", microvm.ErrUnavailableCapability),
-					}
-				}),
-			})
-		},
-	})
-	if err != nil {
-		t.Fatalf("sandboxRuntimeDriverFromTargetWithFactories() error = %v", err)
-	}
-	if driver == nil || driver.ID() != sandboxruntime.DriverMicroVM {
-		t.Fatalf("driver = %#v, want microVM driver", driver)
-	}
-
-	err = driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: target})
-	if err == nil {
-		t.Fatal("microVM driver Delete() error = nil, want unavailable capability")
-	}
-	var operationErr *microvm.OperationError
-	if !errors.As(err, &operationErr) {
-		t.Fatalf("microVM driver Delete() error = %T %v, want microVM operation error", err, err)
-	}
-	if operationErr.Code != microvm.ErrorCodeUnavailableCapability {
-		t.Fatalf("operation error code = %q, want %q", operationErr.Code, microvm.ErrorCodeUnavailableCapability)
-	}
-	if operationErr.Operation != microvm.OperationDelete {
-		t.Fatalf("operation = %q, want %q", operationErr.Operation, microvm.OperationDelete)
-	}
-}
-
-func TestProductionRuntimeResolverMicroVMFactoryDoesNotConfigureFirecrackerBackend(t *testing.T) {
-	target := sandboxruntime.Target{
-		Provider: "worker",
-		Runtime: sandboxruntime.RuntimeState{
-			Driver:         sandboxruntime.DriverMicroVM,
-			WorkerID:       "worker-a",
-			RuntimeID:      "vm-123",
-			IsolationLevel: sandbox.SandboxIsolationLevelVM,
-		},
-	}
-
-	factoryCalls := 0
-	driver, err := sandboxRuntimeDriverFromTargetWithFactories(target, func(string) (sandbox.Provider, error) {
-		t.Fatal("resolveProvider should not run for explicit microVM runtime metadata")
-		return nil, nil
-	}, sandboxRuntimeDriverFactories{
-		sshMachine: func(sandbox.Provider) sandboxruntime.Driver {
-			t.Fatal("SSH-machine factory should not be used for explicit microVM runtime metadata")
-			return nil
-		},
-		rootlessPodman: func() sandboxruntime.Driver {
-			t.Fatal("rootless Podman factory should not be used for explicit microVM runtime metadata")
-			return nil
-		},
-		microVM: func() sandboxruntime.Driver {
-			factoryCalls++
-			return microvm.NewDriver(microvm.DriverOptions{
-				CapabilityDetector: microvm.CapabilityDetectorFunc(func(microvm.CapabilityDetectionRequest) microvm.CapabilityReport {
-					return microvm.CapabilityReport{
-						OS:               "linux",
-						Architecture:     "amd64",
-						KVMDevicePresent: true,
-						Availability:     microvm.CapabilityAvailabilityAvailable,
-						ReasonCode:       microvm.CapabilityReasonAvailable,
-					}
-				}),
-			})
-		},
-	})
-	if err != nil {
-		t.Fatalf("sandboxRuntimeDriverFromTargetWithFactories() error = %v", err)
-	}
-	if factoryCalls != 1 {
-		t.Fatalf("microVM factory calls = %d, want 1", factoryCalls)
-	}
-	if driver == nil {
-		t.Fatal("microVM factory returned nil driver")
-	}
-	if driver.ID() != sandboxruntime.DriverMicroVM {
-		t.Fatalf("driver ID = %q, want %q", driver.ID(), sandboxruntime.DriverMicroVM)
-	}
-	if typeName := fmt.Sprintf("%T", driver); strings.Contains(strings.ToLower(typeName), "firecracker") {
-		t.Fatalf("microVM factory returned Firecracker type %q, want backend-neutral microVM driver", typeName)
-	}
-
-	microVMDriver, ok := driver.(*microvm.Driver)
-	if !ok {
-		t.Fatalf("microVM factory returned %T, want *microvm.Driver", driver)
-	}
-	metadata := microVMDriver.Metadata()
-	if metadata.BackendConfigured {
-		t.Fatalf("BackendConfigured = true, want false until Firecracker backend is explicitly injected")
-	}
-	if metadata.Availability != microvm.CapabilityAvailabilityUnavailable {
-		t.Fatalf("Availability = %q, want %q without explicit backend", metadata.Availability, microvm.CapabilityAvailabilityUnavailable)
-	}
-	if metadata.ReasonCode != microvm.DriverReasonBackendNotConfigured {
-		t.Fatalf("ReasonCode = %q, want %q", metadata.ReasonCode, microvm.DriverReasonBackendNotConfigured)
-	}
-
-	created, createErr := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "firecracker-dev"})
-	if createErr == nil {
-		t.Fatalf("Create() error = nil with target %#v, want unavailable backend-neutral microVM driver", created)
 	}
 }
 
@@ -367,9 +222,6 @@ func TestSandboxRuntimeCompatDefaultsToSSHMachineUnlessExplicitRuntimeSelected(t
 			},
 			rootlessPodman: func() sandboxruntime.Driver {
 				return fakeRuntimeResolverDriver{id: sandboxruntime.DriverRootlessPodman}
-			},
-			microVM: func() sandboxruntime.Driver {
-				return fakeRuntimeResolverDriver{id: sandboxruntime.DriverMicroVM}
 			},
 		}
 	}
@@ -413,14 +265,6 @@ func TestSandboxRuntimeCompatDefaultsToSSHMachineUnlessExplicitRuntimeSelected(t
 				Runtime:  sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverRootlessPodman},
 			},
 			wantID: sandboxruntime.DriverRootlessPodman,
-		},
-		{
-			name: "explicit microVM selects microVM",
-			target: sandboxruntime.Target{
-				Provider: "test-provider",
-				Runtime:  sandboxruntime.RuntimeState{Driver: sandboxruntime.DriverMicroVM},
-			},
-			wantID: sandboxruntime.DriverMicroVM,
 		},
 	}
 
@@ -532,10 +376,6 @@ func TestSandboxRuntimeCompatWorkerHostMetadataDoesNotSelectRuntime(t *testing.T
 		},
 		rootlessPodman: func() sandboxruntime.Driver {
 			t.Fatal("rootless Podman factory called from worker host metadata")
-			return nil
-		},
-		microVM: func() sandboxruntime.Driver {
-			t.Fatal("microVM factory called from worker host metadata")
 			return nil
 		},
 	})

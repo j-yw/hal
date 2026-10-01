@@ -2,11 +2,9 @@ package sandboxtarget
 
 import (
 	"strings"
-	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
-	"github.com/jywlabs/hal/internal/strictcomposition"
 )
 
 // Purpose identifies the sandbox-capable workflow requesting a target.
@@ -28,19 +26,8 @@ type Request struct {
 	RuntimeDriver             string
 	IsolationLevel            string
 	SecurityReadinessGateMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
-	StrictComposition         *StrictCompositionAuthority
 	Project                   ProjectContext
 	Fallback                  FallbackPolicy
-	strictCompositionNow      time.Time
-}
-
-// StrictCompositionAuthority carries the opaque L10 authority and its exact
-// live selection tuple. It is never persisted by target selection.
-type StrictCompositionAuthority struct {
-	Attestation strictcomposition.ActiveAttestation
-	SandboxID   string
-	ExecutionID string
-	RuntimeID   string
 }
 
 // ProjectContext carries repository context that can influence deterministic

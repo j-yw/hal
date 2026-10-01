@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/securedefaultfixtures"
@@ -100,22 +99,18 @@ func TestSelectStrictSecureDefaultRejectsCompatibilityTargetsInsteadOfSelectingT
 	}
 }
 
-func TestSelectStrictSecureDefaultDefaultSelectionAllowsProofCompleteRunningTarget(t *testing.T) {
+func TestSelectStrictSecureDefaultDefaultSelectionRejectsCachedProofCompleteRunningTarget(t *testing.T) {
 	target := strictSecureDefaultProofCompleteSandbox("strict-ready-default")
 	target.ID = target.Name
-	authority, decision := l10TargetSelectionAuthority(t, target)
-	target.Security.StrictComposition = &decision
 	stopped := strictSecureDefaultProofCompleteSandbox("strict-stopped")
 	stopped.Status = sandbox.StatusStopped
 
 	result := Select(Request{
 		SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
-		StrictComposition:         authority,
 		Fallback: FallbackPolicy{
 			AllowDefaultRunningSandbox: true,
 		},
 	}, CachedState{
-		Now: func() time.Time { return decision.ObservedAt },
 		LoadSandbox: func(string) (*sandbox.SandboxState, error) {
 			t.Fatal("LoadSandbox should not run for strict cached default selection")
 			return nil, nil
@@ -125,22 +120,7 @@ func TestSelectStrictSecureDefaultDefaultSelectionAllowsProofCompleteRunningTarg
 		},
 	})
 
-	if result.Failed() || result.NeedsProvisioning() || result.Sandbox != target {
-		var failureMessage string
-		if result.Failure != nil {
-			failureMessage = result.Failure.Error()
-		}
-		t.Fatalf("result = %#v failure = %q gate = %#v, want proof-complete running target selected without provisioning", result, failureMessage, result.SecurityReadinessGate)
-	}
-	if result.Source.Kind != SourceDefaultRunningSandbox {
-		t.Fatalf("source = %#v, want default running sandbox", result.Source)
-	}
-	if result.SecurityReadinessGate == nil ||
-		result.SecurityReadinessGate.PolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict ||
-		result.SecurityReadinessGate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed ||
-		result.SecurityReadinessGate.Code != sandbox.SandboxSecurityCapabilityReadinessGateCodeAllowed {
-		t.Fatalf("security readiness gate = %#v, want strict allowed decision", result.SecurityReadinessGate)
-	}
+	requireStrictSecureDefaultSelectionBlocked(t, result, []string{string(sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessMissing)}, strictSecureDefaultForbiddenFragments()...)
 }
 
 func TestUS003SelectStrictSecureDefaultRejectsMissingOrWeakTargetSelectionProof(t *testing.T) {
@@ -262,7 +242,7 @@ func TestUS004SelectStrictSecureDefaultRejectsMissingOrWeakMicroVMReadinessProof
 	}
 }
 
-func TestUS008SelectStrictSecureDefaultAcceptsCompleteSanitizedEvidenceSet(t *testing.T) {
+func TestUS008SelectStrictSecureDefaultRejectsCompleteCachedEvidenceWithoutLiveAuthority(t *testing.T) {
 	fixture := securedefaultfixtures.CompleteAcceptedEvidenceSet()
 	if !fixture.StrictTargetSelection {
 		t.Fatalf("fixture strict target selection = false, want active strict target-selection proof")
@@ -271,30 +251,8 @@ func TestUS008SelectStrictSecureDefaultAcceptsCompleteSanitizedEvidenceSet(t *te
 	target := strictSecureDefaultFixtureSandbox("us008-proof-complete", fixture)
 	result := selectUS008StrictFixtureTarget(t, target)
 
-	if result.Failed() || result.NeedsProvisioning() || result.Sandbox != target {
-		var failure string
-		if result.Failure != nil {
-			failure = result.Failure.Error()
-		}
-		t.Fatalf("result = %#v failure = %q, want complete secure-default evidence accepted", result, failure)
-	}
-	if result.SecurityReadinessGate == nil {
-		t.Fatal("security readiness gate = nil, want accepted decision")
-	}
-	if result.SecurityReadinessGate.PolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict ||
-		result.SecurityReadinessGate.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed ||
-		result.SecurityReadinessGate.Code != sandbox.SandboxSecurityCapabilityReadinessGateCodeAllowed ||
-		result.SecurityReadinessGate.Reason != sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady {
-		t.Fatalf("security readiness gate = %#v, want strict allowed decision", result.SecurityReadinessGate)
-	}
-
-	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonMicroVMReadinessConfirmed)
-	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonWorkspaceIsolationConfirmed)
-	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonNetworkEnforcementConfirmed)
-	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonCredentialActivationConfirmed)
-	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonTemplateLockDigestConfirmed)
-	us008RequireAcceptedProofReason(t, result.SecurityReadinessGate, sandbox.SandboxSecurityCapabilityReasonSelectedTemplateTrustConfirmed)
-	us008AssertSecureDefaultDecisionSafe(t, "accepted secure-default decision", result.SecurityReadinessGate, result.Sandbox.Security, fixture.Input, fixture.Readiness)
+	requireStrictSecureDefaultSelectionBlocked(t, result, []string{string(sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessMissing)}, strictSecureDefaultForbiddenFragments()...)
+	us008AssertSecureDefaultDecisionSafe(t, "rejected cached secure-default decision", result.SecurityReadinessGate, result.Failure, fixture.Input, fixture.Readiness)
 }
 
 func TestUS008SelectStrictSecureDefaultRejectsAcceptedFixtureWithAnyProofRemoved(t *testing.T) {
@@ -469,15 +427,11 @@ func TestSelectCompatibilitySecureDefaultReadinessRemainsAdvisoryAndTruthful(t *
 func selectUS008StrictFixtureTarget(t *testing.T, target *sandbox.SandboxState) Result {
 	t.Helper()
 	target.ID = target.Name
-	authority, decision := l10TargetSelectionAuthority(t, target)
-	target.Security.StrictComposition = &decision
 	return Select(Request{
 		SandboxName:               target.Name,
 		SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
-		StrictComposition:         authority,
 		Fallback:                  FallbackPolicy{Disabled: true},
 	}, CachedState{
-		Now: func() time.Time { return decision.ObservedAt },
 		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
 			if name != target.Name {
 				t.Fatalf("loaded sandbox name = %q, want %q", name, target.Name)
@@ -485,16 +439,6 @@ func selectUS008StrictFixtureTarget(t *testing.T, target *sandbox.SandboxState) 
 			return target, nil
 		},
 	})
-}
-
-func us008RequireAcceptedProofReason(t *testing.T, decision *sandbox.SandboxSecurityCapabilityReadinessGateDecision, reason sandbox.SandboxSecurityCapabilityReasonCode) {
-	t.Helper()
-	if decision == nil || decision.Counts == nil {
-		t.Fatalf("security readiness gate = %#v, want counts containing %s", decision, reason)
-	}
-	if got := decision.Counts.ReasonCodeCounts[reason]; got < 1 {
-		t.Fatalf("security readiness gate reason counts = %#v, want %s proof", decision.Counts.ReasonCodeCounts, reason)
-	}
 }
 
 func us008AssertSecureDefaultDecisionSafe(t *testing.T, label string, values ...any) {

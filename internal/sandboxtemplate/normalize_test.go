@@ -3,8 +3,6 @@ package sandboxtemplate
 import (
 	"reflect"
 	"testing"
-
-	launchassets "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 func TestNormalizeTemplateTrimsSafeFieldsAndNormalizesEnums(t *testing.T) {
@@ -202,20 +200,6 @@ func TestNormalizeTemplateDoesNotMutateOrAliasInput(t *testing.T) {
 		Runtime: &RuntimeRequirements{
 			Image: &ImmutableRef{Kind: " OCI-Image ", Ref: " image "},
 			Launch: &LaunchRequirements{
-				Descriptor: &launchassets.LaunchDescriptor{
-					ID:     "launch",
-					Labels: []launchassets.SafeLabel{"fast"},
-					Assets: []launchassets.LaunchAsset{{
-						ID:     "kernel",
-						Labels: []launchassets.SafeLabel{"boot"},
-						Source: launchassets.AssetSource{HostPath: &launchassets.HostPathMetadata{
-							Path: "/tmp/kernel",
-						}},
-						InitConfig:  &launchassets.InitConfigMetadata{Labels: []launchassets.SafeLabel{"init"}},
-						AgentConfig: &launchassets.AgentConfigMetadata{Features: []launchassets.SafeLabel{"rpc"}},
-						Resources:   []launchassets.ResourceMetadata{{Labels: []launchassets.SafeLabel{"small"}}},
-					}},
-				},
 				DescriptorRef: &ImmutableRef{Kind: " Local ", Ref: " descriptor "},
 			},
 			Resources: &ResourceHints{CPUCores: 2},
@@ -245,12 +229,7 @@ func TestNormalizeTemplateDoesNotMutateOrAliasInput(t *testing.T) {
 	tmpl.Metadata.Reference.Ref = "changed"
 	tmpl.Metadata.Reference.Digest.Value = "changed"
 	tmpl.Runtime.Image.Ref = "changed"
-	tmpl.Runtime.Launch.Descriptor.Labels[0] = "changed"
-	tmpl.Runtime.Launch.Descriptor.Assets[0].Labels[0] = "changed"
-	tmpl.Runtime.Launch.Descriptor.Assets[0].Source.HostPath.Path = "changed"
-	tmpl.Runtime.Launch.Descriptor.Assets[0].InitConfig.Labels[0] = "changed"
-	tmpl.Runtime.Launch.Descriptor.Assets[0].AgentConfig.Features[0] = "changed"
-	tmpl.Runtime.Launch.Descriptor.Assets[0].Resources[0].Labels[0] = "changed"
+	tmpl.Runtime.Launch.DescriptorRef.Ref = "changed"
 	tmpl.Runtime.Labels[" runtime "] = "changed"
 	tmpl.Network.Allow[0].Value = "changed"
 	*tmpl.Network.BlockPrivateNetworks = false
@@ -268,13 +247,8 @@ func TestNormalizeTemplateDoesNotMutateOrAliasInput(t *testing.T) {
 	if normalized.Runtime.Image.Ref != "image" {
 		t.Fatalf("normalized runtime image aliased input: %#v", normalized.Runtime.Image)
 	}
-	if normalized.Runtime.Launch.Descriptor.Labels[0] != "fast" ||
-		normalized.Runtime.Launch.Descriptor.Assets[0].Labels[0] != "boot" ||
-		normalized.Runtime.Launch.Descriptor.Assets[0].Source.HostPath.Path != "/tmp/kernel" ||
-		normalized.Runtime.Launch.Descriptor.Assets[0].InitConfig.Labels[0] != "init" ||
-		normalized.Runtime.Launch.Descriptor.Assets[0].AgentConfig.Features[0] != "rpc" ||
-		normalized.Runtime.Launch.Descriptor.Assets[0].Resources[0].Labels[0] != "small" {
-		t.Fatalf("normalized launch descriptor aliased input: %#v", normalized.Runtime.Launch.Descriptor)
+	if normalized.Runtime.Launch.DescriptorRef.Ref != "descriptor" {
+		t.Fatalf("normalized launch reference aliased input: %#v", normalized.Runtime.Launch.DescriptorRef)
 	}
 	if normalized.Runtime.Labels["runtime"] != "label" {
 		t.Fatalf("normalized runtime labels aliased input: %#v", normalized.Runtime.Labels)

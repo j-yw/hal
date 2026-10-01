@@ -6,8 +6,6 @@
 // credentials.
 package sandboxtemplate
 
-import launchassets "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
-
 const (
 	TemplateAPIVersionV1 TemplateAPIVersion = "sandbox-template.hal.dev/v1"
 	TemplateKindSandbox  TemplateKind       = "SandboxTemplate"
@@ -133,10 +131,9 @@ type RuntimeRequirements struct {
 	Labels         map[string]string   `json:"labels,omitempty" yaml:"labels,omitempty"`
 }
 
-// LaunchRequirements can embed or reference Phase 41 microVM launch assets.
+// LaunchRequirements retains immutable launch reference metadata only.
 type LaunchRequirements struct {
-	Descriptor    *launchassets.LaunchDescriptor `json:"descriptor,omitempty" yaml:"descriptor,omitempty"`
-	DescriptorRef *ImmutableRef                  `json:"descriptorRef,omitempty" yaml:"descriptorRef,omitempty"`
+	DescriptorRef *ImmutableRef `json:"descriptorRef,omitempty" yaml:"descriptorRef,omitempty"`
 }
 
 // ResourceHints carries requested resource metadata only.

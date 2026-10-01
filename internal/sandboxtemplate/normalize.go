@@ -3,8 +3,6 @@ package sandboxtemplate
 import (
 	"sort"
 	"strings"
-
-	launchassets "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 // NormalizeTemplate returns a normalized deep copy of tmpl.
@@ -74,7 +72,6 @@ func normalizeLaunchRequirements(launch *LaunchRequirements) *LaunchRequirements
 		return nil
 	}
 	return &LaunchRequirements{
-		Descriptor:    cloneLaunchDescriptor(launch.Descriptor),
 		DescriptorRef: normalizeImmutableRef(launch.DescriptorRef),
 	}
 }
@@ -377,101 +374,5 @@ func cloneStringSlice(values []string) []string {
 	}
 	clone := make([]string, len(values))
 	copy(clone, values)
-	return clone
-}
-
-func cloneLaunchDescriptor(descriptor *launchassets.LaunchDescriptor) *launchassets.LaunchDescriptor {
-	if descriptor == nil {
-		return nil
-	}
-	return &launchassets.LaunchDescriptor{
-		ID:     descriptor.ID,
-		Labels: cloneLaunchSafeLabels(descriptor.Labels),
-		Assets: cloneLaunchAssets(descriptor.Assets),
-	}
-}
-
-func cloneLaunchAssets(assets []launchassets.LaunchAsset) []launchassets.LaunchAsset {
-	if assets == nil {
-		return nil
-	}
-	clone := make([]launchassets.LaunchAsset, len(assets))
-	for i, asset := range assets {
-		clone[i] = launchassets.LaunchAsset{
-			ID:          asset.ID,
-			Role:        asset.Role,
-			Kind:        asset.Kind,
-			Labels:      cloneLaunchSafeLabels(asset.Labels),
-			Source:      cloneLaunchAssetSource(asset.Source),
-			Lock:        asset.Lock,
-			InitConfig:  cloneLaunchInitConfig(asset.InitConfig),
-			AgentConfig: cloneLaunchAgentConfig(asset.AgentConfig),
-			Resources:   cloneLaunchResources(asset.Resources),
-		}
-	}
-	return clone
-}
-
-func cloneLaunchAssetSource(source launchassets.AssetSource) launchassets.AssetSource {
-	return launchassets.AssetSource{
-		Type:     source.Type,
-		HostPath: cloneLaunchHostPath(source.HostPath),
-	}
-}
-
-func cloneLaunchHostPath(hostPath *launchassets.HostPathMetadata) *launchassets.HostPathMetadata {
-	if hostPath == nil {
-		return nil
-	}
-	return &launchassets.HostPathMetadata{
-		Path: hostPath.Path,
-		Role: hostPath.Role,
-	}
-}
-
-func cloneLaunchInitConfig(config *launchassets.InitConfigMetadata) *launchassets.InitConfigMetadata {
-	if config == nil {
-		return nil
-	}
-	return &launchassets.InitConfigMetadata{
-		Format:     config.Format,
-		EntryPoint: config.EntryPoint,
-		Labels:     cloneLaunchSafeLabels(config.Labels),
-	}
-}
-
-func cloneLaunchAgentConfig(config *launchassets.AgentConfigMetadata) *launchassets.AgentConfigMetadata {
-	if config == nil {
-		return nil
-	}
-	return &launchassets.AgentConfigMetadata{
-		Protocol: config.Protocol,
-		Version:  config.Version,
-		Features: cloneLaunchSafeLabels(config.Features),
-	}
-}
-
-func cloneLaunchResources(resources []launchassets.ResourceMetadata) []launchassets.ResourceMetadata {
-	if resources == nil {
-		return nil
-	}
-	clone := make([]launchassets.ResourceMetadata, len(resources))
-	for i, resource := range resources {
-		clone[i] = launchassets.ResourceMetadata{
-			ID:        resource.ID,
-			Kind:      resource.Kind,
-			SizeBytes: resource.SizeBytes,
-			Labels:    cloneLaunchSafeLabels(resource.Labels),
-		}
-	}
-	return clone
-}
-
-func cloneLaunchSafeLabels(labels []launchassets.SafeLabel) []launchassets.SafeLabel {
-	if labels == nil {
-		return nil
-	}
-	clone := make([]launchassets.SafeLabel, len(labels))
-	copy(clone, labels)
 	return clone
 }

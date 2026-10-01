@@ -5,7 +5,6 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
-	launchassets "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
 // Projection is the data-only result of applying a sandbox template to
@@ -152,12 +151,6 @@ func projectLaunchOperationPlan(launch *LaunchRequirements) *sandboxruntime.Runt
 		return nil
 	}
 	plan := &sandboxruntime.RuntimeOperationPlan{Action: "template_launch_metadata"}
-	if launch.Descriptor != nil {
-		plan.Payloads = append(plan.Payloads, sandboxruntime.RuntimeOperationPayload{
-			Role:   "launch_descriptor",
-			Assets: projectLaunchAssets(launch.Descriptor.Assets),
-		})
-	}
 	if launch.DescriptorRef != nil {
 		payload := sandboxruntime.RuntimeOperationPayload{Role: "launch_descriptor_ref"}
 		if ReferenceDigestPinned(launch.DescriptorRef) {
@@ -175,41 +168,6 @@ func projectLaunchOperationPlan(launch *LaunchRequirements) *sandboxruntime.Runt
 		return nil
 	}
 	return plan
-}
-
-func projectLaunchAssets(assets []launchassets.LaunchAsset) []sandboxruntime.RuntimeOperationPayloadAsset {
-	if assets == nil {
-		return nil
-	}
-	out := make([]sandboxruntime.RuntimeOperationPayloadAsset, 0, len(assets))
-	for _, asset := range assets {
-		projected := sandboxruntime.RuntimeOperationPayloadAsset{
-			AssetRole: string(asset.Role),
-			ID:        string(asset.ID),
-			Labels:    launchLabels(asset.Labels),
-		}
-		if asset.Lock.Digest.Algorithm != "" && asset.Lock.Digest.Value != "" {
-			projected.Digest = &sandboxruntime.RuntimeOperationPayloadDigest{
-				Algorithm: string(asset.Lock.Digest.Algorithm),
-				Value:     asset.Lock.Digest.Value,
-			}
-		}
-		out = append(out, projected)
-	}
-	return out
-}
-
-func launchLabels(labels []launchassets.SafeLabel) []string {
-	if labels == nil {
-		return nil
-	}
-	out := make([]string, 0, len(labels))
-	for _, label := range labels {
-		if trimmed := strings.TrimSpace(string(label)); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
 }
 
 func cloneRuntimeMetadata(metadata *sandboxruntime.RuntimeMetadata) *sandboxruntime.RuntimeMetadata {
