@@ -914,7 +914,7 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
 			if runSandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
 				return factorySandboxSyncEngineAuthRuntime(ctx, prep, factorySandboxExecutorDeps{
-					engineAuthFiles: deps.engineAuthFiles,
+					engineAuthFiles: sandboxEngineAuthFilesFor(sandboxEffectiveEngine(req.Flags.Engine, req.Flags.EngineChanged, req.ProjectDir), deps.engineAuthFiles),
 				})
 			}
 			provider, err := ensureProvider(prep.Target.Provider)
@@ -924,7 +924,7 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), prepOut, factorySandboxExecutorDeps{
 				runProviderExecWithEnv: deps.runProviderExecWithEnv,
 				runProviderScript:      deps.runProviderScript,
-				engineAuthFiles:        deps.engineAuthFiles,
+				engineAuthFiles:        sandboxEngineAuthFilesFor(sandboxEffectiveEngine(req.Flags.Engine, req.Flags.EngineChanged, req.ProjectDir), deps.engineAuthFiles),
 			})
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
