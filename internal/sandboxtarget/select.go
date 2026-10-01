@@ -86,7 +86,11 @@ func Select(req Request, cache CachedState) Result {
 	if requestedHost != nil {
 		var result Result
 		if !policy.Disabled && policy.AllowBranchProvisioning {
-			result = withRequestedMetadata(provisioningResult(req, sandbox.SandboxNameFromBranch(req.Project.Branch), policy, requestedSelectionReason(requestedConstraint)), requestedHost, requestedRuntime)
+			branchName := sandbox.SandboxNameFromBranch(req.Project.Branch)
+			if existing, found := selectExistingBranchSandbox(req, cache, policy, branchName); found {
+				return applyTargetSelectionSecurityReadinessGate(req, withRequestedMetadata(existing, requestedHost, requestedRuntime), gateMode)
+			}
+			result = withRequestedMetadata(provisioningResult(req, branchName, policy, requestedSelectionReason(requestedConstraint)), requestedHost, requestedRuntime)
 		} else {
 			result = requestedConstraint
 		}
@@ -609,6 +613,33 @@ func validateRequestedRuntimeIsolation(req Request) Result {
 		RuntimeDriver:  runtimeDriver,
 		IsolationLevel: isolationLevel,
 	})
+}
+
+// selectExistingBranchSandbox reuses the branch-derived sandbox a previous
+// constrained run created, validated exactly like an explicit --sandbox-name.
+// found is false only when no such sandbox exists (or no loader is wired), so
+// the caller may provision it; a mismatched or unreadable record fails closed
+// rather than planning a create that collides with the existing name.
+func selectExistingBranchSandbox(req Request, cache CachedState, policy FallbackPolicy, name string) (Result, bool) {
+	if cache.LoadSandbox == nil || strings.TrimSpace(name) == "" {
+		return Result{}, false
+	}
+	target, err := cache.LoadSandbox(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Result{}, false
+	}
+	if err != nil {
+		return failureResult(Failure{
+			Reason:      FailureReasonInvalidRequest,
+			Message:     fmt.Sprintf("load sandbox %q: %v", name, err),
+			SandboxName: name,
+		}), true
+	}
+	result := selectedSandboxResult(target, SourceExplicitSandbox, name, policy, false, SourceUnknown, "")
+	if failure := validateSelectedSandbox(req, result); failure.Failed() {
+		return failure, true
+	}
+	return result, true
 }
 
 func validateSelectedSandbox(req Request, result Result) Result {
