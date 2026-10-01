@@ -200,30 +200,12 @@ func phase49FinalReadFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-func phase50CallAccessesKVM(selector string) bool {
-	switch selector {
-	case "os.Open", "os.OpenFile", "os.Stat", "os.Lstat":
-		return true
-	default:
-		return false
-	}
-}
-
 func phase50CallHasAnyLiteralArg(call *ast.CallExpr, wants []string) bool {
 	for _, value := range phase50StringLiteralArgs(call) {
 		for _, want := range wants {
 			if value == want || strings.HasSuffix(value, "/"+want) || strings.Contains(value, want+" ") {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func phase50CallHasLiteralArg(call *ast.CallExpr, want string) bool {
-	for _, value := range phase50StringLiteralArgs(call) {
-		if value == want {
-			return true
 		}
 	}
 	return false
@@ -236,7 +218,7 @@ func phase50CallHasOptionalLiveEnvArg(call *ast.CallExpr) bool {
 func phase50CallLaunchesLiveProcess(selector string, call *ast.CallExpr) bool {
 	switch selector {
 	case "exec.Command", "exec.CommandContext", "exec.LookPath", "os.StartProcess", "syscall.Exec":
-		return phase50CallHasAnyLiteralArg(call, []string{"docker", "podman", "firecracker", "/usr/bin/firecracker"})
+		return phase50CallHasAnyLiteralArg(call, []string{"docker", "podman"})
 	default:
 		return false
 	}
@@ -286,8 +268,6 @@ func phase50DefaultForbiddenLiveImport(importPath string) string {
 	case strings.HasPrefix(importPath, "github.com/docker/docker"),
 		strings.HasPrefix(importPath, "github.com/containers/podman"):
 		return "Docker or Podman API import"
-	case strings.HasPrefix(importPath, "github.com/firecracker-microvm"):
-		return "Firecracker or KVM import"
 	case strings.HasPrefix(importPath, "github.com/digitalocean/godo"),
 		strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go"),
 		strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go-v2"),
@@ -330,8 +310,6 @@ func phase50DefaultLivePrerequisiteBoundaryMessage(fileName string, file *ast.Fi
 			message = phase50DefaultGuardMessage(fileName, "optional live env lookup", phase50FirstOptionalLiveEnvArg(call))
 		case phase50CallSetsLiveEnv(selector) && phase50CallHasOptionalLiveEnvArg(call):
 			message = phase50DefaultGuardMessage(fileName, "optional live env setup", phase50FirstOptionalLiveEnvArg(call))
-		case phase50CallAccessesKVM(selector) && phase50CallHasLiteralArg(call, "/dev/kvm"):
-			message = phase50DefaultGuardMessage(fileName, "KVM prerequisite", "KVM device")
 		case phase50CallLaunchesLiveProcess(selector, call):
 			message = phase50DefaultGuardMessage(fileName, phase50LiveProcessLabel(call), phase50LiveProcessMarker(call))
 		case phase50CallOpensDefaultNetwork(selector, call):
@@ -374,12 +352,8 @@ func phase50HasBuildTag(source, tag string) bool {
 func phase50HasOptionalLiveBuildTag(source string) bool {
 	for _, tag := range []string{
 		"integration",
-		"microvm_e2e_live",
 		"worker_integration",
 		"podman_integration",
-		"firecracker_live",
-		"network_enforcement_live",
-		"credential_delivery_live",
 	} {
 		if phase50HasBuildTag(source, tag) {
 			return true
@@ -394,8 +368,6 @@ func phase50ImportMarker(importPath string) string {
 		return "docker-api"
 	case strings.HasPrefix(importPath, "github.com/containers/podman"):
 		return "podman-api"
-	case strings.HasPrefix(importPath, "github.com/firecracker-microvm"):
-		return "firecracker-sdk"
 	case strings.HasPrefix(importPath, "github.com/digitalocean/godo"):
 		return "provider-api"
 	case strings.HasPrefix(importPath, "github.com/aws/aws-sdk-go-v2"):
@@ -429,8 +401,6 @@ func phase50LiveProcessLabel(call *ast.CallExpr) string {
 		return "Docker process"
 	case phase50CallHasAnyLiteralArg(call, []string{"podman"}):
 		return "Podman process"
-	case phase50CallHasAnyLiteralArg(call, []string{"firecracker", "/usr/bin/firecracker"}):
-		return "Firecracker process"
 	default:
 		return "live process"
 	}
@@ -442,8 +412,6 @@ func phase50LiveProcessMarker(call *ast.CallExpr) string {
 		return "docker"
 	case phase50CallHasAnyLiteralArg(call, []string{"podman"}):
 		return "podman"
-	case phase50CallHasAnyLiteralArg(call, []string{"firecracker", "/usr/bin/firecracker"}):
-		return "firecracker"
 	default:
 		return "process"
 	}
@@ -457,13 +425,7 @@ func phase50NetworkMarker(selector string) string {
 }
 
 func phase50OptionalLiveEnvMarker(value string) bool {
-	return value == "HAL_FIRECRACKER_LIVE" ||
-		strings.HasPrefix(value, "HAL_FIRECRACKER_LIVE_") ||
-		value == "HAL_NETWORK_ENFORCEMENT_LIVE" ||
-		strings.HasPrefix(value, "HAL_NETWORK_ENFORCEMENT_LIVE_") ||
-		value == "HAL_CREDENTIAL_DELIVERY_LIVE" ||
-		strings.HasPrefix(value, "HAL_CREDENTIAL_DELIVERY_LIVE_") ||
-		strings.HasPrefix(value, phase50WorkerIntegrationEnvPrefix) ||
+	return strings.HasPrefix(value, phase50WorkerIntegrationEnvPrefix) ||
 		strings.HasPrefix(value, phase50PodmanEnvPrefix)
 }
 

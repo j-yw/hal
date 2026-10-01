@@ -324,7 +324,6 @@ small; do not restore wholesale):
   API and jailer launch code (input for D1, D9).
 - `internal/sandboxruntime/microvm/guestagent/frame`, `.../session`: vsock
   framing ideas (input for D4).
-- `tools/microvm/l8-minimal`: minimal image assembly notes (input for D2).
 
 ## 10. Open questions for the product owner
 

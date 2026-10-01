@@ -10,7 +10,7 @@ L9 owns production OCI Distribution acquisition, immutable selection, cache
 publication, and selected-template evidence. It does not implement signature
 verification, transparency-log verification, Firecracker guest/vsock work,
 network proxy or firewall enforcement, credential delivery, or strict default
-composition. Those remain L5-L8 and L10 concerns.
+composition.
 
 ## 1. Inputs, outputs, states, and failure codes
 
@@ -372,8 +372,3 @@ L9 does not verify signatures, transparency logs, attestations, or key
 policies. It does not pull a runtime image, start a sandbox, claim guest
 readiness, create proxy/firewall proof, deliver runtime credentials, choose a
 global default, or upgrade advisory/rootless execution to strict.
-
-L10 receives only the sanitized, immutable selected-template evidence produced
-here. L10 must correlate it with the same sandbox/run and the independent L5,
-L7, L8, and workspace proofs. Missing, stale, warning-bearing, rejected, or
-mismatched template evidence must continue to fail closed.

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestL8D6CredentialCleanupCheckpointSchemaAndDefaultJSON(t *testing.T) {
+func TestCredentialCleanupCheckpointSchemaAndDefaultJSON(t *testing.T) {
 	typeOf := reflect.TypeOf(FinalizationCheckpoints{})
 	if typeOf.NumField() != 5 {
 		t.Fatalf("FinalizationCheckpoints fields = %d, want 5", typeOf.NumField())
@@ -49,7 +49,7 @@ func TestL8D6CredentialCleanupCheckpointSchemaAndDefaultJSON(t *testing.T) {
 	}
 }
 
-func TestL8D6CredentialCleanupCheckpointValidationAndOrder(t *testing.T) {
+func TestCredentialCleanupCheckpointValidationAndOrder(t *testing.T) {
 	startedAt := time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC)
 	cleanupAt := startedAt.Add(time.Minute)
 	artifactAt := cleanupAt.Add(time.Minute)

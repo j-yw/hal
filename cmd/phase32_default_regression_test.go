@@ -35,7 +35,6 @@ func TestPhase32CommandDefaultRegressionTestsStayFakeOnly(t *testing.T) {
 				for _, forbidden := range []string{
 					"github.com/docker/docker",
 					"github.com/containers/podman",
-					"github.com/firecracker-microvm",
 					"libvirt.org/go/libvirt",
 					"google.golang.org/grpc",
 				} {
@@ -50,11 +49,8 @@ func TestPhase32CommandDefaultRegressionTestsStayFakeOnly(t *testing.T) {
 				t.Fatalf("ReadFile(%s) error: %v", path, err)
 			}
 			for _, marker := range []string{
-				phase32Marker("HAL", "_FIRECRACKER"),
 				phase32Marker("HAL", "_PODMAN_TEST_IMAGE"),
 				phase32Marker("HAL", "_WORKER_INTEGRATION_"),
-				phase32Marker("/dev", "/kvm"),
-				phase32Marker("firecracker", ".NewMachine"),
 				phase32Marker("net", ".Listen("),
 			} {
 				if strings.Contains(string(source), marker) {

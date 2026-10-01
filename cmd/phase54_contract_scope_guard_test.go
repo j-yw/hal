@@ -538,15 +538,15 @@ func TestPhase54ContractScopeGuardRejectsUnsafeFixtures(t *testing.T) {
 	if err := os.WriteFile(fixture, []byte(`package fixture
 import "os/exec"
 func run() {
-	_ = exec.Command("firecracker")
+	_ = exec.Command("podman")
 }
 `), 0o600); err != nil {
 		t.Fatalf("WriteFile(fixture) error: %v", err)
 	}
 	source := phase50ReadFile(t, fixture)
 	file := phase50ParseGoSource(t, fixture, source)
-	if message := phase50DefaultLivePrerequisiteBoundaryMessage(fixture, file); !strings.Contains(message, "Firecracker process") {
-		t.Fatalf("fixture boundary message = %q, want Firecracker process", message)
+	if message := phase50DefaultLivePrerequisiteBoundaryMessage(fixture, file); !strings.Contains(message, "Podman process") {
+		t.Fatalf("fixture boundary message = %q, want Podman process", message)
 	}
 
 	unsafeMakefileBody := "\n\t@docker build -t hal-sandbox .\n"

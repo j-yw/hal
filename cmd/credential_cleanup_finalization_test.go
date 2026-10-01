@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestL8D6CredentialCleanupBlocksEveryLaterFinalizationEffect(t *testing.T) {
+func TestCredentialCleanupBlocksEveryLaterFinalizationEffect(t *testing.T) {
 	store, executionID, terminal := seedL3FinalizationExecution(t, sandboxworker.JobStateRunning)
 	manifest, err := store.LoadManifest(executionID)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestL8D6CredentialCleanupBlocksEveryLaterFinalizationEffect(t *testing.T) {
 	}
 }
 
-func TestL8D6CredentialCleanupCheckpointCloneIsDeep(t *testing.T) {
+func TestCredentialCleanupCheckpointCloneIsDeep(t *testing.T) {
 	completedAt := time.Date(2026, 8, 21, 2, 0, 0, 0, time.UTC)
 	metadata := &sandboxexecution.FinalizationMetadata{
 		ContractVersion: sandboxexecution.FinalizationContractVersion,

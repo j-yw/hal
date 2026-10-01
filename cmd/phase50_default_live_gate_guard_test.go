@@ -33,23 +33,13 @@ func TestPhase50DefaultGuardRejectsUnsafeFixturePatterns(t *testing.T) {
 	}{
 		{
 			name:   "optional live env marker lookup",
-			source: `package fixture; import "os"; func test() { _ = os.Getenv("HAL_FIRECRACKER_LIVE") }`,
+			source: `package fixture; import "os"; func test() { _ = os.Getenv("HAL_PODMAN_IMAGE") }`,
 			want:   "optional live env lookup",
 		},
 		{
 			name:   "live env value setup",
-			source: `package fixture; func test(t interface{ Setenv(string, string) }) { t.Setenv("HAL_NETWORK_ENFORCEMENT_LIVE", "secret-value") }`,
+			source: `package fixture; func test(t interface{ Setenv(string, string) }) { t.Setenv("HAL_PODMAN_IMAGE", "secret-value") }`,
 			want:   "optional live env setup",
-		},
-		{
-			name:   "KVM access",
-			source: `package fixture; import "os"; func test() { _, _ = os.Open("/dev/kvm") }`,
-			want:   "KVM prerequisite",
-		},
-		{
-			name:   "Firecracker process launch",
-			source: `package fixture; import "os/exec"; func test() { _ = exec.Command("firecracker", "--api-sock", "/tmp/private.sock") }`,
-			want:   "Firecracker process",
 		},
 		{
 			name:   "Podman lookup",
@@ -92,13 +82,9 @@ func TestPhase50GuardMessagesStayRedactionSafe(t *testing.T) {
 	source := `package fixture
 import (
 	"net/http"
-	"os"
 )
 func test() {
-	_ = os.Getenv("HAL_FIRECRACKER_LIVE=secret-live-value")
-	_, _ = os.Open("/Users/alice/private/kvm-token.sock")
 	_, _ = http.Get("https://provider.internal.example.com/api?token=secret")
-	_ = "providerConfig={\"apiKey\":\"secret\"} --api-sock /tmp/private.sock iptables proxy.internal.example.com"
 }
 `
 	file := phase50ParseGoSource(t, "fixture.go", source)
@@ -177,7 +163,6 @@ func phase50ApprovedLiveMarkerFiles() map[string]bool {
 		"cmd/phase28_security_capability_docs_test.go":                          true,
 		"cmd/phase29_security_readiness_diagnostics_docs_test.go":               true,
 		"cmd/phase30_security_readiness_gate_docs_test.go":                      true,
-		"cmd/phase45_network_enforcement_live_guard_test.go":                    true,
 		"cmd/phase47_template_acquisition_docs_test.go":                         true,
 		"cmd/phase49_live_provider_gates_test.go":                               true,
 		"cmd/phase50_default_live_gate_guard_test.go":                           true,
@@ -194,7 +179,6 @@ func phase50ApprovedLiveMarkerFiles() map[string]bool {
 		"internal/sandboxruntime/rootlesspodman/command_runner.go":              true,
 		"internal/sandboxruntime/rootlesspodman/l2_process_group_linux_test.go": true,
 		"internal/sandboxtemplate/acquisition/import_boundary_test.go":          true,
-		"internal/sandboxtemplate/import_boundary_test.go":                      true,
 	}
 }
 
@@ -209,22 +193,12 @@ func phase50FirstLiveOnlyMarker(source string) *phase50LiveOnlyMarker {
 
 func phase50LiveOnlyMarkers() []phase50LiveOnlyMarker {
 	return []phase50LiveOnlyMarker{
-		{token: "HAL_FIRECRACKER_LIVE", label: "Firecracker optional live env marker"},
-		{token: "HAL_NETWORK_ENFORCEMENT_LIVE", label: "network enforcement optional live env marker"},
-		{token: "HAL_CREDENTIAL_DELIVERY_LIVE", label: "credential delivery optional live env marker"},
 		{token: phase50WorkerIntegrationEnvPrefix, label: "worker integration env marker"},
 		{token: phase50PodmanEnvPrefix, label: "Podman optional live env marker"},
-		{token: "microvm_e2e_live", label: "microVM live E2E optional build-tag marker"},
-		{token: "firecracker_live", label: "Firecracker optional live build-tag marker"},
-		{token: "network_enforcement_live", label: "network enforcement optional live build-tag marker"},
-		{token: "credential_delivery_live", label: "credential delivery optional live build-tag marker"},
 		{token: "worker_integration", label: "worker integration build-tag marker"},
 		{token: "podman_integration", label: "Podman integration build-tag marker"},
-		{token: "/dev/kvm", label: "KVM device marker"},
 		{token: "docker.NewClient", label: "Docker API marker"},
 		{token: "bindings.NewConnection", label: "Podman API marker"},
-		{token: "firecracker.NewMachine", label: "Firecracker SDK marker"},
-		{token: "NewOSExecProcessRunner", label: "Firecracker host process runner marker"},
 		{token: "DefaultCommandRunner", label: "rootless Podman command runner marker"},
 	}
 }

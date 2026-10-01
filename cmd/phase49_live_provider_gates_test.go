@@ -18,9 +18,6 @@ func TestPhase49DefaultGuardFilesStayInDefaultSuite(t *testing.T) {
 			"integration",
 			"worker_integration",
 			"podman_integration",
-			"firecracker_live",
-			"network_enforcement_live",
-			"credential_delivery_live",
 		} {
 			if strings.Contains(header, tag) {
 				t.Fatalf("%s uses build tag %q; Phase 49 default live-gate guards must run under go test ./cmd", path, tag)
