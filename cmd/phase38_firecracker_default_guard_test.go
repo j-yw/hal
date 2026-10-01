@@ -4,9 +4,17 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxtarget"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestPhase38DefaultSandboxdRegistersOnlyRootlessPodman(t *testing.T) {
+	flags := defaultSandboxdFlags()
+	if strings.Join(flags.drivers, ",") != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("default sandboxd drivers = %#v, want only rootless_podman", flags.drivers)
+	}
+}
 
 func TestPhase38RunAutoFactoryDefaultsDoNotSelectFirecrackerRuntimeOrGuestTransport(t *testing.T) {
 	runReq, err := parseRunSandboxRequest(nil, runSandboxOptions{})

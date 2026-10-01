@@ -177,6 +177,7 @@ func phase50ApprovedLiveMarkerFiles() map[string]bool {
 		"cmd/phase28_security_capability_docs_test.go":                          true,
 		"cmd/phase29_security_readiness_diagnostics_docs_test.go":               true,
 		"cmd/phase30_security_readiness_gate_docs_test.go":                      true,
+		"cmd/phase45_network_enforcement_live_guard_test.go":                    true,
 		"cmd/phase47_template_acquisition_docs_test.go":                         true,
 		"cmd/phase49_live_provider_gates_test.go":                               true,
 		"cmd/phase50_default_live_gate_guard_test.go":                           true,
