@@ -20,6 +20,8 @@ ARG BUILD_DATE=unknown
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV IN_DOCKER=true
+# Agents run as the container root; Claude Code needs this to skip permission prompts.
+ENV IS_SANDBOX=1
 
 # -- Copy setup script and configs first (for layer caching) ------------------
 COPY sandbox/setup.sh /setup.sh
