@@ -52,3 +52,9 @@ func sandboxClaudeAuthFiles() []factorySandboxAuthFile {
 	}
 	return []factorySandboxAuthFile{{SourcePath: source, RemotePath: ".claude/.credentials.json"}}
 }
+
+// factorySandboxEngineAuthDeps returns deps whose engine auth files match the
+// engine the factory run will use inside the sandbox.
+func factorySandboxEngineAuthDeps(req factorySandboxExecutorRequest, deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
+	return deps
+}

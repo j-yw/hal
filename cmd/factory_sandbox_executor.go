@@ -505,14 +505,15 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return prepareFactorySandboxWorkspace(ctx, store, deps, &record, req, sandboxStateFromRuntimeTarget(prep.Target), provider, sandboxConnectInfoFromRuntimeTarget(prep.Target), remoteOutput)
 		},
 		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			authDeps := factorySandboxEngineAuthDeps(req, deps)
 			if factorySandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
-				return factorySandboxSyncEngineAuthRuntime(ctx, prep, deps)
+				return factorySandboxSyncEngineAuthRuntime(ctx, prep, authDeps)
 			}
 			provider, err := ensureProvider(prep.Target.Provider)
 			if err != nil {
 				return err
 			}
-			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), newFactorySandboxRemoteUserOutputWriter(remoteOutput), deps)
+			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), newFactorySandboxRemoteUserOutputWriter(remoteOutput), authDeps)
 		},
 		PrepareCommand: func(ctx context.Context, prep sandboxexec.PrepareContext, command *sandboxexec.CommandRequest) error {
 			userOutput := newFactorySandboxRemoteUserOutputWriter(remoteOutput)
