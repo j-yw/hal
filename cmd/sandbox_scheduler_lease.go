@@ -69,6 +69,9 @@ func resolveSandboxCommandExecutionTarget(
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("load %s %q: %w", sandboxCommandLoadContext(targetReq), name, err)
 		}
+		// The registry record keeps the lease of the run that last used this
+		// sandbox. This command never acquired it, so it must not release it.
+		target = sandboxCommandLegacyCompatibilityTarget(target)
 		targetDeps.loadSandbox = func(requestedName string) (*sandbox.SandboxState, error) {
 			if strings.TrimSpace(requestedName) != name || target == nil {
 				return nil, fs.ErrNotExist
