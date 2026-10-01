@@ -26,6 +26,10 @@ var sandboxCommandContextFiles = []string{
 }
 
 func prepareSandboxCommandContextRuntime(ctx context.Context, prep sandboxexec.PrepareContext, projectDir, workspaceDir string, out io.Writer) (sandboxworkspace.MaterializationOperation, error) {
+	return prepareSandboxCommandContextFilesRuntime(ctx, prep, projectDir, workspaceDir, out, sandboxCommandContextFiles)
+}
+
+func prepareSandboxCommandContextFilesRuntime(ctx context.Context, prep sandboxexec.PrepareContext, projectDir, workspaceDir string, out io.Writer, files []string) (sandboxworkspace.MaterializationOperation, error) {
 	if prep.Driver == nil {
 		return sandboxworkspace.MaterializationOperation{}, fmt.Errorf("sandbox runtime driver is required")
 	}
@@ -53,7 +57,7 @@ func prepareSandboxCommandContextRuntime(ctx context.Context, prep sandboxexec.P
 
 	copied := 0
 	reset := 0
-	for _, name := range sandboxCommandContextFiles {
+	for _, name := range files {
 		sourcePath := filepath.Join(projectDir, template.HalDir, name)
 		info, err := os.Lstat(sourcePath)
 		if os.IsNotExist(err) {
@@ -140,6 +144,10 @@ func removeSandboxCommandContextFile(ctx context.Context, prep sandboxexec.Prepa
 }
 
 func copySandboxBundleCommandContextFile(ctx context.Context, prep sandboxexec.PrepareContext, sourcePath, workspaceDir, name string) error {
+	return copySandboxBundleCommandContextFileWithMode(ctx, prep, sourcePath, workspaceDir, name, "0600")
+}
+
+func copySandboxBundleCommandContextFileWithMode(ctx context.Context, prep sandboxexec.PrepareContext, sourcePath, workspaceDir, name, mode string) error {
 	hash := sha256.Sum256([]byte(workspaceDir + "\x00" + name))
 	tmpPath := fmt.Sprintf("/tmp/hal-command-context-%x", hash[:8])
 	if err := prep.Driver.CopyIn(ctx, sandboxruntime.CopyRequest{
@@ -163,7 +171,7 @@ func copySandboxBundleCommandContextFile(ctx context.Context, prep sandboxexec.P
 		`mkdir -p "$hal_dir"`,
 		`rm -f "$destination"`,
 		`mv "$source_tmp" "$destination"`,
-		`chmod 0600 "$destination"`,
+		"chmod " + mode + ` "$destination"`,
 	}, "\n")
 	result, err := prep.Driver.Exec(ctx, sandboxruntime.ExecRequest{
 		Target: prep.Target,

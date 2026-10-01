@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -155,7 +156,11 @@ func TestFactorySandboxHostVerifyConfig(t *testing.T) {
 					command := exec.CommandContext(ctx, localArgs[0], localArgs[1:]...)
 					command.Stdout, command.Stderr = out, out
 					err := command.Run()
-					return &sandboxruntime.ExecResult{ExitCode: command.ProcessState.ExitCode()}, err
+					result := &sandboxruntime.ExecResult{}
+					if command.ProcessState != nil {
+						result.ExitCode = command.ProcessState.ExitCode()
+					}
+					return result, err
 				}
 				driver := fakeRunSandboxRuntimeDriver{
 					id: sandboxruntime.DriverRootlessPodman,
@@ -246,6 +251,9 @@ func TestFactorySandboxHostVerifyConfig(t *testing.T) {
 				if (wantTotal > 0 && verifiedRecord.Verification == nil) || (verifiedRecord.Verification != nil && verifiedRecord.Verification.Summary.Total != wantTotal) {
 					t.Fatalf("verification summary=%v, want total=%d", verifiedRecord.Verification, wantTotal)
 				}
+				if wantFailure && (verifiedRecord.Verification.Summary.Failed != 1 || err.Error() != "verification failed: 1 failed, 0 timed out, 0 missing") {
+					t.Fatalf("required check failure was not propagated: summary=%v error=%v", verifiedRecord.Verification.Summary, err)
+				}
 				if hostPresent {
 					marker, err := os.ReadFile(filepath.Join(workspaceDir, "verify-marker"))
 					if err != nil || string(marker) != "checked" {
@@ -262,6 +270,51 @@ func TestFactorySandboxHostVerifyConfig(t *testing.T) {
 				}
 				if strings.Contains(string(stored), projectDir) {
 					t.Fatal("host project path leaked into persisted records")
+				}
+			})
+		}
+	}
+}
+
+func TestFactorySandboxConfigCopyFailures(t *testing.T) {
+	for _, worker := range []bool{false, true} {
+		for _, invalidFile := range []bool{false, true} {
+			t.Run(fmt.Sprintf("worker=%t/invalid=%t", worker, invalidFile), func(t *testing.T) {
+				projectDir := t.TempDir()
+				configPath := filepath.Join(projectDir, ".hal", "config.yaml")
+				if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if invalidFile {
+					if err := os.Mkdir(configPath, 0755); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.WriteFile(configPath, []byte("engine: pi\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				copyErr := errors.New("config transfer failed")
+				copies := 0
+				var err error
+				if worker {
+					err = factorySandboxCopyConfigRuntime(context.Background(), sandboxexec.PrepareContext{Driver: fakeRunSandboxRuntimeDriver{
+						copyIn: func(context.Context, sandboxruntime.CopyRequest) error { copies++; return copyErr },
+					}}, projectDir, "/workspace/repo")
+				} else {
+					err = factorySandboxCopyConfigToRemote(context.Background(), projectDir, "/workspace/repo", fakeFactorySandboxProvider{}, &sandbox.ConnectInfo{}, io.Discard, factorySandboxExecutorDeps{
+						runProviderScript: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error {
+							copies++
+							return copyErr
+						},
+					})
+				}
+				if err == nil {
+					t.Fatal("invalid config or failed transfer was ignored")
+				}
+				if invalidFile && copies != 0 {
+					t.Fatal("non-regular host config was copied")
+				}
+				if !invalidFile && (copies != 1 || !errors.Is(err, copyErr)) {
+					t.Fatalf("copy failure not propagated: copies=%d error=%v", copies, err)
 				}
 			})
 		}

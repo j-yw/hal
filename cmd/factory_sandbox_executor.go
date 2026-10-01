@@ -249,7 +249,7 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 		deps.materializeWorkspace = sandboxexec.MaterializeBundleWorkspace
 	}
 	if deps.prepareCommandContext == nil {
-		deps.prepareCommandContext = prepareSandboxCommandContextRuntime
+		deps.prepareCommandContext = prepareFactorySandboxCommandContextRuntime
 	}
 	if deps.cleanupSandbox == nil {
 		deps.cleanupSandbox = defaultFactorySandboxExecutorDeps.cleanupSandbox
@@ -819,14 +819,19 @@ func prepareFactorySandboxWorkspace(ctx context.Context, store factory.Store, de
 		connectInfo = sandbox.ConnectInfoFromState(target)
 	}
 	bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
-		Executor: &factorySandboxBootstrapExecutor{
-			provider:               provider,
-			connectInfo:            connectInfo,
-			runProviderExecWithEnv: deps.runProviderExecWithEnv,
-			// Bootstrap timelines are persisted from sanitized BootstrapResult
-			// events; stream redacted command output to the caller-facing writer.
-			out:          req.RemoteOutput,
-			outputRedact: factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString,
+		Executor: &factorySandboxConfigBootstrapExecutor{
+			copyConfig: func(ctx context.Context) error {
+				return factorySandboxCopyConfigToRemote(ctx, req.ProjectDir, bootstrapReq.WorkspaceDir, provider, connectInfo, newFactorySandboxRemoteUserOutputWriter(remoteOutput), deps)
+			},
+			Executor: &factorySandboxBootstrapExecutor{
+				provider:               provider,
+				connectInfo:            connectInfo,
+				runProviderExecWithEnv: deps.runProviderExecWithEnv,
+				// Bootstrap timelines are persisted from sanitized BootstrapResult
+				// events; stream redacted command output to the caller-facing writer.
+				out:          req.RemoteOutput,
+				outputRedact: factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString,
+			},
 		},
 		Now: deps.now,
 		RepoExists: func(path string) (bool, error) {
@@ -1884,6 +1889,10 @@ func factorySandboxAuthRemotePathIsHomeRelative(remotePath string) bool {
 }
 
 func factorySandboxCopyInputToRemote(ctx context.Context, projectDir, localPath, workspaceDir string, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, out io.Writer, deps factorySandboxExecutorDeps) (string, bool, error) {
+	return factorySandboxCopyInputToRemoteWithMode(ctx, projectDir, localPath, workspaceDir, provider, connectInfo, out, deps, "")
+}
+
+func factorySandboxCopyInputToRemoteWithMode(ctx context.Context, projectDir, localPath, workspaceDir string, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, out io.Writer, deps factorySandboxExecutorDeps, mode string) (string, bool, error) {
 	deps = normalizeFactorySandboxExecutorDeps(deps)
 	localPath = strings.TrimSpace(localPath)
 	if localPath == "" {
@@ -1899,7 +1908,7 @@ func factorySandboxCopyInputToRemote(ctx context.Context, projectDir, localPath,
 	}
 	remotePath := factorySandboxRemoteInputPath(localPath)
 	remoteAbsPath := filepath.ToSlash(filepath.Join(workspaceDir, remotePath))
-	if err := factorySandboxCopyContentToRemote(ctx, content, remoteAbsPath, "", provider, connectInfo, out, deps); err != nil {
+	if err := factorySandboxCopyContentToRemote(ctx, content, remoteAbsPath, mode, provider, connectInfo, out, deps); err != nil {
 		return localPath, false, fmt.Errorf("copy sandbox input %q to %q: %w", localPath, remotePath, err)
 	}
 	return remotePath, true, nil

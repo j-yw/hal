@@ -71,7 +71,16 @@ func prepareFactorySandboxWorkspaceRuntime(ctx context.Context, store factory.St
 	if !ok {
 		return nil
 	}
-	bootstrapResult, bootstrapErr := sandboxRuntimeBootstrapWorkspace(ctx, bootstrapReq, prep, req.RemoteOutput, deps.now, deps.bootstrap)
+	bootstrap := func(ctx context.Context, request factory.BootstrapRequest, bootstrapDeps factory.BootstrapDeps) (factory.BootstrapResult, error) {
+		bootstrapDeps.Executor = &factorySandboxConfigBootstrapExecutor{
+			Executor: bootstrapDeps.Executor,
+			copyConfig: func(ctx context.Context) error {
+				return factorySandboxCopyConfigRuntime(ctx, prep, req.ProjectDir, request.WorkspaceDir)
+			},
+		}
+		return deps.bootstrap(ctx, request, bootstrapDeps)
+	}
+	bootstrapResult, bootstrapErr := sandboxRuntimeBootstrapWorkspace(ctx, bootstrapReq, prep, req.RemoteOutput, deps.now, bootstrap)
 	target := sandboxStateFromRuntimeTarget(prep.Target)
 	if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, record, target, bootstrapResult, remoteOutput); appendErr != nil {
 		return fmt.Errorf("record sandbox bootstrap timeline: %w", appendErr)

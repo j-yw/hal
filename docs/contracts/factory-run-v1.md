@@ -57,6 +57,20 @@ execution starts. A local result can contain an empty `baseBranch` only when the
 current branch could not be resolved; normal execution then reports the existing
 base-resolution failure rather than silently choosing another branch.
 
+## Sandbox Project Configuration
+
+Before remote `hal init` and verification, a factory sandbox run copies the
+host project's `.hal/config.yaml` into the materialized sandbox workspace with
+mode `0644`. This applies to both worker/rootless bundle execution and legacy
+provider execution; the file does not need to be committed. A host config takes
+precedence over a committed copy. If the host file is absent, no config is copied
+or removed, and the existing remote/default configuration remains in effect.
+
+Remote `hal verify --json` reads that workspace config, including `verify.checks`.
+A required check failure blocks a run when `factory.policy.verificationRequired`
+is enabled. Config delivery does not add fields to the JSON result or persist
+host config paths in run records.
+
 ## Runner And Publish Metadata
 
 When `runner` is present:
