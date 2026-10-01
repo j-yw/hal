@@ -67,8 +67,8 @@ func TestWorkerJSONSlashEscapesRoundTrip(t *testing.T) {
 					t.Fatalf("response fixture is invalid: %v", err)
 				}
 				t.Run("response", func(t *testing.T) {
-					decodedResponse, err := decodeWorkerResponse(bytes.NewReader(workerJSONSlashMarshal(t, response, escapeSlashes)))
-					if err != nil {
+					var decodedResponse Response
+					if err := decodeWorkerResponseInto(bytes.NewReader(workerJSONSlashMarshal(t, response, escapeSlashes)), defaultMaxResponseBytes, &decodedResponse); err != nil {
 						t.Fatalf("valid response rejected: %v", err)
 					}
 					if !reflect.DeepEqual(decodedResponse, response) {

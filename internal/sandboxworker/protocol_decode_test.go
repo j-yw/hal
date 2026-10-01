@@ -45,12 +45,13 @@ func TestWorkerResponseDecoderRejectsUnknownDuplicateTrailingAndNoncanonicalJSON
 		strings.Replace(canonical, `"nextCursor":0`, `"nextCursor":0.0`, 1),
 		canonical + `{}`,
 	} {
-		if _, err := decodeWorkerResponse(strings.NewReader(raw)); err == nil {
+		var response Response
+		if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &response); err == nil {
 			t.Fatal("malformed client response was accepted")
 		}
 	}
-	decoded, err := decodeWorkerResponse(strings.NewReader(canonical))
-	if err != nil {
+	var decoded Response
+	if err := decodeWorkerResponseInto(strings.NewReader(canonical), defaultMaxResponseBytes, &decoded); err != nil {
 		t.Fatalf("canonical client response: %v", err)
 	}
 	if decoded.Operation != OperationJobLogs || decoded.JobLogs == nil || decoded.JobLogs.ContractVersion != JobContractVersion || decoded.JobLogs.JobID != "job-primary" || decoded.JobLogs.NextCursor != 0 {

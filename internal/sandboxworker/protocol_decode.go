@@ -77,14 +77,6 @@ func decodeWorkerResponseInto(reader io.Reader, maxBytes int64, output *Response
 	return nil
 }
 
-func decodeWorkerResponse(reader io.Reader) (Response, error) {
-	var output Response
-	if err := decodeWorkerResponseInto(reader, defaultMaxResponseBytes, &output); err != nil {
-		return Response{}, err
-	}
-	return output, nil
-}
-
 func encodeWorkerResponse(writer io.Writer, response Response) error {
 	encoder := json.NewEncoder(writer)
 	return encoder.Encode(response)
