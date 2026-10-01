@@ -47,6 +47,20 @@ func resolveSandboxCommandExecutionTarget(
 	scheduledDeps sandboxCommandScheduledTargetDeps,
 ) (*sandbox.SandboxState, error) {
 	name := strings.TrimSpace(targetReq.SandboxName)
+	if name == "" {
+		// A constrained rerun on the same branch reuses the sandbox the previous
+		// run created, exactly as if --sandbox-name named it; scheduling would
+		// otherwise create a second runtime with the same branch-derived name.
+		branchName, err := existingSandboxCommandBranchTargetName(targetReq, targetDeps)
+		if err != nil {
+			return nil, err
+		}
+		if branchName != "" {
+			name = branchName
+			targetReq.SandboxName = branchName
+			scheduledReq.SandboxName = branchName
+		}
+	}
 	if name != "" {
 		if targetDeps.loadSandbox == nil {
 			return nil, fmt.Errorf("load %s %q: sandbox loader is required", sandboxCommandLoadContext(targetReq), name)
@@ -76,6 +90,26 @@ func resolveSandboxCommandExecutionTarget(
 		return resolveSandboxCommandScheduledTarget(scheduledReq, scheduledDeps)
 	}
 	return resolveSandboxCommandTarget(ctx, targetReq, targetDeps)
+}
+
+// existingSandboxCommandBranchTargetName returns the branch-derived sandbox
+// name when a host or runtime constraint is set and that sandbox is already
+// registered, "" when it is not.
+func existingSandboxCommandBranchTargetName(targetReq sandboxCommandTargetRequest, targetDeps sandboxCommandTargetDeps) (string, error) {
+	if strings.TrimSpace(targetReq.SandboxHostID) == "" && strings.TrimSpace(targetReq.SandboxRuntime) == "" {
+		return "", nil
+	}
+	if targetDeps.loadSandbox == nil || strings.TrimSpace(targetReq.Branch) == "" {
+		return "", nil
+	}
+	name := sandbox.SandboxNameFromBranch(targetReq.Branch)
+	if _, err := targetDeps.loadSandbox(name); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("load %s %q: %w", sandboxCommandLoadContext(targetReq), name, err)
+	}
+	return name, nil
 }
 
 func classifySandboxCommandExecutionRoute(

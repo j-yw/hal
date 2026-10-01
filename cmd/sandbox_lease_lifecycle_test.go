@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -309,8 +310,8 @@ func runScheduledFactoryLeaseLifecycle(t *testing.T, startedAt time.Time, execEr
 		},
 		now: runSandboxTestClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second), startedAt.Add(3*time.Second)),
 		loadSandbox: func(string) (*sandbox.SandboxState, error) {
-			t.Fatal("loadSandbox should not run for scheduled factory lifecycle target")
-			return nil, nil
+			// Only the branch-derived lookup runs; no sandbox exists yet.
+			return nil, fs.ErrNotExist
 		},
 		listSandboxes: func() ([]*sandbox.SandboxState, error) {
 			t.Fatal("listSandboxes should not run for scheduled factory lifecycle target")

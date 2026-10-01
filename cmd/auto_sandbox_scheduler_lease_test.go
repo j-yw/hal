@@ -228,7 +228,9 @@ func testAutoSandboxExplicitSchedulerAcquiresLeaseAndPersistsManifest(t *testing
 		},
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
 			if sandboxName == "" {
-				t.Fatal("loadSandbox should not run for unnamed scheduled target")
+				// Unnamed constrained runs look up only the branch-derived
+				// sandbox; none exists, so the scheduler provisions a fresh one.
+				return nil, fs.ErrNotExist
 			}
 			if name != sandboxName {
 				t.Fatalf("loadSandbox name = %q, want %q", name, sandboxName)

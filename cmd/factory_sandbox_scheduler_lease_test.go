@@ -98,7 +98,9 @@ func testFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 		now: runSandboxTestClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second), startedAt.Add(3*time.Second)),
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
 			if sandboxName == "" {
-				t.Fatal("loadSandbox should not run for unnamed scheduled factory target")
+				// Unnamed constrained runs look up only the branch-derived
+				// sandbox; none exists, so the scheduler provisions a fresh one.
+				return nil, fs.ErrNotExist
 			}
 			if name != sandboxName {
 				t.Fatalf("loadSandbox name = %q, want %q", name, sandboxName)
@@ -284,8 +286,8 @@ func TestFactorySandboxSchedulerFailureRecordsFailureBeforeRuntimeConstruction(t
 		},
 		now: runSandboxTestClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second)),
 		loadSandbox: func(string) (*sandbox.SandboxState, error) {
-			t.Fatal("loadSandbox should not run after scheduled factory rejection")
-			return nil, nil
+			// Only the pre-scheduling branch lookup reaches the registry.
+			return nil, fs.ErrNotExist
 		},
 		listSandboxes: func() ([]*sandbox.SandboxState, error) {
 			t.Fatal("listSandboxes should not run after scheduled factory rejection")
