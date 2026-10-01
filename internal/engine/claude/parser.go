@@ -167,12 +167,21 @@ func (p *Parser) parseResult(raw map[string]interface{}) *engine.Event {
 		}
 	}
 
+	// Claude reports failures such as "Not logged in" with subtype "success"
+	// and is_error true; only a result without is_error did real work.
+	isError, _ := raw["is_error"].(bool)
+	var message string
+	if isError {
+		message, _ = raw["result"].(string)
+	}
+
 	return &engine.Event{
 		Type: engine.EventResult,
 		Data: engine.EventData{
-			Success:    subtype == "success",
+			Success:    subtype == "success" && !isError,
 			DurationMs: durationMs,
 			Tokens:     tokens,
+			Message:    message,
 		},
 	}
 }

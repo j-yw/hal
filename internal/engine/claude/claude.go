@@ -151,6 +151,15 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 			}
 		}
 
+		if message := e.parseResultErrorMessage(output); message != "" {
+			return engine.Result{
+				Success:  false,
+				Output:   output,
+				Duration: duration,
+				Error:    fmt.Errorf("execution failed: %w (claude: %s)", err, message),
+			}
+		}
+
 		return engine.Result{
 			Success:  false,
 			Output:   output,
@@ -162,14 +171,35 @@ func (e *Engine) Execute(ctx context.Context, prompt string, display *engine.Dis
 	// Parse success from output
 	success := e.parseSuccess(output)
 	complete := strings.Contains(output, "<promise>COMPLETE</promise>")
+	var resultErr error
+	if message := e.parseResultErrorMessage(output); message != "" {
+		resultErr = fmt.Errorf("execution failed: claude: %s", message)
+	}
 
 	return engine.Result{
 		Success:  success,
 		Complete: complete,
 		Output:   output,
 		Duration: duration,
-		Error:    nil,
+		Error:    resultErr,
 	}
+}
+
+// parseResultErrorMessage returns the message of a terminal result event that
+// Claude flagged with is_error, or "" when the run reported no such failure.
+func (e *Engine) parseResultErrorMessage(output string) string {
+	parser := NewParser()
+	message := ""
+	for _, line := range strings.Split(output, "\n") {
+		event := parser.ParseLine([]byte(line))
+		if event != nil && event.Type == engine.EventResult {
+			message = ""
+			if !event.Data.Success {
+				message = strings.TrimSpace(event.Data.Message)
+			}
+		}
+	}
+	return message
 }
 
 // parseResultStatus checks the Claude stream for a terminal result event.
