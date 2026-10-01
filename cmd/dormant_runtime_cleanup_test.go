@@ -11,7 +11,7 @@ import (
 )
 
 func TestSandboxdHelpHasNoDormantRuntimeFlags(t *testing.T) {
-	cmd, out, _ := newTestSandboxdCommand(defaultSandboxdDeps())
+	cmd, out, _ := newTestSandboxdCommand(sandboxdDeps{})
 	cmd.SetArgs([]string{"--help"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
