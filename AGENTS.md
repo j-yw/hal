@@ -92,6 +92,8 @@ If a useful automated test is impractical, explain why and use the narrowest rep
 
 ## 6. Project Learnings
 
+- Patterns: verify Sandbox v2.0 with `make sandbox-release-check`; see [the rootless release gate](docs/design/sandbox-v2-rootless-release.md) for claims, prerequisites, and no-skip native acceptance.
+
 When a recurring or costly project-specific mistake reveals missing guidance, propose one concrete rule for this section. Add it only with user approval. Prefer tightening an existing rule over adding another, and remove rules that are no longer relevant.
 
 ---
