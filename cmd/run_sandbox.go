@@ -509,6 +509,7 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		if finalizationErr := finalizeRunSandboxWorkerJob(ctx, store, req, execResult, target, deps); finalizationErr != nil {
 			execErr = errors.Join(execErr, finalizationErr)
 		}
+		reportSandboxWorkerJobApplyHandoff(errOut, req.SyncOut, req.ExecutionID, execErr)
 		if opts.JSON {
 			return outputSandboxWorkerJobJSON(out, sandboxWorkerJobJSONPublication{
 				purpose: sandboxexecution.PurposeRun, executionID: req.ExecutionID,

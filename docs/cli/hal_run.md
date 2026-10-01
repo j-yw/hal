@@ -74,7 +74,7 @@ hal run [iterations] [flags]
       --retries int                     Max retries per iteration on failure (default 3)
       --retry-delay duration            Base retry delay (default 5s)
       --sandbox                         Run inside a sandbox
-      --sandbox-apply                   explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree
+      --sandbox-apply                   explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree; worker-job executions print a hal sandbox apply handoff instead
       --sandbox-host string             Cached sandbox host ID for target selection
       --sandbox-name string             Sandbox name for --sandbox execution
       --sandbox-runtime string          Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)

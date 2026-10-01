@@ -485,6 +485,7 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		); finalizationErr != nil {
 			execErr = errors.Join(execErr, finalizationErr)
 		}
+		reportSandboxWorkerJobApplyHandoff(errOut, req.SyncOut, req.ExecutionID, execErr)
 		if opts.JSON {
 			return outputSandboxWorkerJobJSON(out, sandboxWorkerJobJSONPublication{
 				purpose: sandboxexecution.PurposeAuto, executionID: req.ExecutionID,

@@ -268,7 +268,7 @@ func init() {
 	autoCmd.Flags().StringVar(&autoSandboxTemplateFlag, sandboxTemplateFlagName, "", "OCI sandbox template reference to select before runtime construction")
 	autoCmd.Flags().StringVar(&autoSandboxTemplateTrustFlag, sandboxTemplateTrustFlagName, defaultSandboxTemplateTrustMode, "Sandbox template trust mode (strict or advisory)")
 	autoCmd.Flags().BoolVar(&autoSandboxSyncOutFlag, sandboxSyncOutFlagName, false, "Collect sandbox sync-out metadata without applying to the host worktree")
-	autoCmd.Flags().BoolVar(&autoSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree")
+	autoCmd.Flags().BoolVar(&autoSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree; worker-job executions print a hal sandbox apply handoff instead")
 	rootCmd.AddCommand(autoCmd)
 }
 

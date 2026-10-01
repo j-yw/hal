@@ -43,6 +43,16 @@ func sandboxCommittedSyncOutBaseRef(workspace *sandbox.SandboxWorkspace, fallbac
 	return strings.TrimSpace(fallback)
 }
 
+// reportSandboxWorkerJobApplyHandoff names the explicit apply command when
+// --sandbox-apply was requested for a worker job. Worker jobs never mutate the
+// host worktree implicitly; `hal sandbox apply` remains the only apply surface.
+func reportSandboxWorkerJobApplyHandoff(errOut io.Writer, options sandboxSyncOutOptions, executionID string, execErr error) {
+	if !options.Apply || execErr != nil || errOut == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(errOut, "note: --sandbox-apply is not performed for worker-job executions; review the result and apply it with: hal sandbox apply %s\n", executionID)
+}
+
 func applyRunSandboxSyncOut(ctx context.Context, store sandboxexecution.Store, req runSandboxRequest, deps runSandboxDeps) error {
 	if !req.SyncOut.Enabled {
 		return nil
