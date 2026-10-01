@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-func (connection *l8WorkerV2ObservedUnixConn) Read(payload []byte) (int, error) {
+func (connection *workerObservedUnixConn) Read(payload []byte) (int, error) {
 	if connection.read >= connection.expected {
 		connection.postFrameOnce.Do(func() { close(connection.postFrameRead) })
 	}
@@ -25,10 +25,10 @@ func (connection *l8WorkerV2ObservedUnixConn) Read(payload []byte) (int, error) 
 	return n, err
 }
 
-func TestL8WorkerV2ConfiguredCodecLimitsCarryRequestAndResponseAboveOneMiB(t *testing.T) {
+func TestWorkerConfiguredCodecLimitsCarryRequestAndResponseAboveOneMiB(t *testing.T) {
 	const limit int64 = 2 << 20
 	padding := strings.Repeat("x", (1<<20)+1)
-	socketPath := l8WorkerV2SocketPath(t)
+	socketPath := workerFramingSocketPath(t)
 	server, err := NewServer(ServerOptions{
 		SocketPath:      socketPath,
 		MaxRequestBytes: limit,
@@ -42,10 +42,10 @@ func TestL8WorkerV2ConfiguredCodecLimitsCarryRequestAndResponseAboveOneMiB(t *te
 	serverContext, cancelServer := context.WithCancel(context.Background())
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.ListenAndServe(serverContext) }()
-	l8WorkerV2AwaitSocket(t, socketPath, serverDone)
+	workerFramingAwaitSocket(t, socketPath, serverDone)
 	defer func() {
 		cancelServer()
-		l8WorkerV2AwaitRawServerDone(t, serverDone)
+		workerFramingAwaitRawServerDone(t, serverDone)
 	}()
 	client, err := NewClient(ClientOptions{SocketPath: socketPath, MaxResponseBytes: limit})
 	if err != nil {
@@ -63,19 +63,19 @@ func TestL8WorkerV2ConfiguredCodecLimitsCarryRequestAndResponseAboveOneMiB(t *te
 	}
 }
 
-func TestL8WorkerV2ConfiguredCodecLimitsPreserveFullPositiveRange(t *testing.T) {
+func TestWorkerConfiguredCodecLimitsPreserveFullPositiveRange(t *testing.T) {
 	for _, limit := range []int64{(1 << 20) + 1, math.MaxInt64} {
 		handler := RequestHandlerFunc(func(_ context.Context, request Request) Response {
-			return l8WorkerV2FramingStatusResponse(request)
+			return workerFramingStatusResponse(request)
 		})
-		server, err := NewServer(ServerOptions{SocketPath: l8WorkerV2SocketPath(t), Handler: handler, MaxRequestBytes: limit})
+		server, err := NewServer(ServerOptions{SocketPath: workerFramingSocketPath(t), Handler: handler, MaxRequestBytes: limit})
 		if err != nil {
 			t.Fatalf("NewServer(%d) error: %v", limit, err)
 		}
 		if server.maxRequestBytes != limit {
 			t.Fatalf("server maxRequestBytes = %d, want exact %d", server.maxRequestBytes, limit)
 		}
-		client, err := NewClient(ClientOptions{SocketPath: l8WorkerV2SocketPath(t), MaxResponseBytes: limit})
+		client, err := NewClient(ClientOptions{SocketPath: workerFramingSocketPath(t), MaxResponseBytes: limit})
 		if err != nil {
 			t.Fatalf("NewClient(%d) error: %v", limit, err)
 		}
@@ -89,7 +89,7 @@ func TestL8WorkerV2ConfiguredCodecLimitsPreserveFullPositiveRange(t *testing.T) 
 	}
 }
 
-func TestL8WorkerV2MissingRequestHalfCloseUnblocksOnPeerCloseOrServerCancellation(t *testing.T) {
+func TestWorkerMissingRequestHalfCloseUnblocksOnPeerCloseOrServerCancellation(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		complete bool
@@ -104,7 +104,7 @@ func TestL8WorkerV2MissingRequestHalfCloseUnblocksOnPeerCloseOrServerCancellatio
 				maxRequestBytes: defaultMaxRequestBytes,
 				handler: RequestHandlerFunc(func(_ context.Context, request Request) Response {
 					dispatched <- struct{}{}
-					return l8WorkerV2FramingStatusResponse(request)
+					return workerFramingStatusResponse(request)
 				}),
 			}
 			request := Request{ProtocolVersion: ProtocolVersion, RequestID: "request-incomplete-frame", Operation: OperationStatus}
@@ -119,7 +119,7 @@ func TestL8WorkerV2MissingRequestHalfCloseUnblocksOnPeerCloseOrServerCancellatio
 			} else {
 				raw = []byte(`{"protocolVersion":"sandboxworker-v1","operation":"status"`)
 			}
-			clientConn, postFrameRead, connectionDone, cancel := l8WorkerV2OpenObservedUnixConnection(t, server, len(raw))
+			clientConn, postFrameRead, connectionDone, cancel := workerFramingOpenObservedUnixConnection(t, server, len(raw))
 			defer cancel()
 			defer clientConn.Close()
 			if _, err := clientConn.Write(raw); err != nil {
@@ -135,7 +135,7 @@ func TestL8WorkerV2MissingRequestHalfCloseUnblocksOnPeerCloseOrServerCancellatio
 			if err := test.unblock(clientConn, cancel); err != nil && !errors.Is(err, net.ErrClosed) {
 				t.Fatalf("unblock connection error: %v", err)
 			}
-			l8WorkerV2AwaitConnectionDone(t, connectionDone)
+			workerFramingAwaitConnectionDone(t, connectionDone)
 			select {
 			case <-dispatched:
 				t.Fatal("incomplete request was dispatched during cleanup")
@@ -145,9 +145,9 @@ func TestL8WorkerV2MissingRequestHalfCloseUnblocksOnPeerCloseOrServerCancellatio
 	}
 }
 
-func TestL8WorkerV2OfficialUnixClientHalfClosesRequestBeforeReadingResponse(t *testing.T) {
-	socketPath, requestEOF, serverDone := l8WorkerV2StartRawUnixResponder(t, func(request Request) ([]byte, error) {
-		response := l8WorkerV2FramingStatusResponse(request)
+func TestWorkerOfficialUnixClientHalfClosesRequestBeforeReadingResponse(t *testing.T) {
+	socketPath, requestEOF, serverDone := workerFramingStartRawUnixResponder(t, func(request Request) ([]byte, error) {
+		response := workerFramingStatusResponse(request)
 		return json.Marshal(response)
 	})
 	client, err := NewClient(ClientOptions{SocketPath: socketPath})
@@ -168,13 +168,13 @@ func TestL8WorkerV2OfficialUnixClientHalfClosesRequestBeforeReadingResponse(t *t
 	default:
 		t.Fatal("raw server responded without observing request EOF")
 	}
-	l8WorkerV2AwaitRawServerDone(t, serverDone)
+	workerFramingAwaitRawServerDone(t, serverDone)
 }
 
-func TestL8WorkerV2OfficialUnixClientOmitsMalformedResponseCanaryFromError(t *testing.T) {
+func TestWorkerOfficialUnixClientOmitsMalformedResponseCanaryFromError(t *testing.T) {
 	const canary = "opaque-canary"
-	socketPath, requestEOF, serverDone := l8WorkerV2StartRawUnixResponder(t, func(request Request) ([]byte, error) {
-		response, err := json.Marshal(l8WorkerV2FramingStatusResponse(request))
+	socketPath, requestEOF, serverDone := workerFramingStartRawUnixResponder(t, func(request Request) ([]byte, error) {
+		response, err := json.Marshal(workerFramingStatusResponse(request))
 		if err != nil {
 			return nil, err
 		}
@@ -201,16 +201,16 @@ func TestL8WorkerV2OfficialUnixClientOmitsMalformedResponseCanaryFromError(t *te
 	default:
 		t.Fatal("malformed responder did not observe request EOF")
 	}
-	l8WorkerV2AwaitRawServerSuccess(t, serverDone)
+	workerFramingAwaitRawServerSuccess(t, serverDone)
 }
 
-func TestL8WorkerV2ServerWaitsForRequestEOFBeforeDispatch(t *testing.T) {
+func TestWorkerServerWaitsForRequestEOFBeforeDispatch(t *testing.T) {
 	dispatched := make(chan struct{}, 1)
 	server := &Server{
 		maxRequestBytes: defaultMaxRequestBytes,
 		handler: RequestHandlerFunc(func(_ context.Context, request Request) Response {
 			dispatched <- struct{}{}
-			return l8WorkerV2FramingStatusResponse(request)
+			return workerFramingStatusResponse(request)
 		}),
 	}
 	request := Request{ProtocolVersion: ProtocolVersion, RequestID: "request-framing", Operation: OperationStatus}
@@ -219,7 +219,7 @@ func TestL8WorkerV2ServerWaitsForRequestEOFBeforeDispatch(t *testing.T) {
 		t.Fatalf("Marshal(request) error: %v", err)
 	}
 	raw = append(raw, '\n')
-	clientConn, postFrameRead, connectionDone, cancel := l8WorkerV2OpenObservedUnixConnection(t, server, len(raw))
+	clientConn, postFrameRead, connectionDone, cancel := workerFramingOpenObservedUnixConnection(t, server, len(raw))
 	defer cancel()
 	defer clientConn.Close()
 	if _, err := clientConn.Write(raw); err != nil {
@@ -252,10 +252,10 @@ func TestL8WorkerV2ServerWaitsForRequestEOFBeforeDispatch(t *testing.T) {
 	if response.RequestID != request.RequestID || response.Operation != request.Operation || !response.OK {
 		t.Fatalf("response = %#v, want matching successful status response", response)
 	}
-	l8WorkerV2AwaitConnectionDone(t, connectionDone)
+	workerFramingAwaitConnectionDone(t, connectionDone)
 }
 
-func l8WorkerV2AwaitConnectionDone(t *testing.T, done <-chan struct{}) {
+func workerFramingAwaitConnectionDone(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-done:
@@ -264,7 +264,7 @@ func l8WorkerV2AwaitConnectionDone(t *testing.T, done <-chan struct{}) {
 	}
 }
 
-func l8WorkerV2AwaitRawServerDone(t *testing.T, done <-chan error) {
+func workerFramingAwaitRawServerDone(t *testing.T, done <-chan error) {
 	t.Helper()
 	select {
 	case err := <-done:
@@ -276,7 +276,7 @@ func l8WorkerV2AwaitRawServerDone(t *testing.T, done <-chan error) {
 	}
 }
 
-func l8WorkerV2AwaitRawServerSuccess(t *testing.T, done <-chan error) {
+func workerFramingAwaitRawServerSuccess(t *testing.T, done <-chan error) {
 	t.Helper()
 	select {
 	case err := <-done:
@@ -288,7 +288,7 @@ func l8WorkerV2AwaitRawServerSuccess(t *testing.T, done <-chan error) {
 	}
 }
 
-func l8WorkerV2AwaitSocket(t *testing.T, socketPath string, serverDone <-chan error) {
+func workerFramingAwaitSocket(t *testing.T, socketPath string, serverDone <-chan error) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -308,7 +308,7 @@ func l8WorkerV2AwaitSocket(t *testing.T, socketPath string, serverDone <-chan er
 	}
 }
 
-func l8WorkerV2FramingStatusResponse(request Request) Response {
+func workerFramingStatusResponse(request Request) Response {
 	return Response{
 		RequestID: request.RequestID,
 		Operation: request.Operation,
@@ -321,9 +321,9 @@ func l8WorkerV2FramingStatusResponse(request Request) Response {
 	}
 }
 
-func l8WorkerV2OpenObservedUnixConnection(t *testing.T, server *Server, expected int) (*net.UnixConn, <-chan struct{}, <-chan struct{}, context.CancelFunc) {
+func workerFramingOpenObservedUnixConnection(t *testing.T, server *Server, expected int) (*net.UnixConn, <-chan struct{}, <-chan struct{}, context.CancelFunc) {
 	t.Helper()
-	socketPath := l8WorkerV2SocketPath(t)
+	socketPath := workerFramingSocketPath(t)
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
 	if err != nil {
 		t.Fatalf("ListenUnix() error: %v", err)
@@ -338,7 +338,7 @@ func l8WorkerV2OpenObservedUnixConnection(t *testing.T, server *Server, expected
 		if acceptErr != nil {
 			return
 		}
-		server.handleConnection(serverContext, &l8WorkerV2ObservedUnixConn{UnixConn: connection, expected: expected, postFrameRead: postFrameRead})
+		server.handleConnection(serverContext, &workerObservedUnixConn{UnixConn: connection, expected: expected, postFrameRead: postFrameRead})
 	}()
 	clientConn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socketPath, Net: "unix"})
 	if err != nil {
@@ -355,13 +355,13 @@ func l8WorkerV2OpenObservedUnixConnection(t *testing.T, server *Server, expected
 	return clientConn, postFrameRead, connectionDone, cancel
 }
 
-func l8WorkerV2SocketPath(t *testing.T) string {
+func workerFramingSocketPath(t *testing.T) string {
 	t.Helper()
 	resolvedTempDir, err := filepath.EvalSymlinks(os.TempDir())
 	if err != nil {
 		t.Fatalf("EvalSymlinks(temp dir) error: %v", err)
 	}
-	directory, err := os.MkdirTemp(resolvedTempDir, "hal-worker-l8-")
+	directory, err := os.MkdirTemp(resolvedTempDir, "hal-worker-framing-")
 	if err != nil {
 		t.Fatalf("MkdirTemp(socket dir) error: %v", err)
 	}
@@ -373,9 +373,9 @@ func l8WorkerV2SocketPath(t *testing.T) string {
 	return filepath.Join(directory, "worker.sock")
 }
 
-func l8WorkerV2StartRawUnixResponder(t *testing.T, response func(Request) ([]byte, error)) (string, <-chan struct{}, <-chan error) {
+func workerFramingStartRawUnixResponder(t *testing.T, response func(Request) ([]byte, error)) (string, <-chan struct{}, <-chan error) {
 	t.Helper()
-	socketPath := l8WorkerV2SocketPath(t)
+	socketPath := workerFramingSocketPath(t)
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
 	if err != nil {
 		t.Fatalf("ListenUnix() error: %v", err)
@@ -440,7 +440,7 @@ func l8WorkerV2StartRawUnixResponder(t *testing.T, response func(Request) ([]byt
 	return socketPath, requestEOF, done
 }
 
-type l8WorkerV2ObservedUnixConn struct {
+type workerObservedUnixConn struct {
 	*net.UnixConn
 	expected      int
 	read          int

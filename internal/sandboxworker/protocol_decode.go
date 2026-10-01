@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 )
 
-func readWorkerJSONBoundedV2(reader io.Reader, maxBytes int64) ([]byte, error) {
+func readWorkerJSONBounded(reader io.Reader, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		return nil, errors.New("worker JSON limit is invalid")
 	}
@@ -38,11 +38,11 @@ func readWorkerJSONBoundedV2(reader io.Reader, maxBytes int64) ([]byte, error) {
 }
 
 func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error {
-	raw, err := readWorkerJSONBoundedV2(reader, maxBytes)
+	raw, err := readWorkerJSONBounded(reader, maxBytes)
 	if err != nil {
 		return err
 	}
-	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil {
+	if err := validateWorkerJSONPreflight(string(raw)); err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -58,11 +58,11 @@ func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) 
 }
 
 func decodeWorkerResponseInto(reader io.Reader, maxBytes int64, output *Response) error {
-	raw, err := readWorkerJSONBoundedV2(reader, maxBytes)
+	raw, err := readWorkerJSONBounded(reader, maxBytes)
 	if err != nil {
 		return err
 	}
-	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil {
+	if err := validateWorkerJSONPreflight(string(raw)); err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -90,274 +90,253 @@ func encodeWorkerResponse(writer io.Writer, response Response) error {
 	return encoder.Encode(response)
 }
 
-func validateWorkerJSONPreflightV2(raw string) error {
+func validateWorkerJSONPreflight(raw string) error {
 	if !utf8.ValidString(raw) {
 		return errors.New("worker JSON text is invalid")
 	}
-	parser := workerJSONPreflightV2{raw: raw}
-	if err := parser.parseValue(workerJSONPreflightRootV2); err != nil {
+	parser := workerJSONPreflight{raw: raw}
+	if err := parser.parseValue(workerJSONPreflightTypedObject); err != nil {
 		return err
 	}
 	parser.skipSpace()
 	if parser.offset != len(parser.raw) {
 		return errors.New("worker JSON has trailing data")
 	}
+	if parser.noncanonicalTypedKey {
+		return errors.New("worker JSON typed object key is noncanonical")
+	}
 	return nil
 }
 
-const workerJSONPreflightMaxDepthV2 = 10_000
+const workerJSONPreflightMaxDepth = 10_000
 
-type workerJSONPreflightContextV2 uint8
+type workerJSONPreflightContext uint8
 
 const (
-	workerJSONPreflightGenericV2 workerJSONPreflightContextV2 = iota
-	workerJSONPreflightTypedObjectV2
-	workerJSONPreflightStringMapV2
-	workerJSONPreflightRootV2
-	workerJSONPreflightJobV2
-	workerJSONPreflightProductionFlagV2
+	workerJSONPreflightGeneric workerJSONPreflightContext = iota
+	workerJSONPreflightTypedObject
+	workerJSONPreflightStringMap
 )
 
-// workerJSONPreflightCanonicalTagsV2 is the audited union of JSON tags reachable
-// from worker requests, responses, and private V2 job state. The root-only
-// jobV2/JobV2 fold collision is classified separately after the root is read.
-var workerJSONPreflightCanonicalTagsV2 = map[string]string{
-	"action":                         "action",
-	"activationgeneration":           "activationGeneration",
-	"activationid":                   "activationId",
-	"activemodes":                    "activeModes",
-	"activeproofs":                   "activeProofs",
-	"activesandboxes":                "activeSandboxes",
-	"adapterid":                      "adapterId",
-	"admissiongrantid":               "admissionGrantId",
-	"admissiongrantrevision":         "admissionGrantRevision",
-	"algorithm":                      "algorithm",
-	"apipath":                        "apiPath",
-	"args":                           "args",
-	"argv":                           "argv",
-	"assetrole":                      "assetRole",
-	"assets":                         "assets",
-	"backend":                        "backend",
-	"bindingid":                      "bindingId",
-	"bindingids":                     "bindingIds",
-	"bindings":                       "bindings",
-	"cancelrequested":                "cancelRequested",
-	"capabilities":                   "capabilities",
-	"capability":                     "capability",
-	"capabilitylabels":               "capabilityLabels",
-	"capacity":                       "capacity",
-	"code":                           "code",
-	"contractversion":                "contractVersion",
-	"controllerkeygeneration":        "controllerKeyGeneration",
-	"copyin":                         "copyIn",
-	"copyout":                        "copyOut",
-	"create":                         "create",
-	"credentialdelivery":             "credentialDelivery",
-	"credentialgeneration":           "credentialGeneration",
-	"credentialintent":               "credentialIntent",
-	"credentialstate":                "credentialState",
-	"credentialmodes":                "credentialModes",
-	"credentialproxymode":            "credentialProxyMode",
-	"cursor":                         "cursor",
-	"daemongeneration":               "daemonGeneration",
-	"data":                           "data",
-	"decision":                       "decision",
-	"defaultposture":                 "defaultPosture",
-	"deliverymode":                   "deliveryMode",
-	"deliverymodes":                  "deliveryModes",
-	"destination":                    "destination",
-	"digest":                         "digest",
-	"digestalgorithm":                "digestAlgorithm",
-	"digestvalue":                    "digestValue",
-	"displaypath":                    "displayPath",
-	"document":                       "document",
-	"driver":                         "driver",
-	"driverid":                       "driverId",
-	"encoding":                       "encoding",
-	"enforced":                       "enforced",
-	"enforcementmode":                "enforcementMode",
-	"env":                            "env",
-	"environment":                    "environment",
-	"error":                          "error",
-	"errorcodes":                     "errorCodes",
-	"errorcount":                     "errorCount",
-	"exec":                           "exec",
-	"executionid":                    "executionId",
-	"executablerole":                 "executableRole",
-	"exitcode":                       "exitCode",
-	"failurecode":                    "failureCode",
-	"finishedat":                     "finishedAt",
-	"firecrackerprocessgeneration":   "firecrackerProcessGeneration",
-	"guestbootgeneration":            "guestBootGeneration",
-	"guesthelpergeneration":          "guestHelperGeneration",
-	"guestimagedigest":               "guestImageDigest",
-	"guestimagegeneration":           "guestImageGeneration",
-	"guestsessiongeneration":         "guestSessionGeneration",
-	"guestreadiness":                 "guestReadiness",
-	"health":                         "health",
-	"heartbeatat":                    "heartbeatAt",
-	"hostid":                         "hostId",
-	"hostkind":                       "hostKind",
-	"id":                             "id",
-	"image":                          "image",
-	"identity":                       "identity",
-	"issuedat":                       "issuedAt",
-	"inspect":                        "inspect",
-	"isolationlevel":                 "isolationLevel",
-	"job":                            "job",
-	"jobcancel":                      "jobCancel",
-	"jobcancelv2":                    "jobCancelV2",
-	"jobid":                          "jobId",
-	"joblogs":                        "jobLogs",
-	"joblogsv2":                      "jobLogsV2",
-	"jobresolve":                     "jobResolve",
-	"jobresolvev2":                   "jobResolveV2",
-	"jobstart":                       "jobStart",
-	"jobstartv2":                     "jobStartV2",
-	"jobstatus":                      "jobStatus",
-	"jobstatusv2":                    "jobStatusV2",
-	"labels":                         "labels",
-	"lifecycle":                      "lifecycle",
-	"limitbytes":                     "limitBytes",
-	"limitexceeded":                  "limitExceeded",
-	"lockstatus":                     "lockStatus",
-	"lockedat":                       "lockedAt",
-	"logcursor":                      "logCursor",
-	"logtruncated":                   "logTruncated",
-	"maxconcurrentsandboxes":         "maxConcurrentSandboxes",
-	"maxpayloadbytes":                "maxPayloadBytes",
-	"mechanisms":                     "mechanisms",
-	"message":                        "message",
-	"metadata":                       "metadata",
-	"mode":                           "mode",
-	"modes":                          "modes",
-	"name":                           "name",
-	"networkenforcement":             "networkEnforcement",
-	"networkenforcementcapability":   "networkEnforcementCapability",
-	"networkpolicy":                  "networkPolicy",
-	"networkplanid":                  "networkPlanId",
-	"nextcursor":                     "nextCursor",
-	"ok":                             "ok",
-	"oldestcursor":                   "oldestCursor",
-	"operation":                      "operation",
-	"operationid":                    "operationId",
-	"operationplan":                  "operationPlan",
-	"operations":                     "operations",
-	"orchestration":                  "orchestration",
-	"outcome":                        "outcome",
-	"pathrole":                       "pathRole",
-	"pathroles":                      "pathRoles",
-	"payload":                        "payload",
-	"payloads":                       "payloads",
-	"plan":                           "plan",
-	"planid":                         "planId",
-	"policypreset":                   "policyPreset",
-	"policysnapshotid":               "policySnapshotId",
-	"principalid":                    "principalId",
-	"processdescriptor":              "processDescriptor",
-	"processid":                      "processId",
-	"processidsource":                "processIdSource",
-	"processlaunch":                  "processLaunch",
-	"productioncredentialsrequested": "productionCredentialsRequested",
-	"proofid":                        "proofId",
-	"protocolversion":                "protocolVersion",
-	"provenancelabels":               "provenanceLabels",
-	"proxy":                          "proxy",
-	"proxygenerationid":              "proxyGenerationId",
-	"proxysessionid":                 "proxySessionId",
-	"reasoncode":                     "reasonCode",
-	"reasoncodes":                    "reasonCodes",
-	"records":                        "records",
-	"referencekind":                  "referenceKind",
-	"remotedestinationpath":          "remoteDestinationPath",
-	"remotesourcepath":               "remoteSourcePath",
-	"request":                        "request",
-	"requestid":                      "requestId",
-	"requestkey":                     "requestKey",
-	"requested":                      "requested",
-	"requestedmodes":                 "requestedModes",
-	"result":                         "result",
-	"revision":                       "revision",
-	"role":                           "role",
-	"rulegenerationid":               "ruleGenerationId",
-	"rules":                          "rules",
-	"runtime":                        "runtime",
-	"runtimedriver":                  "runtimeDriver",
-	"runtimedrivers":                 "runtimeDrivers",
-	"runtimegeneration":              "runtimeGeneration",
-	"runtimeid":                      "runtimeId",
-	"runtimeimage":                   "runtimeImage",
-	"security":                       "security",
-	"seed":                           "seed",
-	"serviceid":                      "serviceId",
-	"sizebytes":                      "sizeBytes",
-	"socketpath":                     "socketPath",
-	"source":                         "source",
-	"sourceartifact":                 "sourceArtifact",
-	"sourcekind":                     "sourceKind",
-	"sourcereferenceid":              "sourceReferenceId",
-	"sourcereferenceids":             "sourceReferenceIds",
-	"startedat":                      "startedAt",
-	"state":                          "state",
-	"status":                         "status",
-	"stderr":                         "stderr",
-	"stderrlimitbytes":               "stderrLimitBytes",
-	"stderrtruncated":                "stderrTruncated",
-	"stdin":                          "stdin",
-	"stdout":                         "stdout",
-	"stdoutlimitbytes":               "stdoutLimitBytes",
-	"stdouttruncated":                "stdoutTruncated",
-	"stream":                         "stream",
-	"submissionid":                   "submissionId",
-	"submissionkey":                  "submissionKey",
-	"submittedat":                    "submittedAt",
-	"supported":                      "supported",
-	"supportedoperations":            "supportedOperations",
-	"supportedruntimedrivers":        "supportedRuntimeDrivers",
-	"supportsdefaultdenyposture":     "supportsDefaultDenyPosture",
-	"supportsdomainrules":            "supportsDomainRules",
-	"supportsendpointrules":          "supportsEnd" + "pointRules",
-	"supportslinklocalrules":         "supportsLinkLocalRules",
-	"supportsloopbackrules":          "supportsLoopbackRules",
-	"supportsmetadataendpoint":       "supportsMetadataEnd" + "point",
-	"supportsprivaterangerules":      "supportsPrivateRangeRules",
-	"target":                         "target",
-	"templatelock":                   "templateLock",
-	"templatepolicyid":               "templatePolicyId",
-	"templatereference":              "templateReference",
-	"templatestatus":                 "templateStatus",
-	"timestamp":                      "timestamp",
-	"topologygenerationid":           "topologyGenerationId",
-	"transport":                      "transport",
-	"truncated":                      "truncated",
-	"trustdecision":                  "trustDecision",
-	"trustmode":                      "trustMode",
-	"trustpolicy":                    "trustPolicy",
-	"value":                          "value",
-	"vsockgeneration":                "vsockGeneration",
-	"warningcodes":                   "warningCodes",
-	"warningcount":                   "warningCount",
-	"workdir":                        "workDir",
-	"workerid":                       "workerId",
-	"workerjobid":                    "workerJobId",
-	"workspacepolicyid":              "workspacePolicyId",
+// workerJSONPreflightCanonicalTags is the union of JSON tags reachable from
+// worker requests and responses.
+var workerJSONPreflightCanonicalTags = map[string]string{
+	"action":                       "action",
+	"activationgeneration":         "activationGeneration",
+	"activationid":                 "activationId",
+	"activemodes":                  "activeModes",
+	"activeproofs":                 "activeProofs",
+	"activesandboxes":              "activeSandboxes",
+	"adapterid":                    "adapterId",
+	"algorithm":                    "algorithm",
+	"apipath":                      "apiPath",
+	"args":                         "args",
+	"argv":                         "argv",
+	"assetrole":                    "assetRole",
+	"assets":                       "assets",
+	"backend":                      "backend",
+	"bindingid":                    "bindingId",
+	"bindingids":                   "bindingIds",
+	"cancelrequested":              "cancelRequested",
+	"capabilities":                 "capabilities",
+	"capability":                   "capability",
+	"capabilitylabels":             "capabilityLabels",
+	"capacity":                     "capacity",
+	"code":                         "code",
+	"contractversion":              "contractVersion",
+	"controllerkeygeneration":      "controllerKeyGeneration",
+	"copyin":                       "copyIn",
+	"copyout":                      "copyOut",
+	"create":                       "create",
+	"credentialdelivery":           "credentialDelivery",
+	"credentialgeneration":         "credentialGeneration",
+	"credentialmodes":              "credentialModes",
+	"credentialproxymode":          "credentialProxyMode",
+	"cursor":                       "cursor",
+	"data":                         "data",
+	"decision":                     "decision",
+	"defaultposture":               "defaultPosture",
+	"deliverymode":                 "deliveryMode",
+	"deliverymodes":                "deliveryModes",
+	"destination":                  "destination",
+	"digest":                       "digest",
+	"digestalgorithm":              "digestAlgorithm",
+	"digestvalue":                  "digestValue",
+	"displaypath":                  "displayPath",
+	"document":                     "document",
+	"driver":                       "driver",
+	"driverid":                     "driverId",
+	"encoding":                     "encoding",
+	"enforced":                     "enforced",
+	"enforcementmode":              "enforcementMode",
+	"env":                          "env",
+	"environment":                  "environment",
+	"error":                        "error",
+	"errorcodes":                   "errorCodes",
+	"errorcount":                   "errorCount",
+	"exec":                         "exec",
+	"executionid":                  "executionId",
+	"executablerole":               "executableRole",
+	"exitcode":                     "exitCode",
+	"failurecode":                  "failureCode",
+	"finishedat":                   "finishedAt",
+	"firecrackerprocessgeneration": "firecrackerProcessGeneration",
+	"guestbootgeneration":          "guestBootGeneration",
+	"guesthelpergeneration":        "guestHelperGeneration",
+	"guestimagedigest":             "guestImageDigest",
+	"guestimagegeneration":         "guestImageGeneration",
+	"guestsessiongeneration":       "guestSessionGeneration",
+	"guestreadiness":               "guestReadiness",
+	"health":                       "health",
+	"heartbeatat":                  "heartbeatAt",
+	"hostid":                       "hostId",
+	"hostkind":                     "hostKind",
+	"id":                           "id",
+	"image":                        "image",
+	"identity":                     "identity",
+	"issuedat":                     "issuedAt",
+	"inspect":                      "inspect",
+	"isolationlevel":               "isolationLevel",
+	"job":                          "job",
+	"jobcancel":                    "jobCancel",
+	"jobid":                        "jobId",
+	"joblogs":                      "jobLogs",
+	"jobresolve":                   "jobResolve",
+	"jobstart":                     "jobStart",
+	"jobstatus":                    "jobStatus",
+	"labels":                       "labels",
+	"lifecycle":                    "lifecycle",
+	"limitbytes":                   "limitBytes",
+	"limitexceeded":                "limitExceeded",
+	"lockstatus":                   "lockStatus",
+	"lockedat":                     "lockedAt",
+	"logcursor":                    "logCursor",
+	"logtruncated":                 "logTruncated",
+	"maxconcurrentsandboxes":       "maxConcurrentSandboxes",
+	"maxpayloadbytes":              "maxPayloadBytes",
+	"mechanisms":                   "mechanisms",
+	"message":                      "message",
+	"metadata":                     "metadata",
+	"mode":                         "mode",
+	"modes":                        "modes",
+	"name":                         "name",
+	"networkenforcement":           "networkEnforcement",
+	"networkenforcementcapability": "networkEnforcementCapability",
+	"networkpolicy":                "networkPolicy",
+	"networkplanid":                "networkPlanId",
+	"nextcursor":                   "nextCursor",
+	"ok":                           "ok",
+	"oldestcursor":                 "oldestCursor",
+	"operation":                    "operation",
+	"operationid":                  "operationId",
+	"operationplan":                "operationPlan",
+	"operations":                   "operations",
+	"orchestration":                "orchestration",
+	"outcome":                      "outcome",
+	"pathrole":                     "pathRole",
+	"pathroles":                    "pathRoles",
+	"payload":                      "payload",
+	"payloads":                     "payloads",
+	"plan":                         "plan",
+	"planid":                       "planId",
+	"policypreset":                 "policyPreset",
+	"policysnapshotid":             "policySnapshotId",
+	"processdescriptor":            "processDescriptor",
+	"processid":                    "processId",
+	"processidsource":              "processIdSource",
+	"processlaunch":                "processLaunch",
+	"proofid":                      "proofId",
+	"protocolversion":              "protocolVersion",
+	"provenancelabels":             "provenanceLabels",
+	"proxy":                        "proxy",
+	"proxygenerationid":            "proxyGenerationId",
+	"proxysessionid":               "proxySessionId",
+	"reasoncode":                   "reasonCode",
+	"reasoncodes":                  "reasonCodes",
+	"records":                      "records",
+	"referencekind":                "referenceKind",
+	"remotedestinationpath":        "remoteDestinationPath",
+	"remotesourcepath":             "remoteSourcePath",
+	"request":                      "request",
+	"requestid":                    "requestId",
+	"requestkey":                   "requestKey",
+	"requested":                    "requested",
+	"requestedmodes":               "requestedModes",
+	"result":                       "result",
+	"revision":                     "revision",
+	"role":                         "role",
+	"rulegenerationid":             "ruleGenerationId",
+	"rules":                        "rules",
+	"runtime":                      "runtime",
+	"runtimedriver":                "runtimeDriver",
+	"runtimedrivers":               "runtimeDrivers",
+	"runtimegeneration":            "runtimeGeneration",
+	"runtimeid":                    "runtimeId",
+	"runtimeimage":                 "runtimeImage",
+	"security":                     "security",
+	"seed":                         "seed",
+	"serviceid":                    "serviceId",
+	"sizebytes":                    "sizeBytes",
+	"socketpath":                   "socketPath",
+	"source":                       "source",
+	"sourceartifact":               "sourceArtifact",
+	"sourcekind":                   "sourceKind",
+	"sourcereferenceid":            "sourceReferenceId",
+	"startedat":                    "startedAt",
+	"state":                        "state",
+	"status":                       "status",
+	"stderr":                       "stderr",
+	"stderrlimitbytes":             "stderrLimitBytes",
+	"stderrtruncated":              "stderrTruncated",
+	"stdin":                        "stdin",
+	"stdout":                       "stdout",
+	"stdoutlimitbytes":             "stdoutLimitBytes",
+	"stdouttruncated":              "stdoutTruncated",
+	"stream":                       "stream",
+	"submissionid":                 "submissionId",
+	"submissionkey":                "submissionKey",
+	"submittedat":                  "submittedAt",
+	"supported":                    "supported",
+	"supportedoperations":          "supportedOperations",
+	"supportedruntimedrivers":      "supportedRuntimeDrivers",
+	"supportsdefaultdenyposture":   "supportsDefaultDenyPosture",
+	"supportsdomainrules":          "supportsDomainRules",
+	"supportsendpointrules":        "supportsEnd" + "pointRules",
+	"supportslinklocalrules":       "supportsLinkLocalRules",
+	"supportsloopbackrules":        "supportsLoopbackRules",
+	"supportsmetadataendpoint":     "supportsMetadataEnd" + "point",
+	"supportsprivaterangerules":    "supportsPrivateRangeRules",
+	"target":                       "target",
+	"templatelock":                 "templateLock",
+	"templatereference":            "templateReference",
+	"templatestatus":               "templateStatus",
+	"timestamp":                    "timestamp",
+	"topologygenerationid":         "topologyGenerationId",
+	"transport":                    "transport",
+	"truncated":                    "truncated",
+	"trustdecision":                "trustDecision",
+	"trustmode":                    "trustMode",
+	"trustpolicy":                  "trustPolicy",
+	"value":                        "value",
+	"vsockgeneration":              "vsockGeneration",
+	"warningcodes":                 "warningCodes",
+	"warningcount":                 "warningCount",
+	"workdir":                      "workDir",
+	"workerid":                     "workerId",
+	"workerjobid":                  "workerJobId",
 }
 
-type workerJSONPreflightV2 struct {
+type workerJSONPreflight struct {
 	raw                  string
 	offset               int
 	depth                int
 	noncanonicalTypedKey bool
 }
 
-func (parser *workerJSONPreflightV2) parseValue(context workerJSONPreflightContextV2) error {
+func (parser *workerJSONPreflight) parseValue(context workerJSONPreflightContext) error {
 	parser.skipSpace()
 	if parser.offset >= len(parser.raw) {
 		return errors.New("worker JSON is incomplete")
-	}
-	requiredProductionFlag := context == workerJSONPreflightProductionFlagV2
-	if requiredProductionFlag && parser.raw[parser.offset] != '{' {
-		return errors.New("worker JSON credential intent must be an object")
 	}
 	switch parser.raw[parser.offset] {
 	case '{':
@@ -378,26 +357,16 @@ func (parser *workerJSONPreflightV2) parseValue(context workerJSONPreflightConte
 	}
 }
 
-func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightContextV2) error {
+func (parser *workerJSONPreflight) parseObject(context workerJSONPreflightContext) error {
 	if err := parser.enterContainer(); err != nil {
 		return err
 	}
 	defer parser.leaveContainer()
-	requiredProductionFlag := context == workerJSONPreflightProductionFlagV2
 	parser.offset++
 	parser.skipSpace()
 	seen := make(map[string]bool)
 	seenFolded := make(map[string]bool)
-	productionFlagSeen := false
-	rootTypedDocument := false
-	rootEnvelope := false
-	rootStoredState := false
-	rootJobV2Key := ""
-	rootJobV2Token := ""
 	if parser.consume('}') {
-		if requiredProductionFlag {
-			return errors.New("worker JSON productionCredentialsRequested is required")
-		}
 		return nil
 	}
 	for {
@@ -412,30 +381,14 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 			return errors.New("worker JSON contains duplicate object key")
 		}
 		seen[key] = true
-		if workerJSONPreflightTypedContextV2(context) {
-			folded := workerJSONPreflightFoldKeyV2(key)
+		if context == workerJSONPreflightTypedObject {
+			folded := workerJSONPreflightFoldKey(key)
 			if seenFolded[folded] {
 				return errors.New("worker JSON contains duplicate object key")
 			}
 			seenFolded[folded] = true
-			if context == workerJSONPreflightRootV2 && folded == "jobv2" {
-				rootJobV2Key = key
-				rootJobV2Token = keyToken
-			} else if canonical, known := workerJSONPreflightCanonicalTagsV2[folded]; known && (key != canonical || keyToken != `"`+canonical+`"`) {
+			if canonical, known := workerJSONPreflightCanonicalTags[folded]; known && (key != canonical || keyToken != `"`+canonical+`"`) {
 				parser.noncanonicalTypedKey = true
-			}
-			if context == workerJSONPreflightRootV2 {
-				switch folded {
-				case "protocolversion", "requestid", "operation":
-					rootTypedDocument = true
-					rootEnvelope = true
-				case "ok":
-					rootTypedDocument = true
-					rootEnvelope = true
-				case "requestkey", "principalid", "daemongeneration", "credentialstate":
-					rootTypedDocument = true
-					rootStoredState = true
-				}
 			}
 		}
 		parser.skipSpace()
@@ -443,26 +396,11 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 			return errors.New("worker JSON object separator is invalid")
 		}
 		parser.skipSpace()
-		if requiredProductionFlag && strings.EqualFold(key, "productionCredentialsRequested") {
-			if productionFlagSeen {
-				return errors.New("worker JSON contains duplicate object key")
-			}
-			if !strings.HasPrefix(parser.raw[parser.offset:], "true") && !strings.HasPrefix(parser.raw[parser.offset:], "false") {
-				return errors.New("worker JSON productionCredentialsRequested must be boolean")
-			}
-			productionFlagSeen = true
-		}
-		if err := parser.parseValue(workerJSONPreflightChildContextV2(context, key)); err != nil {
+		if err := parser.parseValue(workerJSONPreflightChildContext(context, key)); err != nil {
 			return err
 		}
 		parser.skipSpace()
 		if parser.consume('}') {
-			if requiredProductionFlag && !productionFlagSeen {
-				return errors.New("worker JSON productionCredentialsRequested is required")
-			}
-			if context == workerJSONPreflightRootV2 {
-				return parser.validateRootCanonicalKeys(rootTypedDocument, rootEnvelope, rootStoredState, rootJobV2Key, rootJobV2Token)
-			}
 			return nil
 		}
 		if !parser.consume(',') {
@@ -472,7 +410,7 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 	}
 }
 
-func (parser *workerJSONPreflightV2) parseArray(context workerJSONPreflightContextV2) error {
+func (parser *workerJSONPreflight) parseArray(context workerJSONPreflightContext) error {
 	if err := parser.enterContainer(); err != nil {
 		return err
 	}
@@ -497,71 +435,30 @@ func (parser *workerJSONPreflightV2) parseArray(context workerJSONPreflightConte
 	}
 }
 
-func (parser *workerJSONPreflightV2) enterContainer() error {
-	if parser.depth >= workerJSONPreflightMaxDepthV2 {
+func (parser *workerJSONPreflight) enterContainer() error {
+	if parser.depth >= workerJSONPreflightMaxDepth {
 		return errors.New("worker JSON nesting exceeds limit")
 	}
 	parser.depth++
 	return nil
 }
 
-func (parser *workerJSONPreflightV2) leaveContainer() {
+func (parser *workerJSONPreflight) leaveContainer() {
 	parser.depth--
 }
 
-func workerJSONPreflightChildContextV2(context workerJSONPreflightContextV2, key string) workerJSONPreflightContextV2 {
+func workerJSONPreflightChildContext(context workerJSONPreflightContext, key string) workerJSONPreflightContext {
 	switch {
-	case context == workerJSONPreflightRootV2 && strings.EqualFold(key, "jobStartV2"):
-		return workerJSONPreflightProductionFlagV2
-	case context == workerJSONPreflightRootV2 && strings.EqualFold(key, "jobV2"):
-		return workerJSONPreflightJobV2
-	case context == workerJSONPreflightJobV2 && strings.EqualFold(key, "credentialIntent"):
-		return workerJSONPreflightProductionFlagV2
-	case workerJSONPreflightTypedContextV2(context) && (strings.EqualFold(key, "env") || strings.EqualFold(key, "labels")):
-		return workerJSONPreflightStringMapV2
-	case workerJSONPreflightTypedContextV2(context):
-		return workerJSONPreflightTypedObjectV2
+	case context == workerJSONPreflightTypedObject && (strings.EqualFold(key, "env") || strings.EqualFold(key, "labels")):
+		return workerJSONPreflightStringMap
+	case context == workerJSONPreflightTypedObject:
+		return workerJSONPreflightTypedObject
 	default:
-		return workerJSONPreflightGenericV2
+		return workerJSONPreflightGeneric
 	}
 }
 
-func workerJSONPreflightTypedContextV2(context workerJSONPreflightContextV2) bool {
-	switch context {
-	case workerJSONPreflightTypedObjectV2,
-		workerJSONPreflightRootV2,
-		workerJSONPreflightJobV2,
-		workerJSONPreflightProductionFlagV2:
-		return true
-	default:
-		return false
-	}
-}
-
-func (parser *workerJSONPreflightV2) validateRootCanonicalKeys(typedDocument, envelope, storedState bool, jobV2Key, jobV2Token string) error {
-	if parser.noncanonicalTypedKey {
-		return errors.New("worker JSON typed object key is noncanonical")
-	}
-	if !typedDocument {
-		if jobV2Key != "" {
-			return errors.New("worker JSON root schema is ambiguous")
-		}
-		return nil
-	}
-	if envelope && storedState {
-		return errors.New("worker JSON root schema is ambiguous")
-	}
-	expectedJobV2Key := "jobV2"
-	if storedState {
-		expectedJobV2Key = "JobV2"
-	}
-	if jobV2Key != "" && (jobV2Key != expectedJobV2Key || jobV2Token != `"`+expectedJobV2Key+`"`) {
-		return errors.New("worker JSON typed object key is noncanonical")
-	}
-	return nil
-}
-
-func workerJSONPreflightFoldKeyV2(value string) string {
+func workerJSONPreflightFoldKey(value string) string {
 	var folded strings.Builder
 	for _, current := range value {
 		representative := current
@@ -575,7 +472,7 @@ func workerJSONPreflightFoldKeyV2(value string) string {
 	return folded.String()
 }
 
-func (parser *workerJSONPreflightV2) parseString() (string, error) {
+func (parser *workerJSONPreflight) parseString() (string, error) {
 	parser.skipSpace()
 	if !parser.consume('"') {
 		return "", errors.New("worker JSON object key is invalid")
@@ -597,7 +494,7 @@ func (parser *workerJSONPreflightV2) parseString() (string, error) {
 			continue
 		}
 		if current == '"' {
-			quoted := workerJSONSlashEscapesForUnquoteV2(parser.raw[start:parser.offset])
+			quoted := workerJSONSlashEscapesForUnquote(parser.raw[start:parser.offset])
 			value, err := strconv.Unquote(quoted)
 			if err != nil {
 				return "", errors.New("worker JSON string is invalid")
@@ -611,7 +508,7 @@ func (parser *workerJSONPreflightV2) parseString() (string, error) {
 // strconv.Unquote accepts Go string syntax, so genuine JSON slash escapes need
 // normalization. Skip complete escape pairs: the slash after an escaped
 // backslash is literal, and removing that backslash would change its meaning.
-func workerJSONSlashEscapesForUnquoteV2(quoted string) string {
+func workerJSONSlashEscapesForUnquote(quoted string) string {
 	var normalized strings.Builder
 	start := 0
 	for index := 0; index+1 < len(quoted); index++ {
@@ -631,7 +528,7 @@ func workerJSONSlashEscapesForUnquoteV2(quoted string) string {
 	return normalized.String()
 }
 
-func (parser *workerJSONPreflightV2) parseLiteral(literal string) error {
+func (parser *workerJSONPreflight) parseLiteral(literal string) error {
 	if !strings.HasPrefix(parser.raw[parser.offset:], literal) {
 		return errors.New("worker JSON literal is invalid")
 	}
@@ -639,7 +536,7 @@ func (parser *workerJSONPreflightV2) parseLiteral(literal string) error {
 	return nil
 }
 
-func (parser *workerJSONPreflightV2) parseNumber() error {
+func (parser *workerJSONPreflight) parseNumber() error {
 	start := parser.offset
 	if parser.consume('-') && parser.offset >= len(parser.raw) {
 		return errors.New("worker JSON number is invalid")
@@ -665,7 +562,7 @@ func (parser *workerJSONPreflightV2) parseNumber() error {
 	return nil
 }
 
-func (parser *workerJSONPreflightV2) skipSpace() {
+func (parser *workerJSONPreflight) skipSpace() {
 	for parser.offset < len(parser.raw) {
 		switch parser.raw[parser.offset] {
 		case ' ', '\t', '\r', '\n':
@@ -676,7 +573,7 @@ func (parser *workerJSONPreflightV2) skipSpace() {
 	}
 }
 
-func (parser *workerJSONPreflightV2) consume(value byte) bool {
+func (parser *workerJSONPreflight) consume(value byte) bool {
 	if parser.offset >= len(parser.raw) || parser.raw[parser.offset] != value {
 		return false
 	}

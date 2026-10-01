@@ -165,6 +165,19 @@ func TestServiceReturnsStructuredOperationErrorsOverUnixSocket(t *testing.T) {
 		t.Fatalf("unknown error code = %q, want %q", unknownResp.Error.Code, ErrorCodeMalformedRequest)
 	}
 
+	unknownVersionResp := roundTripWorkerRequest(t, socketPath, Request{
+		ProtocolVersion: "unsupported-version",
+		RequestID:       "req-version",
+		Operation:       OperationStatus,
+	})
+	if err := unknownVersionResp.Validate(); err != nil {
+		t.Fatalf("unknown version response Validate() error: %v", err)
+	}
+	if unknownVersionResp.OK || unknownVersionResp.RequestID != "req-version" || unknownVersionResp.Operation != OperationStatus ||
+		unknownVersionResp.Error == nil || unknownVersionResp.Error.Code != ErrorCodeMalformedRequest {
+		t.Fatalf("unknown version response = %#v, want structured unsupported version error", unknownVersionResp)
+	}
+
 	missingDriverCopyReq := validWorkerCopyInRequest()
 	missingDriverCopyReq.RequestID = "req-copy-in"
 	missingDriverResp := roundTripWorkerRequest(t, socketPath, missingDriverCopyReq)

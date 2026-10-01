@@ -3,12 +3,11 @@ package sandboxworker
 import (
 	"encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestL8WorkerV1JobStartGoldenBytesRemainStable(t *testing.T) {
+func TestWorkerV1JobStartGoldenBytesRemainStable(t *testing.T) {
 	req := Request{
 		ProtocolVersion: ProtocolVersion,
 		RequestID:       "request-v1",
@@ -42,10 +41,9 @@ func TestL8WorkerV1JobStartGoldenBytesRemainStable(t *testing.T) {
 	if string(got) != want {
 		t.Fatalf("v1 job_start bytes changed\n got: %s\nwant: %s", got, want)
 	}
-	assertL8V1BytesContainNoV2Fields(t, got)
 }
 
-func TestL8WorkerV1JobLookupOperationGoldenBytesRemainStable(t *testing.T) {
+func TestWorkerV1JobLookupOperationGoldenBytesRemainStable(t *testing.T) {
 	tests := []struct {
 		name string
 		req  Request
@@ -96,12 +94,11 @@ func TestL8WorkerV1JobLookupOperationGoldenBytesRemainStable(t *testing.T) {
 			if string(got) != tt.want {
 				t.Fatalf("v1 %s bytes changed\n got: %s\nwant: %s", tt.name, got, tt.want)
 			}
-			assertL8V1BytesContainNoV2Fields(t, got)
 		})
 	}
 }
 
-func TestL8WorkerV1JobResponseGoldenBytesRemainStable(t *testing.T) {
+func TestWorkerV1JobResponseGoldenBytesRemainStable(t *testing.T) {
 	submitted := time.Date(2026, time.August, 3, 1, 2, 3, 0, time.UTC)
 	started := submitted.Add(time.Second)
 	heartbeat := submitted.Add(2 * time.Second)
@@ -144,10 +141,9 @@ func TestL8WorkerV1JobResponseGoldenBytesRemainStable(t *testing.T) {
 	if string(got) != want {
 		t.Fatalf("v1 job response bytes changed\n got: %s\nwant: %s", got, want)
 	}
-	assertL8V1BytesContainNoV2Fields(t, got)
 }
 
-func TestL8WorkerV1JobLogsResponseGoldenBytesRemainStable(t *testing.T) {
+func TestWorkerV1JobLogsResponseGoldenBytesRemainStable(t *testing.T) {
 	response := Response{
 		ProtocolVersion: ProtocolVersion,
 		RequestID:       "request-logs-v1",
@@ -175,10 +171,9 @@ func TestL8WorkerV1JobLogsResponseGoldenBytesRemainStable(t *testing.T) {
 	if string(got) != want {
 		t.Fatalf("v1 job logs response bytes changed\n got: %s\nwant: %s", got, want)
 	}
-	assertL8V1BytesContainNoV2Fields(t, got)
 }
 
-func TestL8WorkerV1PublicSchemasHaveNoV2CredentialFields(t *testing.T) {
+func TestWorkerV1PublicSchemasRemainStable(t *testing.T) {
 	tests := []struct {
 		name   string
 		value  any
@@ -211,26 +206,5 @@ func TestL8WorkerV1PublicSchemasHaveNoV2CredentialFields(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func assertL8V1BytesContainNoV2Fields(t *testing.T, payload []byte) {
-	t.Helper()
-	for _, forbidden := range []string{
-		"sandboxjob-v2",
-		"jobStartV2",
-		"jobResolveV2",
-		"jobStatusV2",
-		"jobLogsV2",
-		"jobCancelV2",
-		"productionCredentialsRequested",
-		"credentialPlanId",
-		"admissionGrant",
-		"sourceReference",
-		"authenticatedPrincipal",
-	} {
-		if strings.Contains(string(payload), forbidden) {
-			t.Fatalf("v1 wire bytes contain v2 field %q: %s", forbidden, payload)
-		}
 	}
 }

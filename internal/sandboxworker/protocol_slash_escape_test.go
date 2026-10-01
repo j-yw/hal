@@ -31,7 +31,7 @@ func TestWorkerJSONSlashEscapesRoundTrip(t *testing.T) {
 		for _, escapeSlashes := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/escaped_slash_%t", value.name, escapeSlashes), func(t *testing.T) {
 				t.Run("preflight string", func(t *testing.T) {
-					parser := workerJSONPreflightV2{raw: string(workerJSONSlashMarshal(t, value.value, escapeSlashes))}
+					parser := workerJSONPreflight{raw: string(workerJSONSlashMarshal(t, value.value, escapeSlashes))}
 					decoded, err := parser.parseString()
 					if err != nil || decoded != value.value || parser.offset != len(parser.raw) {
 						t.Fatalf("preflight string changed meaning or failed: %v", err)

@@ -26,22 +26,6 @@ var (
 	clientEndpointURLPattern      = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s'"]+`)
 )
 
-var ErrCredentialWorkerProtocolUnsupported = errors.New("worker credential protocol is unsupported")
-
-func exactCredentialWorkerProtocolUnsupported(request Request, response Response) bool {
-	if !isWorkerV2Operation(request.Operation) || response.ProtocolVersion != ProtocolVersion || response.RequestID == "" || response.RequestID != request.RequestID || response.OK || response.Error == nil || workerResponseHasPayload(response) {
-		return false
-	}
-	if response.Operation == OperationProtocolError {
-		return response.Error.Code == ErrorCodeMalformedRequest && response.Error.Message == "malformed worker request: worker request operation \""+request.Operation+"\" is unsupported"
-	}
-	return response.Operation == request.Operation && response.Error.Code == ErrorCodeUnsupportedOp && response.Error.Message == "worker operation \""+request.Operation+"\" is not supported by this worker service"
-}
-
-func workerResponseHasPayload(response Response) bool {
-	return response.Status != nil || response.Capabilities != nil || response.Target != nil || response.Exec != nil || response.CopyIn != nil || response.CopyOut != nil || response.Job != nil || response.JobLogs != nil || response.JobV2 != nil || response.JobLogsV2 != nil
-}
-
 // Client calls worker protocol operations through a fakeable local transport.
 type Client struct {
 	transport ClientTransport
@@ -331,12 +315,6 @@ func (client *Client) roundTrip(ctx context.Context, req Request) (Response, err
 	if err != nil {
 		return Response{}, clientContextOrTransportError(req.Operation, err)
 	}
-	if isWorkerV2Operation(req.Operation) && resp.ProtocolVersion != ProtocolVersion {
-		return Response{}, malformedClientResponseError(req.Operation, "worker V2 response protocolVersion did not match request")
-	}
-	if exactCredentialWorkerProtocolUnsupported(req, resp) {
-		return Response{}, ErrCredentialWorkerProtocolUnsupported
-	}
 	resp = resp.WithDefaults()
 	if err := validateClientResponse(req, resp); err != nil {
 		return Response{}, err
@@ -372,9 +350,6 @@ func validateClientResponse(req Request, resp Response) error {
 	if err := resp.Validate(); err != nil {
 		return malformedClientResponseError(req.Operation, fmt.Sprintf("malformed worker response: %v", err))
 	}
-	if isWorkerV2Operation(req.Operation) && resp.RequestID == "" {
-		return malformedClientResponseError(req.Operation, "worker V2 response requestId is required")
-	}
 	if resp.RequestID != "" && resp.RequestID != req.RequestID {
 		return malformedClientResponseError(req.Operation, "worker response requestId did not match request")
 	}
@@ -382,10 +357,7 @@ func validateClientResponse(req Request, resp Response) error {
 		return malformedClientResponseError(req.Operation, "worker response operation did not match request")
 	}
 	if !resp.OK {
-		if isWorkerV2Operation(req.Operation) && resp.Operation != req.Operation {
-			return malformedClientResponseError(req.Operation, "worker V2 error response operation did not match request")
-		}
-		if !isWorkerV2Operation(req.Operation) && resp.Operation != req.Operation && resp.Operation != OperationProtocolError {
+		if resp.Operation != req.Operation && resp.Operation != OperationProtocolError {
 			return malformedClientResponseError(req.Operation, "worker error response operation did not match request")
 		}
 	}
